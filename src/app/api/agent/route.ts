@@ -11,6 +11,8 @@ import path from "path";
 // strip model-generated coverage headings, and expose traceability mismatch tokens.
 // v28: prioritize schema-definition source files, retrieve exact global-setting JSON objects,
 // suppress unrelated fallback chunks for narrow requests, and normalize generic "references" wording.
+// v29: allocate small exact setting-object ranges as required requests, and restrict targeted
+// setting retrieval to IDs explicitly named by the user's prompt when such IDs are present.
 
 const THEME_DIR = path.resolve(process.cwd(), "themes", "horizon");
 
@@ -148,6 +150,8 @@ type PlannerChunkRequest = {
   file: string;
   start_offset: number | null;
   max_chars: number;
+  // Exact source-object retrievals must not be dropped by the generic tiny-fragment threshold.
+  must_retrieve?: boolean;
 };
 
 // --------------------------------------------------
@@ -1253,7 +1257,12 @@ function getArchitectureRootFiles(prompt: string): string[] {
   const roots: string[] = [];
   const domains = detectCoverageDomains(prompt);
 
-  if (domains.includes("header")) {
+  if (domains.includes("sticky-header")) {
+    roots.push(
+      "sections/header.liquid",
+      "assets/base.css"
+    );
+  } else if (domains.includes("header")) {
     roots.push(
       "sections/header.liquid",
       "blocks/_header-menu.liquid",
@@ -3128,7 +3137,11 @@ type PlannerManifestFile = {
   isComplete: boolean;
 };
 
-type CoverageDomain = "header" | "pricing" | "settings";
+type CoverageDomain = "sticky-header" | "header" | "pricing" | "settings";
+
+function isStickyHeaderArchitectureIntent(prompt: string): boolean {
+  return /\bsticky[\s-]?header\b|\bheader[\s-]?sticky\b|\benable_sticky_header\b/i.test(prompt);
+}
 
 function isSettingsSchemaIntent(prompt: string): boolean {
   return /\b(setting|settings|schema|configuration|config|default value|definition|defined)\b/i.test(prompt);
@@ -3138,7 +3151,13 @@ function detectCoverageDomains(prompt: string): CoverageDomain[] {
   const lower = prompt.toLowerCase();
   const domains: CoverageDomain[] = [];
 
-  if (/\b(header|navigation|nav|menu|mega[\s-]?menu|drawer)\b/i.test(lower)) {
+  const stickyHeaderIntent = isStickyHeaderArchitectureIntent(prompt);
+
+  if (stickyHeaderIntent) {
+    // Sticky behavior is centered in the header section and its styles; do not
+    // classify it as a broad menu/navigation task.
+    domains.push("sticky-header");
+  } else if (/\b(header|navigation|nav|menu|mega[\s-]?menu|drawer)\b/i.test(lower)) {
     domains.push("header");
   }
 
@@ -3146,7 +3165,9 @@ function detectCoverageDomains(prompt: string): CoverageDomain[] {
     domains.push("pricing");
   }
 
-  if (isSettingsSchemaIntent(prompt)) {
+  // Sticky header settings are section-level settings declared inside the
+  // section's own {% schema %} block, not global settings_schema.json entries.
+  if (isSettingsSchemaIntent(prompt) && !stickyHeaderIntent) {
     domains.push("settings");
   }
 
@@ -3161,6 +3182,14 @@ function getCoverageFilePriority(
 
   if (domain === "settings") {
     return file === "config/settings_schema.json" ? 2200 : 0;
+  }
+
+  if (domain === "sticky-header") {
+    if (file === "sections/header.liquid") return 3000;
+    if (file === "assets/base.css") return 2800;
+    if (/^assets\/[^/]*(?:header|sticky)[^/]*\.(?:css|js)$/.test(file)) return 2600;
+    if (/^assets\/(?:global|theme)\.js$/.test(file)) return 2200;
+    return 0;
   }
 
   if (domain === "header") {
@@ -3297,7 +3326,7 @@ function buildSettingDefinitionChunkRequests(
   dependencies: VerifiedDependency[],
   retrievalState: SharedRetrievalState
 ): PlannerChunkRequest[] {
-  if (!isSettingsSchemaIntent(prompt)) return [];
+  if (!isSettingsSchemaIntent(prompt) || isStickyHeaderArchitectureIntent(prompt)) return [];
 
   const schemaPath = "config/settings_schema.json";
   const schemaContent = retrievalState.fullContents.get(schemaPath);
@@ -3306,7 +3335,11 @@ function buildSettingDefinitionChunkRequests(
     return [];
   }
 
-  const settingIds = [...new Set(
+  const promptLower = prompt.toLowerCase();
+  const explicitlyNamedSettingIds = new Set(
+    [...promptLower.matchAll(/[a-z0-9_]+/g)].map((match) => match[0])
+  );
+  const allSettingIds = [...new Set(
     dependencies
       .filter((dependency) =>
         dependency.verified &&
@@ -3316,6 +3349,14 @@ function buildSettingDefinitionChunkRequests(
       .map((dependency) => dependency.to.replace("setting:global.", ""))
       .filter(Boolean)
   )];
+  const explicitlyRequestedSettingIds = allSettingIds.filter((settingId) =>
+    explicitlyNamedSettingIds.has(settingId.toLowerCase())
+  );
+  // When the prompt names concrete setting IDs, retrieve only those definitions.
+  // Keep the previous dependency-driven fallback for broader settings questions.
+  const settingIds = explicitlyRequestedSettingIds.length > 0
+    ? explicitlyRequestedSettingIds
+    : allSettingIds;
 
   const requests: PlannerChunkRequest[] = [];
   let totalRequestedCharacters = 0;
@@ -3360,6 +3401,7 @@ function buildSettingDefinitionChunkRequests(
       file: schemaPath,
       start_offset: requestStart,
       max_chars: requestedLength,
+      must_retrieve: true,
     });
     totalRequestedCharacters += requestedLength;
 
@@ -3370,6 +3412,102 @@ function buildSettingDefinitionChunkRequests(
       endOffset: range.endOffset,
       requestedCharacters: requestedLength,
       completeObjectRequested: remainingObjectLength <= MAX_CHUNK_SIZE,
+    });
+  }
+
+  return requests;
+}
+
+// Sticky/header section settings are declared inside the owning Liquid file's
+// {% schema %} block. Retrieve the exact object from that file instead of
+// looking for it in config/settings_schema.json (which contains global settings).
+function buildLiquidSchemaSettingDefinitionRequests(
+  prompt: string,
+  dependencies: VerifiedDependency[],
+  retrievalState: SharedRetrievalState
+): PlannerChunkRequest[] {
+  if (!isStickyHeaderArchitectureIntent(prompt)) return [];
+
+  const candidateIds = [...new Set(
+    dependencies
+      .filter((dependency) =>
+        dependency.verified &&
+        dependency.relationship === "uses section setting" &&
+        dependency.to.startsWith("setting:section.")
+      )
+      .map((dependency) => dependency.to.replace("setting:section.", ""))
+      .filter((settingId) => /sticky/i.test(settingId))
+  )];
+
+  const requests: PlannerChunkRequest[] = [];
+  let totalRequestedCharacters = 0;
+
+  for (const settingId of candidateIds) {
+    if (requests.length >= MAX_ON_DEMAND_FILES) break;
+
+    let matched: { file: string; startOffset: number; endOffset: number } | null = null;
+
+    for (const [filePath, fullContent] of retrievalState.fullContents.entries()) {
+      const schemaMatch = /{%\s*schema\s*%}([\s\S]*?){%\s*endschema\s*%}/i.exec(fullContent);
+      if (!schemaMatch) continue;
+
+      const schemaBody = schemaMatch[1];
+      const objectRange = findJsonSettingObjectRange(schemaBody, settingId);
+      if (!objectRange) continue;
+
+      const bodyStart = schemaMatch.index + schemaMatch[0].indexOf(schemaBody);
+      matched = {
+        file: filePath,
+        startOffset: bodyStart + objectRange.startOffset,
+        endOffset: bodyStart + objectRange.endOffset,
+      };
+      break;
+    }
+
+    if (!matched) {
+      console.log("LIQUID SECTION SETTING DEFINITION RANGE NOT FOUND:", settingId);
+      continue;
+    }
+
+    const existingRanges = mergeRanges(
+      retrievalState.fileStates.get(matched.file)?.retrievedRanges ?? []
+    );
+    const alreadyComplete = existingRanges.some((existing) =>
+      existing.startOffset <= matched!.startOffset &&
+      existing.endOffset >= matched!.endOffset
+    );
+    if (alreadyComplete) {
+      console.log("LIQUID SECTION SETTING DEFINITION ALREADY INCLUDED:", {
+        settingId, file: matched.file,
+      });
+      continue;
+    }
+
+    const requestStart = findNextGap(
+      existingRanges,
+      matched.startOffset,
+      retrievalState.fullContents.get(matched.file)?.length ?? matched.endOffset
+    );
+    if (requestStart >= matched.endOffset) continue;
+
+    const requestedLength = Math.min(MAX_CHUNK_SIZE, matched.endOffset - requestStart);
+    if (requestedLength <= 0 || totalRequestedCharacters + requestedLength > MAX_ON_DEMAND_FILE_SIZE) break;
+
+    requests.push({
+      file: matched.file,
+      start_offset: requestStart,
+      max_chars: requestedLength,
+      must_retrieve: true,
+    });
+    totalRequestedCharacters += requestedLength;
+
+    console.log("TARGETED LIQUID SECTION SETTING DEFINITION RANGE:", {
+      settingId,
+      file: matched.file,
+      startOffset: requestStart,
+      endOffset: matched.endOffset,
+      requestedCharacters: requestedLength,
+      completeObjectRequested: requestStart + requestedLength >= matched.endOffset,
     });
   }
 
@@ -3402,7 +3540,9 @@ function buildBackendCoverageRequests(
   const selectedFiles = new Set(requestedFiles);
   const requestLimit = domains.length === 1 && domains[0] === "header"
     ? Math.min(maxRequests, 3)
-    : maxRequests;
+    : domains.length === 1 && domains[0] === "sticky-header"
+      ? Math.min(maxRequests, 2)
+      : maxRequests;
 
   // A narrow request must never fall through to arbitrary high-priority
   // files when every file in its requested domain is already complete.
@@ -3543,15 +3683,35 @@ function allocateChunkRequestBudgets(
       startOffset,
       sourceRemaining,
       capacity,
+      mustRetrieve: request.must_retrieve === true,
       allocated: 0,
     }];
   });
 
   let remaining = Math.floor(availableBudget);
 
+  // Exact setting-definition objects are small by design. Allocate these
+  // complete source ranges before applying the generic 1,200-character
+  // minimum used to avoid wasting budget on arbitrary planner fragments.
+  for (const item of prepared) {
+    if (!item.mustRetrieve) continue;
+    if (item.capacity > remaining) {
+      console.log("REQUIRED TARGETED SOURCE RANGE DOES NOT FIT REMAINING BUDGET:", {
+        file: item.request.file,
+        startOffset: item.startOffset,
+        requestedCharacters: item.capacity,
+        remainingBudget: remaining,
+      });
+      continue;
+    }
+    item.allocated = item.capacity;
+    remaining -= item.allocated;
+  }
+
   // Complete short files first (for example price-styles.liquid) rather
   // than leaving a tiny unusable tail allocation on the final large file.
   for (const item of prepared) {
+    if (item.mustRetrieve || item.allocated > 0) continue;
     const isCompleteSmallFile =
       item.sourceRemaining <= MAX_CHUNK_SIZE &&
       item.capacity === item.sourceRemaining;
@@ -3563,7 +3723,9 @@ function allocateChunkRequestBudgets(
     remaining -= item.allocated;
   }
 
-  const largeItems = prepared.filter((item) => item.allocated === 0);
+  const largeItems = prepared.filter(
+    (item) => item.allocated === 0 && !item.mustRetrieve
+  );
 
   if (largeItems.length > 0 && remaining > 0) {
     const fairShare = Math.floor(remaining / largeItems.length);
@@ -5156,6 +5318,87 @@ function supportsComparePriceFlagClaim(
   return sourceSegments.some((segment) => contiguousPattern.test(segment));
 }
 
+// JSON theme-setting definitions are structured records. Generic prose-token
+// matching incorrectly rejects valid claims because words such as "defined"
+// do not appear in the JSON object. Verify the exact parsed object instead:
+// its id and every scalar property/value described by the claim must match.
+// This is intentionally narrow and does not relax generic evidence matching.
+function supportsJsonSettingDefinitionClaim(
+  claim: string,
+  evidenceItems: string[]
+): boolean {
+  const normalizedClaim = claim.toLowerCase();
+
+  return evidenceItems.some((evidence) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(evidence.trim());
+    } catch {
+      return false;
+    }
+
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      return false;
+    }
+
+    const definition = parsed as Record<string, unknown>;
+    if (typeof definition.id !== "string" || !definition.id.trim()) {
+      return false;
+    }
+
+    // The claim must identify this exact setting, not merely another object
+    // with similar type/label values.
+    if (!normalizedClaim.includes(definition.id.toLowerCase())) {
+      return false;
+    }
+
+    // Require the `id` property as well as its exact identifier in the claim.
+    if (!/\bid\b/i.test(claim)) return false;
+
+    // If the claim names a known Shopify setting property, that property must
+    // exist in the cited object. This prevents an excerpt missing `default`
+    // (or another explicitly claimed field) from verifying that field.
+    const knownSettingProperties = [
+      "type", "label", "name", "default", "info", "options",
+      "visible_if", "placeholder", "unit", "min", "max", "step",
+      "accept", "content", "limit", "header", "group", "id",
+    ];
+    for (const property of knownSettingProperties) {
+      const propertyPattern = new RegExp(`\\b${property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+      if (propertyPattern.test(claim) && !Object.prototype.hasOwnProperty.call(definition, property)) {
+        return false;
+      }
+    }
+
+    for (const [key, value] of Object.entries(definition)) {
+      if (key === "id") continue;
+
+      // Do not claim verification of complex nested values from a loose
+      // paraphrase. Those can be supported later with a dedicated structure.
+      if (
+        value !== null &&
+        typeof value === "object"
+      ) {
+        return false;
+      }
+
+      const keyPattern = new RegExp(`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+      if (!keyPattern.test(claim)) return false;
+
+      const renderedValue = value === null ? "null" : String(value);
+      if (!normalizedClaim.includes(renderedValue.toLowerCase())) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
 // Product-card currency settings are simple truthy Liquid guards rather than
 // equality comparisons. Verify the exact setting-to-flag assignment pair.
 function supportsUseCurrencySettingAssignmentClaim(
@@ -5706,6 +5949,7 @@ async function verifyAnswerClaim(
           supportsNavigationBarBranchGuardClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsVolumePricingDetectionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsProductPageQuantityBreakBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsJsonSettingDefinitionClaim(claim.claim, evidenceItems) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments);
         const claimIsAtomic = isAtomicAnswerClaim(claim.claim) || verifiedAtomicPattern;
@@ -5748,6 +5992,7 @@ async function verifyAnswerClaim(
           supportsLiquidCaseBranchLabelClaim(claim.claim, evidenceItems) ||
           supportsDefaultLiquidCaseBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsJsonSettingDefinitionClaim(claim.claim, evidenceItems) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsProductPageQuantityBreakBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsModuleScriptLoadingClaim(claim.claim, evidenceItems) ||
@@ -6632,6 +6877,10 @@ export async function POST(request: NextRequest) {
 
     const isProductCardIntent =
       isProductCardArchitectureIntent(prompt);
+    const isStickyHeaderIntent =
+      isStickyHeaderArchitectureIntent(prompt);
+    const explicitlyAsksForHeaderNavigation =
+      /\b(menu|navigation|nav|drawer|mega[\s-]?menu)\b/i.test(prompt);
 
     // -------------------------------------
     // SELECT ARCHITECTURAL ROOT FILES
@@ -6715,7 +6964,7 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // Avoid unrelated header and filter files
+      // Avoid unrelated header and filter files for product-card analysis.
       if (
         isProductCardIntent &&
         (
@@ -6724,6 +6973,25 @@ export async function POST(request: NextRequest) {
         )
       ) {
         continue;
+      }
+
+      // Sticky-header analysis should not spend its initial context on mega-menu
+      // and drawer internals unless the user explicitly asks about navigation.
+      if (
+        isStickyHeaderIntent &&
+        !explicitlyAsksForHeaderNavigation &&
+        /(?:header-menu|header-drawer|mega-menu|overflow-list)/i.test(result.file)
+      ) {
+        continue;
+      }
+
+      if (isStickyHeaderIntent) {
+        const stickyRelevant =
+          result.file === "sections/header.liquid" ||
+          result.file === "assets/base.css" ||
+          /^assets\/[^/]*(?:header|sticky)[^/]*\.(?:css|js)$/i.test(result.file) ||
+          /^assets\/(?:global|theme)\.js$/i.test(result.file);
+        if (!stickyRelevant) continue;
       }
 
       initialFiles.push(result);
@@ -7508,8 +7776,17 @@ If no additional chunks are needed:
       relevantDependencies,
       retrievalState
     );
+    const liquidSectionSettingRequests = buildLiquidSchemaSettingDefinitionRequests(
+      prompt,
+      relevantDependencies,
+      retrievalState
+    );
+    const deterministicSettingRequests = [
+      ...settingDefinitionRequests,
+      ...liquidSectionSettingRequests,
+    ];
     const settingDefinitionFiles = new Set(
-      settingDefinitionRequests.map((request) => request.file)
+      deterministicSettingRequests.map((request) => request.file)
     );
 
     // Reserve unique-file slots for requested coverage areas and deterministic
@@ -7524,7 +7801,7 @@ If no additional chunks are needed:
       .slice(0, plannerRequestLimit);
 
     const plannedRequests = [
-      ...settingDefinitionRequests,
+      ...deterministicSettingRequests,
       ...plannerRequestedChunks,
     ];
     const plannedUniqueFiles = new Set(
@@ -7567,6 +7844,7 @@ If no additional chunks are needed:
       coverageDomains: availableCoverageDomains,
       rawPlannerRequestedChunks,
       settingDefinitionRequests,
+      liquidSectionSettingRequests,
       plannerRequestedChunks,
       backendCoverageRequests,
       coverageCandidateRequests,
