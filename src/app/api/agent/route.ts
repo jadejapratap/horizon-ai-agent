@@ -9,6 +9,8 @@ import path from "path";
 // v22: verify default Liquid case branches from the operation's active branch,
 // require complete outer product-card evidence for product-page quantity breaks,
 // strip model-generated coverage headings, and expose traceability mismatch tokens.
+// v28: prioritize schema-definition source files, retrieve exact global-setting JSON objects,
+// suppress unrelated fallback chunks for narrow requests, and normalize generic "references" wording.
 
 const THEME_DIR = path.resolve(process.cwd(), "themes", "horizon");
 
@@ -2379,7 +2381,8 @@ function buildThemeContext(
   files: ThemeFile[],
   dependencies: Dependency[],
   contextBudget = INITIAL_CONTEXT_BUDGET,
-  mandatoryFilePaths: string[] = []
+  mandatoryFilePaths: string[] = [],
+  prompt = ""
 ): ThemeContextResult {
   let context = "";
 
@@ -2436,29 +2439,26 @@ function buildThemeContext(
       (outgoingDependencies.get(dep.from) ?? 0) + 1
     );
 
-    if (
-      !(
-        dep.to.startsWith("snippets/") ||
-        dep.to.startsWith("blocks/") ||
-        dep.to.startsWith("sections/") ||
-        dep.to.startsWith("config/")
-      )
-    ) {
-      continue;
+    const dependencyTargetIsFile =
+      dep.to.startsWith("snippets/") ||
+      dep.to.startsWith("blocks/") ||
+      dep.to.startsWith("sections/") ||
+      dep.to.startsWith("config/");
+
+    if (dependencyTargetIsFile) {
+      fileRelevance.set(
+        dep.to,
+        Math.max(
+          fileRelevance.get(dep.to) ?? 0,
+          dep.relevanceScore
+        )
+      );
+
+      incomingDependencies.set(
+        dep.to,
+        (incomingDependencies.get(dep.to) ?? 0) + 1
+      );
     }
-
-    fileRelevance.set(
-      dep.to,
-      Math.max(
-        fileRelevance.get(dep.to) ?? 0,
-        dep.relevanceScore
-      )
-    );
-
-    incomingDependencies.set(
-      dep.to,
-      (incomingDependencies.get(dep.to) ?? 0) + 1
-    );
 
     // --------------------------------------------------
     // RELATIONSHIP PRIORITY
@@ -2487,16 +2487,30 @@ function buildThemeContext(
     } else if (
       dep.relationship === "defines setting"
     ) {
-      rolePriority = 30;
+      rolePriority = isSettingsSchemaIntent(prompt) ? 420 : 30;
     }
 
-    fileRolePriority.set(
-      dep.to,
-      Math.max(
-        fileRolePriority.get(dep.to) ?? 0,
-        rolePriority
-      )
-    );
+    // A "defines setting" edge points from the schema file to a synthetic
+    // setting identifier. The actual source file receiving definition
+    // priority is therefore dependency.from, not dependency.to.
+    const rolePriorityPath = dep.relationship === "defines setting"
+      ? dep.from
+      : dep.to;
+    const rolePriorityPathIsFile =
+      rolePriorityPath.startsWith("snippets/") ||
+      rolePriorityPath.startsWith("blocks/") ||
+      rolePriorityPath.startsWith("sections/") ||
+      rolePriorityPath.startsWith("config/");
+
+    if (rolePriorityPathIsFile) {
+      fileRolePriority.set(
+        rolePriorityPath,
+        Math.max(
+          fileRolePriority.get(rolePriorityPath) ?? 0,
+          rolePriority
+        )
+      );
+    }
   }
 
   // --------------------------------------------------
@@ -3114,7 +3128,11 @@ type PlannerManifestFile = {
   isComplete: boolean;
 };
 
-type CoverageDomain = "header" | "pricing";
+type CoverageDomain = "header" | "pricing" | "settings";
+
+function isSettingsSchemaIntent(prompt: string): boolean {
+  return /\b(setting|settings|schema|configuration|config|default value|definition|defined)\b/i.test(prompt);
+}
 
 function detectCoverageDomains(prompt: string): CoverageDomain[] {
   const lower = prompt.toLowerCase();
@@ -3128,6 +3146,10 @@ function detectCoverageDomains(prompt: string): CoverageDomain[] {
     domains.push("pricing");
   }
 
+  if (isSettingsSchemaIntent(prompt)) {
+    domains.push("settings");
+  }
+
   return domains;
 }
 
@@ -3136,6 +3158,10 @@ function getCoverageFilePriority(
   domain: CoverageDomain
 ): number {
   const file = normalizePath(filePath).toLowerCase();
+
+  if (domain === "settings") {
+    return file === "config/settings_schema.json" ? 2200 : 0;
+  }
 
   if (domain === "header") {
     const exact: Record<string, number> = {
@@ -3186,6 +3212,171 @@ function getAvailableCoverageDomains(
 }
 
 // --------------------------------------------------
+// TARGETED GLOBAL SETTING DEFINITION RANGES
+// --------------------------------------------------
+
+type SourceObjectRange = {
+  startOffset: number;
+  endOffset: number;
+};
+
+function findJsonSettingObjectRange(
+  source: string,
+  settingId: string
+): SourceObjectRange | null {
+  const escapedId = settingId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const idPattern = new RegExp(`\"id\"\\s*:\\s*\"${escapedId}\"`, "g");
+  let match: RegExpExecArray | null;
+
+  while ((match = idPattern.exec(source)) !== null) {
+    // Try the nearest opening brace first. If a brace inside a JSON string
+    // happens to be closer, JSON parsing rejects it and the previous brace
+    // is tested instead.
+    let candidateStart = source.lastIndexOf("{", match.index);
+
+    while (candidateStart >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      let endOffset = -1;
+
+      for (let i = candidateStart; i < source.length; i++) {
+        const char = source[i];
+
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === '"') {
+            inString = false;
+          }
+          continue;
+        }
+
+        if (char === '"') {
+          inString = true;
+          continue;
+        }
+
+        if (char === "{") depth++;
+        if (char === "}") {
+          depth--;
+          if (depth === 0) {
+            endOffset = i + 1;
+            break;
+          }
+        }
+      }
+
+      if (endOffset > candidateStart) {
+        try {
+          const parsed = JSON.parse(source.slice(candidateStart, endOffset));
+          if (
+            parsed &&
+            typeof parsed === "object" &&
+            !Array.isArray(parsed) &&
+            (parsed as Record<string, unknown>).id === settingId
+          ) {
+            return { startOffset: candidateStart, endOffset };
+          }
+        } catch {
+          // Continue to the previous opening brace if this was not an object.
+        }
+      }
+
+      candidateStart = source.lastIndexOf("{", candidateStart - 1);
+    }
+  }
+
+  return null;
+}
+
+function buildSettingDefinitionChunkRequests(
+  prompt: string,
+  dependencies: VerifiedDependency[],
+  retrievalState: SharedRetrievalState
+): PlannerChunkRequest[] {
+  if (!isSettingsSchemaIntent(prompt)) return [];
+
+  const schemaPath = "config/settings_schema.json";
+  const schemaContent = retrievalState.fullContents.get(schemaPath);
+  if (!schemaContent) {
+    console.log("SETTING SCHEMA CONTENT UNAVAILABLE FOR TARGETED RETRIEVAL");
+    return [];
+  }
+
+  const settingIds = [...new Set(
+    dependencies
+      .filter((dependency) =>
+        dependency.verified &&
+        dependency.relationship === "uses global setting" &&
+        dependency.to.startsWith("setting:global.")
+      )
+      .map((dependency) => dependency.to.replace("setting:global.", ""))
+      .filter(Boolean)
+  )];
+
+  const requests: PlannerChunkRequest[] = [];
+  let totalRequestedCharacters = 0;
+
+  for (const settingId of settingIds) {
+    if (requests.length >= MAX_ON_DEMAND_FILES) break;
+
+    const range = findJsonSettingObjectRange(schemaContent, settingId);
+    if (!range) {
+      console.log("SETTING DEFINITION RANGE NOT FOUND:", settingId);
+      continue;
+    }
+
+    const objectLength = range.endOffset - range.startOffset;
+    const existingRanges = mergeRanges(
+      retrievalState.fileStates.get(schemaPath)?.retrievedRanges ?? []
+    );
+    const alreadyComplete = existingRanges.some((existing) =>
+      existing.startOffset <= range.startOffset &&
+      existing.endOffset >= range.endOffset
+    );
+
+    if (alreadyComplete) {
+      console.log("SETTING DEFINITION ALREADY INCLUDED IN GEMINI CONTEXT:", settingId);
+      continue;
+    }
+
+    const requestStart = findNextGap(
+      existingRanges,
+      range.startOffset,
+      schemaContent.length
+    );
+    if (requestStart >= range.endOffset) continue;
+
+    const remainingObjectLength = range.endOffset - requestStart;
+    const requestedLength = Math.min(MAX_CHUNK_SIZE, remainingObjectLength);
+
+    if (requestedLength <= 0) continue;
+    if (totalRequestedCharacters + requestedLength > MAX_ON_DEMAND_FILE_SIZE) break;
+
+    requests.push({
+      file: schemaPath,
+      start_offset: requestStart,
+      max_chars: requestedLength,
+    });
+    totalRequestedCharacters += requestedLength;
+
+    console.log("TARGETED SETTING DEFINITION RANGE:", {
+      settingId,
+      file: schemaPath,
+      startOffset: requestStart,
+      endOffset: range.endOffset,
+      requestedCharacters: requestedLength,
+      completeObjectRequested: remainingObjectLength <= MAX_CHUNK_SIZE,
+    });
+  }
+
+  return requests;
+}
+
+// --------------------------------------------------
 // DETERMINISTIC, DOMAIN-AWARE BACKEND COVERAGE CHECK
 // --------------------------------------------------
 
@@ -3199,7 +3390,8 @@ function buildBackendCoverageRequests(
     plannerRequests.map((request) => request.file)
   );
 
-  const domains = detectCoverageDomains(prompt).filter((domain) =>
+  const requestedDomains = detectCoverageDomains(prompt);
+  const domains = requestedDomains.filter((domain) =>
     manifestFiles.some((file) =>
       file.hasMore &&
       file.totalLength > 0 &&
@@ -3211,6 +3403,15 @@ function buildBackendCoverageRequests(
   const requestLimit = domains.length === 1 && domains[0] === "header"
     ? Math.min(maxRequests, 3)
     : maxRequests;
+
+  // A narrow request must never fall through to arbitrary high-priority
+  // files when every file in its requested domain is already complete.
+  // Planner-selected cross-file ranges are retained by the caller; this
+  // backend fallback only supplements them with domain-relevant sources.
+  if (requestedDomains.length > 0 && domains.length === 0) {
+    console.log("NO INCOMPLETE FILES IN REQUESTED COVERAGE DOMAINS — SKIPPING GENERIC FALLBACK:", requestedDomains);
+    return [];
+  }
 
   const makeDomainCandidates = (domain: CoverageDomain) =>
     manifestFiles
@@ -3761,6 +3962,7 @@ const CLAIM_EVIDENCE_STOPWORDS = new Set([
   "assign", "assigns", "assigned", "assigning", "render", "renders",
   "rendered", "rendering", "include", "includes", "included", "including",
   "import", "imports", "imported", "importing", "directly", "conditionally",
+  "reference", "references", "referenced", "referencing",
 
   // Generic source / theme terminology and non-distinctive nouns.
   // These words frequently appear in natural-language descriptions but do
@@ -6855,7 +7057,8 @@ export async function POST(request: NextRequest) {
       relevantFiles,
       relevantDependencies,
       INITIAL_CONTEXT_BUDGET,
-      rootFilePriorities
+      rootFilePriorities,
+      prompt
     );
 
 
@@ -7081,14 +7284,24 @@ Do not assume files in FILES ANALYZED BY BACKEND were sent to Gemini.
       "defines setting": 30,
     };
 
+    const settingsSchemaRequested = isSettingsSchemaIntent(prompt);
+
     for (const dependency of relevantDependencies) {
       if (!dependency.verified) continue;
 
-      const target = normalizePath(dependency.to);
+      // Rendering dependencies point to their target file. A setting
+      // definition instead points from config/settings_schema.json to a
+      // synthetic setting:global.* node, so preload the source file.
+      const target = normalizePath(
+        dependency.relationship === "defines setting"
+          ? dependency.from
+          : dependency.to
+      );
       const isThemeDependency =
         target.startsWith("snippets/") ||
         target.startsWith("blocks/") ||
-        target.startsWith("sections/");
+        target.startsWith("sections/") ||
+        (dependency.relationship === "defines setting" && target.startsWith("config/"));
 
       if (
         !isThemeDependency ||
@@ -7098,13 +7311,32 @@ Do not assume files in FILES ANALYZED BY BACKEND were sent to Gemini.
         continue;
       }
 
+      const settingsIntentBoost =
+        settingsSchemaRequested &&
+        dependency.relationship === "defines setting" &&
+        target === "config/settings_schema.json"
+          ? 1200
+          : 0;
+
       const priority =
         dependency.relevanceScore * 1.5 +
-        (relationshipPriority[dependency.relationship] ?? 0);
+        (relationshipPriority[dependency.relationship] ?? 0) +
+        settingsIntentBoost;
 
       dependencyPriorityByFile.set(
         target,
         Math.max(dependencyPriorityByFile.get(target) ?? 0, priority)
+      );
+    }
+
+    // Apply priorities even when a dependency source file is already loaded.
+    // Previously only newly-preloaded dependency targets received this map,
+    // which meant config/settings_schema.json remained low-priority precisely
+    // when its full content was already available in shared retrieval state.
+    for (const [file, priority] of dependencyPriorityByFile) {
+      plannerFilePriorities.set(
+        file,
+        Math.max(plannerFilePriorities.get(file) ?? 0, priority)
       );
     }
 
@@ -7268,40 +7500,59 @@ If no additional chunks are needed:
       plannerManifest.files
     );
 
-    // Reserve one unique-file slot per requested architecture area so a
-    // broad prompt cannot spend all five slots on only Header or only Pricing.
+    // Settings definitions are source objects in config/settings_schema.json,
+    // not ordinary dependency.to files. Retrieve the exact objects referenced
+    // by included source files instead of asking the planner to guess offsets.
+    const settingDefinitionRequests = buildSettingDefinitionChunkRequests(
+      prompt,
+      relevantDependencies,
+      retrievalState
+    );
+    const settingDefinitionFiles = new Set(
+      settingDefinitionRequests.map((request) => request.file)
+    );
+
+    // Reserve unique-file slots for requested coverage areas and deterministic
+    // setting-definition ranges before accepting planner-generated files.
     const plannerRequestLimit = Math.max(
       0,
-      MAX_ON_DEMAND_FILES - availableCoverageDomains.length
+      MAX_ON_DEMAND_FILES - availableCoverageDomains.length - settingDefinitionFiles.size
     );
 
-    const plannerRequestedChunks = rawPlannerRequestedChunks.slice(
-      0,
-      plannerRequestLimit
-    );
+    const plannerRequestedChunks = rawPlannerRequestedChunks
+      .filter((request) => !settingDefinitionFiles.has(request.file))
+      .slice(0, plannerRequestLimit);
 
+    const plannedRequests = [
+      ...settingDefinitionRequests,
+      ...plannerRequestedChunks,
+    ];
+    const plannedUniqueFiles = new Set(
+      plannedRequests.map((request) => request.file)
+    );
     const remainingCoverageSlots = Math.max(
       0,
-      MAX_ON_DEMAND_FILES - plannerRequestedChunks.length
+      MAX_ON_DEMAND_FILES - plannedUniqueFiles.size
     );
 
     if (rawPlannerRequestedChunks.length > plannerRequestedChunks.length) {
-      console.log("PLANNER REQUESTS TRIMMED TO PRESERVE DOMAIN COVERAGE SLOTS:", {
+      console.log("PLANNER REQUESTS TRIMMED TO PRESERVE TARGETED / DOMAIN COVERAGE:", {
         rawPlannerRequested: rawPlannerRequestedChunks.length,
         acceptedPlannerRequests: plannerRequestedChunks.length,
         reservedCoverageDomains: availableCoverageDomains,
+        targetedSettingFiles: [...settingDefinitionFiles],
       });
     }
 
     const backendCoverageRequests = buildBackendCoverageRequests(
       plannerManifest.files,
-      plannerRequestedChunks,
+      plannedRequests,
       remainingCoverageSlots,
       prompt
     );
 
     const coverageCandidateRequests = [
-      ...plannerRequestedChunks,
+      ...plannedRequests,
       ...backendCoverageRequests,
     ];
 
@@ -7315,6 +7566,7 @@ If no additional chunks are needed:
     console.log({
       coverageDomains: availableCoverageDomains,
       rawPlannerRequestedChunks,
+      settingDefinitionRequests,
       plannerRequestedChunks,
       backendCoverageRequests,
       coverageCandidateRequests,
