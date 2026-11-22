@@ -23,7 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
-// v74: accepts under-condition scroll-container, call-disconnect-set-null, and as-argument wording with exact source checks.
+// v75: verifies falsy sticky early-return, skipped conditional listener work, post-block observer call, and exact listener order.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6925,6 +6925,15 @@ function supportsStickyBreakpointFlowClaim(
     /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
   const falsyStickyGuard =
     /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;\s*if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i;
+
+  if (
+    /when\s+stickyMode\s+is\s+falsy/i.test(claimText) &&
+    /#handleBreakpointChange\s+returns?\s+early/i.test(claimText) &&
+    !/\b(?:does\s+not|doesn't|never|not)\b/i.test(claimText)
+  ) {
+    return falsyStickyGuard.test(methodBody) &&
+      hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
+  }
   if (/reads?\s+(?:the\s+)?sticky\s+attribute/i.test(claimText) &&
       /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(claimText)) {
     return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
@@ -6981,6 +6990,26 @@ function supportsStickyBreakpointFlowClaim(
   const scrollContainerGuard = /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{/i;
   const completeScrollRebindBlock =
     /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*\}/i;
+
+  if (
+    /when\s+this\.#scrollContainer\s+is\s+(?:null(?:\s+or\s+falsy)?|falsy)/i.test(claimText) &&
+    /scroll[-\\s]+listener\s+rebind\s+operations\s+are\s+skipped/i.test(claimText) &&
+    !/\b(?:not|never|without)\b/i.test(claimText)
+  ) {
+    return completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
+
+  if (
+    /when\s+this\.#scrollContainer\s+is\s+truthy/i.test(claimText) &&
+    /first\s+removing\s+the\s+scroll\s+event\s+listener/i.test(claimText) &&
+    /then\s+getting\s+the\s+scroll\s+event\s+target/i.test(claimText) &&
+    /finally\s+adding\s+the\s+scroll\s+event\s+listener/i.test(claimText) &&
+    !/\b(?:not|never|without)\b/i.test(claimText)
+  ) {
+    return completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
   if (/scroll\s+listener\s+rebinding\s+operations\s+are\s+inside\s+an?\s+if\s*\(\s*this\.#scrollContainer\s*\)\s+block/i.test(claimText)) {
     return completeScrollRebindBlock.test(methodBody) && hasEvidence(scrollContainerGuard);
   }
@@ -7161,6 +7190,25 @@ function supportsStickyBreakpointFlowClaim(
 
   const observeStickyCall =
     /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+
+  if (
+    /the\s+exact\s+argument\s+passed\s+to\s+#observeStickyPosition\s+is\s+stickyMode\s*===\s*['"]always['"]/i.test(claimText)
+  ) {
+    return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
+  }
+
+  if (
+    /still\s+calls?\s+#observeStickyPosition/i.test(claimText) &&
+    !/\b(?:not|never|without)\b/i.test(claimText)
+  ) {
+    const scrollBlockMatch = completeScrollRebindBlock.exec(methodBody);
+    const observeCallMatch = observeStickyCall.exec(methodBody);
+    return !!scrollBlockMatch &&
+      !!observeCallMatch &&
+      observeCallMatch.index >= scrollBlockMatch.index + scrollBlockMatch[0].length &&
+      falsyStickyGuard.test(methodBody) &&
+      hasEvidence(observeStickyCall);
+  }
   if (/calls?\s+#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(claimText)) {
     return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
   }
