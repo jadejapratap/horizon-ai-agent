@@ -23,7 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
-// v77: recognizes guarded skipped-listener, evaluated observer-argument, and concise ordered-operation claim wording.
+// v78: recognizes if-guarded skipped-listener wording, verifies observer call outside that block, and the boolean equality-argument description.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6994,6 +6994,19 @@ function supportsStickyBreakpointFlowClaim(
   if (
     /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
     /this\.#scrollContainer\.removeEventListener\s+is\s+skipped/i.test(claimText) &&
+    /guarded\s+by\s+the\s+condition\s+if\s*\(\s*this\.#scrollContainer\s*\)/i.test(claimText) &&
+    !/\b(?:not|never|without|isn't|is\s+not)\b/i.test(claimText)
+  ) {
+    const guardedRemoveOperation =
+      /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+    return falsyStickyGuard.test(methodBody) &&
+      guardedRemoveOperation.test(methodBody) &&
+      hasEvidence(guardedRemoveOperation);
+  }
+
+  if (
+    /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
+    /this\.#scrollContainer\.removeEventListener\s+is\s+skipped/i.test(claimText) &&
     /conditional\s+block/i.test(claimText) &&
     !/\b(?:not|never|without|isn't|is\s+not)\b/i.test(claimText)
   ) {
@@ -7238,6 +7251,40 @@ function supportsStickyBreakpointFlowClaim(
 
   const observeStickyCall =
     /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+
+  if (
+    /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
+    /the\s+call\s+to\s+#observeStickyPosition\s+is\s+outside\s+the\s+scrollContainer\s+conditional\s+block/i.test(claimText) &&
+    !/\b(?:not|never|without|inside\s+the|within\s+the)\b/i.test(claimText)
+  ) {
+    const scrollBlockMatch = completeScrollRebindBlock.exec(methodBody);
+    const observeCallMatch = observeStickyCall.exec(methodBody);
+    const contiguousOutsideEvidence = evidenceItems.some((evidence) => {
+      const evidenceBlockMatch = completeScrollRebindBlock.exec(evidence);
+      const evidenceCallMatch = observeStickyCall.exec(evidence);
+      return !!evidenceBlockMatch &&
+        !!evidenceCallMatch &&
+        evidenceCallMatch.index >= evidenceBlockMatch.index + evidenceBlockMatch[0].length &&
+        evidenceMatchesSource(evidence, methodSource) &&
+        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment));
+    });
+    return falsyStickyGuard.test(methodBody) &&
+      !!scrollBlockMatch &&
+      !!observeCallMatch &&
+      observeCallMatch.index >= scrollBlockMatch.index + scrollBlockMatch[0].length &&
+      contiguousOutsideEvidence;
+  }
+
+  if (
+    /the\s+expression\s+passed\s+to\s+#observeStickyPosition\s+is\s+stickyMode\s*===\s*['"]always['"]/i.test(claimText) &&
+    /evaluates\s+to\s+a\s+boolean/i.test(claimText) &&
+    !/\b(?:not|never|without|instead\s+of)\b/i.test(claimText)
+  ) {
+    const exactBooleanExpressionCall =
+      /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+    return exactBooleanExpressionCall.test(methodBody) &&
+      hasEvidence(exactBooleanExpressionCall);
+  }
 
   if (
     /the\s+argument\s+passed\s+to\s+#observeStickyPosition\s+evaluates\s+whether\s+stickyMode\s+is\s+equal\s+to\s+['"]always['"]/i.test(claimText)
