@@ -7122,7 +7122,7 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   const stickyActiveBranch = openBranchBody(
     nonAlwaysBody,
     childIndent,
-    new RegExp("^" + escapeRegex(childIndent) + "\\}\\s*else\\s+if\\s*\\(\\s*this\\.dataset\\.stickyState\\s*===\\s*['"]active['"]\\s*\\)\\s*\\{", "m")
+    new RegExp("^" + escapeRegex(childIndent) + "\\\\}\\\\s*else\\\\s+if\\\\s*\\\\(\\\\s*this\\\\.dataset\\\\.stickyState\\\\s*===\\\\s*'active'\\\\s*\\\\)\\\\s*\\\\{", "m")
   );
   const stickyNotActiveBranch = openElseBranchBody(nonAlwaysBody, childIndent);
 
