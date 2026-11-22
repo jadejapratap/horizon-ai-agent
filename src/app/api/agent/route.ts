@@ -6867,7 +6867,12 @@ function supportsStickyConnectedCallbackSetupClaim(
 function supportsStickyBreakpointAttributeReadClaim(claim: string, evidenceItems: string[]): boolean {
   if (!/#handleBreakpointChange/i.test(claim) || !/sticky attribute/i.test(claim)) return false;
   return evidenceItems.some((evidence) =>
-    /#handleBreakpointCfunction supportsStickyBreakpointFlowClaim(
+    /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{/i.test(evidence) &&
+    /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(evidence)
+  );
+}
+
+function supportsStickyBreakpointFlowClaim(
   claim: string,
   evidenceItems: string[],
   sourceSegments: string[],
@@ -7117,13 +7122,6 @@ function supportsStickyBreakpointAttributeReadClaim(claim: string, evidenceItems
 
   if (
     /passes?\s+stickyMode\s*===\s*['"]always['"]\s+to\s+#observeStickyPosition/i.test(claimText)
-  ) {
-    return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
-  }
-
-  return false;
-}
-mText)
   ) {
     return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
   }
