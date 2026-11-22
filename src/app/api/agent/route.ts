@@ -6721,6 +6721,33 @@ function supportsStickyBreakpointObserverResetClaim(
   ) && provesReset(methodBody);
 }
 
+function supportsStickyBreakpointObserverNullAssignmentClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#intersectionObserver/i.test(claim) ||
+      !/\bnull\b/i.test(claim) ||
+      !/\b(?:set|sets|assign|assigns|reset|resets)\b/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleBreakpointChange");
+  if (!methodBody) return false;
+
+  const operation =
+    /this\.#intersectionObserver\s*=\s*null\s*;/i;
+
+  return operation.test(methodBody) &&
+    evidenceItems.some((evidence) =>
+      operation.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) =>
+        operation.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    );
+}
+
 function supportsStickyBreakpointObserverDisconnectClaim(
   claim: string,
   evidenceItems: string[],
@@ -7586,6 +7613,7 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverNullAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverDisconnectClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverRebindCallClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
@@ -7624,6 +7652,7 @@ async function verifyAnswerClaim(
           (/enable_sticky_header/i.test(claimTextLower) && /\b(?:schema|setting|select|options?)\b/.test(claimTextLower)) ||
           (/\.sticky-content\b/i.test(claimTextLower) && /\b(?:position|sticky|top|offset|z-index)\b/.test(claimTextLower)) ||
           (/#intersectionObserver/i.test(claimTextLower) && /\bdisconnect\b/.test(claimTextLower)) ||
+          (/#intersectionObserver/i.test(claimTextLower) && /\bnull\b/.test(claimTextLower) && /\b(?:set|assign|reset)/.test(claimTextLower)) ||
           (/#observeStickyPosition/i.test(claimTextLower) && /stickyMode\s*===\s*['"]always['"]/i.test(claimTextLower)) ||
           (/#observestickyposition/i.test(claimTextLower) && /\bintersectionobserver\b/.test(claimTextLower)) ||
           (/#updatescrollstate/i.test(claimTextLower) && /\b(?:sticky|state|scroll|direction|dataset)\b/.test(claimTextLower)) ||
@@ -7676,6 +7705,7 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverNullAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverDisconnectClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverRebindCallClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
