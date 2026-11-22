@@ -6645,7 +6645,7 @@ function supportsStickyObserverStateOrOffscreenBranchClaim(
   sourceSegments: string[]
 ): boolean {
   const text = claim.toLowerCase();
-  if (!/#observeStickyPosition/i.test(claim) ||
+  if (!(/observer callback/.test(text) || /#observeStickyPosition/i.test(claim)) ||
       !/alwayssticky/.test(text) ||
       !/sticky state/.test(text) ||
       !/offscreen state/.test(text)) return false;
