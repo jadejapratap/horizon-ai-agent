@@ -12,6 +12,7 @@
 // v60: routes stickyMode truthy-return assertions through complete-method control-flow evidence.
 // v61: routes IntersectionObserver ordering assertions through exact reset-sequence verification.
 // v62: rejects unsupported positive data-sticky reads and verifies disconnect-before-null negative-order claims.
+// v63: blocks every unsupported positive data-sticky assertion, regardless of claim verb phrasing.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -8509,7 +8510,6 @@ async function verifyAnswerClaim(
 
         const assertsPositiveDataStickyRead =
           /data-sticky/i.test(claimTextLower) &&
-          /\b(?:read|reads|reading|getattribute)\b/i.test(claimTextLower) &&
           !/\b(?:does\s+not|doesn't|never|not)\b/i.test(claimTextLower);
         const methodDataStickyRead =
           /this\.getAttribute\s*\(\s*['"]data-sticky['"]\s*\)/i;
