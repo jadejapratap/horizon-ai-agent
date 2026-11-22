@@ -6,6 +6,11 @@
 // v54: validates C10's method-closing evidence against the complete source while separately proving terminal assignment placement.
 // v55: verifies #handleBreakpointChange guard, scroll-listener rebinding, and IntersectionObserver reset from exact method evidence.
 // v56: anchors sticky attribute evidence to the method signature and enforces the claimed observer reset order.
+// v57: verifies exact positive/negative breakpoint assertions, requiring complete-method evidence for absence claims.
+// v58: prevents generic token-overlap from verifying unsupported data-sticky attribute-read claims.
+// v59: routes all scroll-container order assertions through the exact breakpoint flow verifier.
+// v60: routes stickyMode truthy-return assertions through complete-method control-flow evidence.
+// v61: routes IntersectionObserver ordering assertions through exact reset-sequence verification.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6845,24 +6850,52 @@ function supportsStickyBreakpointFlowClaim(
       sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
     );
 
+  const hasCompleteMethodEvidence = (): boolean => {
+    const signature = /#handleBreakpointChange\s*=\s*\(\s*\)\s*=>\s*\{/i.exec(actualSource);
+    if (!signature) return false;
+    const bodyStart = signature.index + signature[0].length;
+    const methodEnd = /\n[ \t]{2}\};[ \t]*\r?\n/.exec(actualSource.slice(bodyStart));
+    if (!methodEnd) return false;
+
+    const fullMethod = actualSource.slice(
+      signature.index,
+      bodyStart + methodEnd.index + methodEnd[0].length
+    );
+    const normalizeSourceText = (value: string): string =>
+      value.replace(/\s+/g, " ").trim();
+    const expected = normalizeSourceText(fullMethod);
+
+    return evidenceItems.some((evidence) =>
+      normalizeSourceText(evidence) === expected &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+  };
+
   const stickyAttributeRead =
     /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
-  const stickyAttributeReadWithMethod =
-    /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{\s*const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
-  if (/reads?\s+(?:the\s+)?sticky\s+attribute/i.test(claimText) &&
-      /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(claimText)) {
-    return stickyAttributeRead.test(methodBody) &&
-      evidenceItems.some((evidence) =>
-        stickyAttributeReadWithMethod.test(evidence) &&
-        evidenceMatchesSource(evidence, actualSource) &&
-        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
-      );
-  }
-
   const falsyStickyGuard =
     /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;\s*if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i;
+  if (/reads?\s+(?:the\s+)?sticky\s+attribute/i.test(claimText) &&
+      /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(claimText)) {
+    return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
+  }
+
+  if (/does\s+not\s+read[\s\S]*getAttribute\s*\(\s*['"]data-sticky['"]\s*\)/i.test(claimText)) {
+    const dataStickyRead = /this\.getAttribute\s*\(\s*['"]data-sticky['"]\s*\)/i;
+    return !dataStickyRead.test(methodBody) && hasCompleteMethodEvidence();
+  }
+
+  if (/does\s+not\s+return\s+when\s+stickyMode\s+is\s+truthy/i.test(claimText)) {
+    const returnStatements = methodBody.match(/\breturn\b/gi) ?? [];
+    return falsyStickyGuard.test(methodBody) &&
+      returnStatements.length === 1 &&
+      hasCompleteMethodEvidence();
+  }
+
   if (/returns?\s+immediately\s+when\s+stickyMode\s+is\s+falsy/i.test(claimText)) {
-    return falsyStickyGuard.test(methodBody) && hasEvidence(falsyStickyGuard);
+    return falsyStickyGuard.test(methodBody) &&
+      hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
   }
 
   const scrollContainerGuard = /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{/i;
@@ -6874,6 +6907,10 @@ function supportsStickyBreakpointFlowClaim(
 
   const removeBeforeReplace =
     /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;/i;
+  if (/does\s+not\s+replace\s+this\.#scrollContainer\s+before\s+removing\s+the\s+existing\s+scroll\s+listener/i.test(claimText)) {
+    return removeBeforeReplace.test(methodBody) && hasEvidence(removeBeforeReplace);
+  }
+
   if (/removes?\s+the\s+existing\s+scroll\s+listener\s+before\s+replacing\s+this\.#scrollContainer/i.test(claimText)) {
     return removeBeforeReplace.test(methodBody) && hasEvidence(removeBeforeReplace);
   }
@@ -6886,17 +6923,28 @@ function supportsStickyBreakpointFlowClaim(
 
   const addAfterReplacement =
     /this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
-  if (/after\s+reassignment,\s*the\s+method\s+adds?\s+a\s+scroll\s+listener\s+to\s+this\.#scrollContainer\s+using\s+this\.#handleWindowScroll/i.test(claimText)) {
+  if (
+    /after\s+reassignment,\s*the\s+method\s+adds?\s+a\s+scroll\s+listener\s+to\s+this\.#scrollContainer\s+using\s+this\.#handleWindowScroll/i.test(claimText) ||
+    /adds?\s+(?:the\s+)?new\s+scroll\s+listener\s+after\s+replacing\s+this\.#scrollContainer/i.test(claimText)
+  ) {
+    return addAfterReplacement.test(methodBody) && hasEvidence(addAfterReplacement);
+  }
+
+  if (/does\s+not\s+add\s+(?:the\s+)?new\s+scroll\s+listener\s+before\s+replacing\s+this\.#scrollContainer/i.test(claimText)) {
     return addAfterReplacement.test(methodBody) && hasEvidence(addAfterReplacement);
   }
 
   const observerReset =
     /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;\s*this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+  if (/does\s+not\s+reset\s+the\s+intersectionobserver\s+by\s+assigning\s+null\s+before\s+disconnecting/i.test(claimText)) {
+    return observerReset.test(methodBody) && hasEvidence(observerReset);
+  }
+
   if (/resets?\s+the\s+intersectionobserver/i.test(claimText) &&
       /disconnect(?:ing)?/i.test(claimText) &&
       /\bnull\b/i.test(claimText) &&
-      /reinitializ|recreat/i.test(claimText) &&
-      /disconnect(?:ing)?[\s\S]*assign(?:ing)?\s+null[\s\S]*(?:reinitializ|recreat)/i.test(claimText)) {
+      /reinitializ|recreat|then\s+(?:call(?:ing)?\s+)?#observestickyposition/i.test(claimText) &&
+      /disconnect(?:ing)?[\s\S]*assign(?:ing)?\s+null[\s\S]*(?:(?:reinitializ|recreat)|then\s+(?:call(?:ing)?\s+)?#observestickyposition)/i.test(claimText)) {
     return observerReset.test(methodBody) && hasEvidence(observerReset);
   }
 
@@ -8410,6 +8458,19 @@ async function verifyAnswerClaim(
           );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
+          (/data-sticky/i.test(claimTextLower) &&
+            /\b(?:read|reads|reading|getAttribute)\b/i.test(claimTextLower)) ||
+          (/intersectionobserver/i.test(claimTextLower) &&
+            /\b(?:before|after|prior to|following|then)\b/i.test(claimTextLower) &&
+            /\b(?:disconnect|disconnecting|null|assign|assigning|reset|resets|reinitialize|reinitializing|call|calling)\b/i.test(claimTextLower)) ||
+          (/stickymode/i.test(claimTextLower) &&
+            /\breturn\w*\b/i.test(claimTextLower) &&
+            /\btruthy\b/i.test(claimTextLower)) ||
+          (/#scrollcontainer/i.test(claimTextLower) &&
+            /\b(?:before|after|prior to|following)\b/i.test(claimTextLower) &&
+            /\b(?:scroll\s+listener|listener|remove|replace|reassign|add)\b/i.test(claimTextLower)) ||
+          ((/handlebreakpointchange|stickymode|#scrollcontainer|#intersectionobserver|data-sticky/i.test(claimTextLower)) &&
+            /\b(?:does\s+not|doesn't|never)\b/i.test(claimTextLower)) ||
           (/\bdrawer_menu\b/.test(claimTextLower) && /\bmobile\b/.test(claimTextLower)) ||
           /\bvolume\s+pricing\b/.test(claimTextLower) ||
           /\bhas_volume_pricing\b/.test(claimTextLower) ||
