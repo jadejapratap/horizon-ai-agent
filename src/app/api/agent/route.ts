@@ -1,6 +1,7 @@
 // v37: adds iterative explicit-only chunk-budget utilization and strict #updateScrollState evidence verification; preserves v36 scope isolation.
 // v50: verifies product-page quantity-break branch scope from contiguous source context and authorizes explicit verified caller-to-target render claims without requiring the caller path in the sentence.
 // v51: verifies ten #updateScrollState order and nested-branch claims against exact contiguous method evidence.
+// v52: accepts the exact always-branch assignment excerpt and the source's intervening explanatory comment.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -7166,7 +7167,8 @@ function supportsStickyUpdateScrollFlowClaim(
   const alwaysAssignmentBeforeReturn =
     /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{[\s\S]*?this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;/i;
   const nonAlwaysUpAtTop =
-    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{[\s\S]*?this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;\s*\}\s*if\s*\(\s*isScrollingUp\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{\s*this\.#offscreen\s*=\s*false\s*;\s*this\.dataset\.stickyState\s*=\s*['"]inactive['"]\s*;\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;/i;
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{[\s\S]*?this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;\s*\}\s*if\s*\(\s*isScrollingUp\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{\s*(?:\/\/[^\r\n]*\r?\n\s*)*this\.#offscreen\s*=\s*false\s*;\s*this\.dataset\.stickyState\s*=\s*['"]inactive['"]\s*;\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;/i;
+
   const nonScrollingUpBranches =
     /if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?\}\s*else\s+if\s*\(\s*this\.dataset\.stickyState\s*===\s*['"]active['"]\s*\)\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}\s*else\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}/i;
 
@@ -7215,8 +7217,10 @@ function supportsStickyUpdateScrollFlowClaim(
   if (
     /always\s+branch\s+assigns\s+scrollTop\s+to\s+this\.#lastScrollTop\s+before\s+returning/i.test(claimText)
   ) {
+    const alwaysAssignmentEvidence =
+      /this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;/i;
     return alwaysAssignmentBeforeReturn.test(methodBody) &&
-      hasEvidence(alwaysAssignmentBeforeReturn);
+      hasEvidence(alwaysAssignmentEvidence);
   }
 
   if (
@@ -7226,7 +7230,7 @@ function supportsStickyUpdateScrollFlowClaim(
     /scrollDirection\s+becomes\s+['"]none['"]/i.test(claimText)
   ) {
     const evidencePattern =
-      /if\s*\(\s*isScrollingUp\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{\s*this\.#offscreen\s*=\s*false\s*;\s*this\.dataset\.stickyState\s*=\s*['"]inactive['"]\s*;\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;/i;
+      /if\s*\(\s*isScrollingUp\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{\s*(?:\/\/[^\r\n]*\r?\n\s*)*this\.#offscreen\s*=\s*false\s*;\s*this\.dataset\.stickyState\s*=\s*['"]inactive['"]\s*;\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;/i;
     return nonAlwaysUpAtTop.test(methodBody) &&
       hasEvidence(evidencePattern);
   }
