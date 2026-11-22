@@ -8,6 +8,7 @@
 // v56: anchors sticky attribute evidence to the method signature and enforces the claimed observer reset order.
 // v57: verifies exact positive/negative breakpoint assertions, requiring complete-method evidence for absence claims.
 // v58: prevents generic token-overlap from verifying unsupported data-sticky attribute-read claims.
+// v59: routes all scroll-container order assertions through the exact breakpoint flow verifier.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -8457,6 +8458,9 @@ async function verifyAnswerClaim(
         const requiresSpecializedEvidence =
           (/data-sticky/i.test(claimTextLower) &&
             /\b(?:read|reads|reading|getAttribute)\b/i.test(claimTextLower)) ||
+          (/#scrollcontainer/i.test(claimTextLower) &&
+            /\b(?:before|after|prior to|following)\b/i.test(claimTextLower) &&
+            /\b(?:scroll\s+listener|listener|remove|replace|reassign|add)\b/i.test(claimTextLower)) ||
           ((/handlebreakpointchange|stickymode|#scrollcontainer|#intersectionobserver|data-sticky/i.test(claimTextLower)) &&
             /\b(?:does\s+not|doesn't|never)\b/i.test(claimTextLower)) ||
           (/\bdrawer_menu\b/.test(claimTextLower) && /\bmobile\b/.test(claimTextLower)) ||
