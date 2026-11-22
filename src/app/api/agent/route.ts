@@ -23,7 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
-// v79: recognizes simple early-return, if-guard shorthand, concise outside-block call, and getScrollEventTarget operation-order wording.
+// v80: recognizes wrapped-inside-if-guard skipped-listener wording only with the complete contiguous guarded rebind block.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6999,6 +6999,17 @@ function supportsStickyBreakpointFlowClaim(
   const scrollContainerGuard = /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{/i;
   const completeScrollRebindBlock =
     /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*\}/i;
+
+  if (
+    /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
+    /removeEventListener\s+is\s+skipped/i.test(claimText) &&
+    /wrapped\s+inside\s+the[\s\S]{0,24}if\s*\(\s*this\.#scrollContainer\s*\)[\s\S]{0,12}guard/i.test(claimText) &&
+    !/\b(?:not|never|without|isn't|is\s+not)\b/i.test(claimText)
+  ) {
+    return falsyStickyGuard.test(methodBody) &&
+      completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
 
   if (
     /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
