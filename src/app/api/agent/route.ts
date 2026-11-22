@@ -4,6 +4,7 @@
 // v52: accepts the exact always-branch assignment excerpt and the source's intervening explanatory comment.
 // v53: matches branch-local scrollDirection evidence and terminal method-closure evidence for #updateScrollState.
 // v54: validates C10's method-closing evidence against the complete source while separately proving terminal assignment placement.
+// v55: verifies #handleBreakpointChange guard, scroll-listener rebinding, and IntersectionObserver reset from exact method evidence.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6826,6 +6827,79 @@ function supportsStickyBreakpointAttributeReadClaim(claim: string, evidenceItems
   );
 }
 
+function supportsStickyBreakpointFlowClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const claimText = claim.toLowerCase();
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleBreakpointChange");
+  if (!methodBody) return false;
+
+  const hasEvidence = (pattern: RegExp): boolean =>
+    evidenceItems.some((evidence) =>
+      pattern.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+
+  const stickyAttributeRead =
+    /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
+  if (/reads?\s+(?:the\s+)?sticky\s+attribute/i.test(claimText) &&
+      /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(claimText)) {
+    return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
+  }
+
+  const falsyStickyGuard =
+    /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;\s*if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i;
+  if (/returns?\s+immediately\s+when\s+stickyMode\s+is\s+falsy/i.test(claimText)) {
+    return falsyStickyGuard.test(methodBody) && hasEvidence(falsyStickyGuard);
+  }
+
+  const scrollContainerGuard = /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{/i;
+  const completeScrollRebindBlock =
+    /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*\}/i;
+  if (/scroll\s+listener\s+rebinding\s+operations\s+are\s+inside\s+an?\s+if\s*\(\s*this\.#scrollContainer\s*\)\s+block/i.test(claimText)) {
+    return completeScrollRebindBlock.test(methodBody) && hasEvidence(scrollContainerGuard);
+  }
+
+  const removeBeforeReplace =
+    /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;/i;
+  if (/removes?\s+the\s+existing\s+scroll\s+listener\s+before\s+replacing\s+this\.#scrollContainer/i.test(claimText)) {
+    return removeBeforeReplace.test(methodBody) && hasEvidence(removeBeforeReplace);
+  }
+
+  const scrollContainerReplacement =
+    /this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;/i;
+  if (/replaces?\s+this\.#scrollContainer\s+with\s+the\s+result\s+of\s+getScrollEventTarget\s*\(\s*\)/i.test(claimText)) {
+    return scrollContainerReplacement.test(methodBody) && hasEvidence(scrollContainerReplacement);
+  }
+
+  const addAfterReplacement =
+    /this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+  if (/after\s+reassignment,\s*the\s+method\s+adds?\s+a\s+scroll\s+listener\s+to\s+this\.#scrollContainer\s+using\s+this\.#handleWindowScroll/i.test(claimText)) {
+    return addAfterReplacement.test(methodBody) && hasEvidence(addAfterReplacement);
+  }
+
+  const observerReset =
+    /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;\s*this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+  if (/resets?\s+the\s+intersectionobserver/i.test(claimText) &&
+      /disconnect(?:ing)?/i.test(claimText) &&
+      /\bnull\b/i.test(claimText) &&
+      /reinitializ|recreat/i.test(claimText)) {
+    return observerReset.test(methodBody) && hasEvidence(observerReset);
+  }
+
+  const observeStickyCall =
+    /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+  if (/calls?\s+#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(claimText)) {
+    return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
+  }
+
+  return false;
+}
+
 function supportsStickyBreakpointObserverResetClaim(
   claim: string,
   evidenceItems: string[],
@@ -8244,9 +8318,14 @@ async function verifyAnswerClaim(
           supportsStickyUpdateScrollFlowClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedStickyBreakpointFlow =
+          supportsStickyBreakpointFlowClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAtomicPattern =
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollFlow ||
+          verifiedStickyBreakpointFlow ||
           supportsStickyUpdateScrollEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
@@ -8285,6 +8364,7 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointFlowClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverNullAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverDisconnectClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverRebindCallClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
@@ -8312,6 +8392,7 @@ async function verifyAnswerClaim(
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
           !verifiedStickyUpdateScrollCoreOperation &&
           !verifiedStickyUpdateScrollFlow &&
+          !verifiedStickyBreakpointFlow &&
           claimAddsUnsupportedControlFlow(
             claim.claim,
             evidenceItems,
@@ -8357,6 +8438,7 @@ async function verifyAnswerClaim(
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollEarlyReturnFlow ||
           verifiedStickyUpdateScrollFlow ||
+          verifiedStickyBreakpointFlow ||
           genericTokenOverlap ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
@@ -8398,6 +8480,7 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointFlowClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverNullAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverDisconnectClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverRebindCallClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
