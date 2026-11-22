@@ -6721,6 +6721,57 @@ function supportsStickyBreakpointObserverResetClaim(
   ) && provesReset(methodBody);
 }
 
+function supportsStickyBreakpointObserverDisconnectClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#intersectionObserver/i.test(claim) || !/disconnect/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleBreakpointChange");
+  if (!methodBody) return false;
+
+  const operation =
+    /this\.#intersectionObserver\s*\?\.\s*disconnect\s*\(\s*\)\s*;/i;
+
+  return operation.test(methodBody) &&
+    evidenceItems.some((evidence) =>
+      operation.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) =>
+        operation.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    );
+}
+
+function supportsStickyBreakpointObserverRebindCallClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#observeStickyPosition/i.test(claim) ||
+      !/stickyMode\s*===\s*['"]always['"]/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleBreakpointChange");
+  if (!methodBody) return false;
+
+  const operation =
+    /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+
+  return operation.test(methodBody) &&
+    evidenceItems.some((evidence) =>
+      operation.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) =>
+        operation.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    );
+}
+
 function supportsStickyObserverStateOrOffscreenBranchClaim(
   claim: string,
   evidenceItems: string[],
@@ -7535,6 +7586,8 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverDisconnectClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyBreakpointObserverRebindCallClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserverStateOrOffscreenBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserverThemeColorClaim(claim.claim, evidenceItems, sourceSegments) ||
@@ -7570,6 +7623,8 @@ async function verifyAnswerClaim(
           (/\b[a-z0-9_-]+\.js\b/.test(claimTextLower) && /\bmodule\b/.test(claimTextLower) && /\bscript\b/.test(claimTextLower)) ||
           (/enable_sticky_header/i.test(claimTextLower) && /\b(?:schema|setting|select|options?)\b/.test(claimTextLower)) ||
           (/\.sticky-content\b/i.test(claimTextLower) && /\b(?:position|sticky|top|offset|z-index)\b/.test(claimTextLower)) ||
+          (/#intersectionObserver/i.test(claimTextLower) && /\bdisconnect\b/.test(claimTextLower)) ||
+          (/#observeStickyPosition/i.test(claimTextLower) && /stickyMode\s*===\s*['"]always['"]/i.test(claimTextLower)) ||
           (/#observestickyposition/i.test(claimTextLower) && /\bintersectionobserver\b/.test(claimTextLower)) ||
           (/#updatescrollstate/i.test(claimTextLower) && /\b(?:sticky|state|scroll|direction|dataset)\b/.test(claimTextLower)) ||
           (/\buse_currency\b/.test(claimTextLower) &&
@@ -7621,6 +7676,8 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverDisconnectClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyBreakpointObserverRebindCallClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserverStateOrOffscreenBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserverThemeColorClaim(claim.claim, evidenceItems, sourceSegments) ||
