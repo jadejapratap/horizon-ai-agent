@@ -27,7 +27,10 @@ export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
-  const [hydrated, setHydrated] = useState(false);\n  const [testSecret, setTestSecret] = useState("");\n  const [testRunning, setTestRunning] = useState(false);\n  const [testStatus, setTestStatus] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+  const [testSecret, setTestSecret] = useState("");
+  const [testRunning, setTestRunning] = useState(false);
+  const [testStatus, setTestStatus] = useState("");
 
   // Load chat history
   useEffect(() => {
