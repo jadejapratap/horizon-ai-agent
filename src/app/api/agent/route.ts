@@ -7101,13 +7101,12 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   const alwaysBlock = readBlock(methodBody, alwaysMatch);
   if (!alwaysBlock) return false;
 
-  const outerElseMatch =
-    /^\s*else\s*\{/i.exec(methodBody.slice(alwaysBlock.end));
+  const outerElseMatch = /^\s*else\s*\{/i.exec(methodBody.slice(alwaysBlock.end));
   if (!outerElseMatch) return false;
-  const outerElseAbsoluteIndex = alwaysBlock.end + outerElseMatch.index;
+
   const nonAlwaysBlock = readBlock(methodBody, {
     ...outerElseMatch,
-    index: outerElseAbsoluteIndex,
+    index: alwaysBlock.end + outerElseMatch.index,
   } as RegExpExecArray);
   if (!nonAlwaysBlock) return false;
 
@@ -7117,13 +7116,11 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   const alwaysUpAndDown =
     /if\s*\(\s*isAtTop\s*\)\s*\{[\s\S]*?\}\s*else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;[\s\S]*?\}\s*else\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;/i.test(alwaysBlock.body);
 
-  const scrollingUpMatch =
-    /if\s*\(\s*isScrollingUp\s*\)\s*\{/i.exec(nonAlwaysBlock.body);
+  const scrollingUpMatch = /if\s*\(\s*isScrollingUp\s*\)\s*\{/i.exec(nonAlwaysBlock.body);
   const scrollingUpBlock = readBlock(nonAlwaysBlock.body, scrollingUpMatch);
   if (!scrollingUpBlock) return false;
 
-  const nonAlwaysTopMatch =
-    /if\s*\(\s*isAtTop\s*\)\s*\{/i.exec(scrollingUpBlock.body);
+  const nonAlwaysTopMatch = /if\s*\(\s*isAtTop\s*\)\s*\{/i.exec(scrollingUpBlock.body);
   const nonAlwaysTopBlock = readBlock(scrollingUpBlock.body, nonAlwaysTopMatch);
 
   const scrollingUpElseMatch =
@@ -7138,15 +7135,13 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   const afterScrollingUp = nonAlwaysBlock.body.slice(scrollingUpBlock.end);
   const activeElseIfMatch =
     /^\s*else\s+if\s*\(\s*this\.dataset\.stickyState\s*===\s*['"]active['"]\s*\)\s*\{/i.exec(afterScrollingUp);
-  const activeElseIfIndex = activeElseIfMatch
-    ? scrollingUpBlock.end + activeElseIfMatch.index
-    : -1;
   const activeElseIfBlock = activeElseIfMatch
     ? readBlock(nonAlwaysBlock.body, {
         ...activeElseIfMatch,
-        index: activeElseIfIndex,
+        index: scrollingUpBlock.end + activeElseIfMatch.index,
       } as RegExpExecArray)
     : null;
+
   const afterActiveElseIf = activeElseIfBlock
     ? nonAlwaysBlock.body.slice(activeElseIfBlock.end)
     : "";
@@ -7163,15 +7158,15 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
     /stickyMode\s*!==?\s*['"]always['"]/.test(claimText) ||
     /stickyMode\s+is\s+not\s+['"]always['"]/.test(claimText);
   const saysTrue = (name: string) =>
-    new RegExp("\\\\b" + name + "\\\\s+(?:is\\\\s+true|===\\\\s*true|==\\\\s*true)\\\\b", "i").test(claimText);
+    new RegExp("\\b" + name + "\\s+(?:is\\s+true|===\\s*true|==\\s*true)\\b", "i").test(claimText);
   const saysFalse = (name: string) =>
-    new RegExp("\\\\b" + name + "\\\\s+(?:is\\\\s+false|!==\\\\s*true|===\\\\s*false|==\\\\s*false)\\\\b", "i").test(claimText);
+    new RegExp("\\b" + name + "\\s+(?:is\\s+false|!==\\s*true|===\\s*false|==\\s*false)\\b", "i").test(claimText);
   const stickyStateIsActive =
-    /(?:this\\.)?dataset\\.stickyState\\s*===\\s*['"]active['"]/.test(claimText) ||
-    /stickyState\\s+is\\s+equal\\s+to\\s+['"]active['"]/.test(claimText);
+    /(?:this\.)?dataset\.stickyState\s*===\s*['"]active['"]/.test(claimText) ||
+    /stickyState\s+is\s+equal\s+to\s+['"]active['"]/.test(claimText);
   const stickyStateIsNotActive =
-    /(?:this\\.)?dataset\\.stickyState\\s*!==\\s*['"]active['"]/.test(claimText) ||
-    /stickyState\\s+is\\s+not\\s+equal\\s+to\\s+['"]active['"]/.test(claimText);
+    /(?:this\.)?dataset\.stickyState\s*!==\s*['"]active['"]/.test(claimText) ||
+    /stickyState\s+is\s+not\s+equal\s+to\s+['"]active['"]/.test(claimText);
 
   let branchIsVerified = false;
   if (saysAlways && value === "none" && saysTrue("isAtTop")) {
@@ -7185,20 +7180,21 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
       /else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;/i.test(alwaysBlock.body);
   } else if (
     saysAlways && value === "down" &&
-    ( /(?:not\s+scrolling\s+up)/i.test(claimText) || saysFalse("isScrollingUp") )
+    saysFalse("isAtTop") &&
+    saysFalse("isScrollingUp")
   ) {
     branchIsVerified = alwaysUpAndDown &&
       /else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?\}\s*else\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;/i.test(alwaysBlock.body);
   } else if (
     saysNotAlways && value === "none" &&
-    /\bisScrollingUp\s+is\s+true\b/.test(claimText) &&
-    /\bisAtTop\s+is\s+true\b/.test(claimText)
+    saysTrue("isScrollingUp") &&
+    saysTrue("isAtTop")
   ) {
     branchIsVerified = Boolean(nonAlwaysTopBlock && hasAssignment(nonAlwaysTopBlock.body));
   } else if (
     saysNotAlways && value === "up" &&
-    /\bisScrollingUp\s+is\s+true\b/.test(claimText) &&
-    /\bisAtTop\s+is\s+false\b/.test(claimText)
+    saysTrue("isScrollingUp") &&
+    saysFalse("isAtTop")
   ) {
     branchIsVerified = Boolean(scrollingUpElseBlock && hasAssignment(scrollingUpElseBlock.body));
   } else if (
@@ -7209,7 +7205,7 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
     branchIsVerified = Boolean(activeElseIfBlock && hasAssignment(activeElseIfBlock.body));
   } else if (
     saysNotAlways && value === "none" &&
-    /\bisScrollingUp\s+is\s+false\b/.test(claimText) &&
+    saysFalse("isScrollingUp") &&
     stickyStateIsNotActive
   ) {
     branchIsVerified = Boolean(finalElseBlock && hasAssignment(finalElseBlock.body));
@@ -8006,7 +8002,7 @@ async function verifyAnswerClaim(
           (/#observeStickyPosition/i.test(claimTextLower) && /stickyMode\s*===\s*['"]always['"]/i.test(claimTextLower)) ||
           (/#observestickyposition/i.test(claimTextLower) && /\bintersectionobserver\b/.test(claimTextLower)) ||
           (/#updatescrollstate/i.test(claimTextLower) && /\b(?:sticky|state|scroll|direction|dataset)\b/.test(claimTextLower)) ||
-          (/dataset\.scrolldirection/i.test(claimTextLower) && /stickyMode/i.test(claimTextLower) && /\b(?:always|none|up|down)\b/.test(claimTextLower)) ||
+          (/\b(?:scrollDirection|direction)\b[\s\S]{0,70}?\b(?:is\s+)?(?:assigned|set|changed\s+to)\s*['"]?(?:none|up|down)/i.test(claimTextLower) && /stickyMode/i.test(claimTextLower)) ||
           (/#scrollRafId/i.test(claimTextLower) && /(?:not\s+null|!==\s*null)/i.test(claimTextLower) && /return(?:s)?\s+(?:early|immediately)/i.test(claimTextLower)) ||
           (/\botherwise\b/i.test(claimTextLower) && /requestAnimationFrame/i.test(claimTextLower) && /#scrollRafId/i.test(claimTextLower)) ||
           (/#scrollRafId/i.test(claimTextLower) && /\bnull\b/.test(claimTextLower) && /callback/i.test(claimTextLower)) ||
