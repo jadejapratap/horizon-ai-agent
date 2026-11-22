@@ -17,6 +17,7 @@
 // v65: matches breakpoint-flow excerpts against the complete method range so signature-prefixed guard evidence is accepted.
 // v66: verifies natural-language breakpoint execution-flow summaries against exact guarded source sequences.
 // v67: supports the concise six-claim breakpoint execution-flow wording with exact source-order evidence.
+// v68: handles truthy/present and exact/non-exact order variants, Observer disconnect/null wording, and matching answer paraphrases.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -4859,6 +4860,26 @@ function isStickyOffscreenAssignmentStatementAligned(claim: string, statement: s
     /dataset\.stickystate/.test(claimText) && /dataset\.stickystate/.test(statementText);
 }
 
+function isStickyBreakpointFlowStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase().replace(/[`*_]/g, " ");
+  const statementText = statement.toLowerCase().replace(/[`*_]/g, " ");
+  const isBreakpointClaim = /#handlebreakpointchange/.test(claimText);
+  const missingStickyModeReturn = isBreakpointClaim &&
+    /returns?\s+immediately/.test(claimText) &&
+    /sticky\s+mode\s+is\s+missing/.test(claimText) &&
+    /returns?\s+immediately/.test(statementText) &&
+    /sticky\s+attribute\s+is\s+missing/.test(statementText);
+  const observerBooleanArgument = isBreakpointClaim &&
+    /passes?/.test(claimText) && /stickymode/.test(claimText) && /always/.test(claimText) &&
+    /#observestickyposition/.test(claimText) &&
+    /passes?/.test(statementText) && /stickymode/.test(statementText) && /always/.test(statementText) &&
+    /#observestickyposition/.test(statementText);
+  const observerDisconnectAndNull = isBreakpointClaim &&
+    /disconnects?\s+and\s+nulls?/.test(claimText) && /intersectionobserver/.test(claimText) &&
+    /resets?\s+the\s+intersectionobserver/.test(statementText) &&
+    /disconnect/.test(statementText) && /null/.test(statementText);
+  return missingStickyModeReturn || observerBooleanArgument || observerDisconnectAndNull;
+}
 function isStickyScrollRafStatementAligned(claim: string, statement: string): boolean {
   const claimHasRafScrollHandler =
     /(?:#handleWindowScroll|scroll\s+handling|scroll\s+handler)/i.test(claim) &&
@@ -6966,7 +6987,7 @@ function supportsStickyBreakpointFlowClaim(
   }
 
   if (
-    /rebinds?\s+the\s+scroll\s+event\s+listener\s+when\s+#scrollContainer\s+is\s+present/i.test(claimText)
+    /rebinds?\s+the\s+scroll\s+event\s+listener\s+when\s+(?:this\.)?#scrollContainer\s+is\s+(?:present|truthy)/i.test(claimText)
   ) {
     return completeScrollRebindBlock.test(methodBody) &&
       hasEvidence(completeScrollRebindBlock);
@@ -6979,7 +7000,7 @@ function supportsStickyBreakpointFlowClaim(
     /removes?\s+the\s+old\s+listener/i.test(claimText) &&
     /replaces?\s+the\s+scroll\s+container/i.test(claimText) &&
     /adds?\s+the\s+new\s+listener/i.test(claimText) &&
-    /in\s+that\s+exact\s+order/i.test(claimText)
+    /in\s+that\s+(?:exact\s+)?order/i.test(claimText)
   ) {
     const removePosition = claimText.search(/removes?\s+the\s+old\s+listener/i);
     const replacePosition = claimText.search(/replaces?\s+the\s+scroll\s+container/i);
@@ -7028,6 +7049,11 @@ function supportsStickyBreakpointFlowClaim(
     return disconnectBeforeNull.test(methodBody) && hasEvidence(disconnectBeforeNull);
   }
 
+  if (/disconnects?\s+and\s+nulls?\s+(?:the\s+)?intersectionobserver/i.test(claimText)) {
+    const disconnectThenNull =
+      /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
+    return disconnectThenNull.test(methodBody) && hasEvidence(disconnectThenNull);
+  }
   if (
     /resets?\s+the\s+intersectionobserver\s+by\s+calling\s+disconnect/i.test(claimText) &&
     /setting\s+the\s+property\s+to\s+null/i.test(claimText)
@@ -9204,6 +9230,10 @@ function enforceAnswerClaimReferences(
             claim.claim,
             statementText
           );
+          const stickyBreakpointFlowAlignment = isStickyBreakpointFlowStatementAligned(
+            claim.claim,
+            statementText
+          );
           const stickyHeaderSettingAlignment = isStickyHeaderSettingStatementAligned(
             claim.claim,
             statementText
@@ -9244,6 +9274,7 @@ function enforceAnswerClaimReferences(
             directTokenAlignment ||
             useCurrencyElseAlignment ||
             stickyScrollRafAlignment ||
+            stickyBreakpointFlowAlignment ||
             stickyHeaderSettingAlignment ||
             stickyCssDescriptionAlignment ||
             stickyObserverConstructionAlignment ||
