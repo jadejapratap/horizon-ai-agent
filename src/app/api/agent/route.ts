@@ -16,6 +16,7 @@
 // v64: requires complete-method evidence for every data-sticky absence claim; blocks alternate verifier bypasses.
 // v65: matches breakpoint-flow excerpts against the complete method range so signature-prefixed guard evidence is accepted.
 // v66: verifies natural-language breakpoint execution-flow summaries against exact guarded source sequences.
+// v67: supports the concise six-claim breakpoint execution-flow wording with exact source-order evidence.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6893,6 +6894,18 @@ function supportsStickyBreakpointFlowClaim(
     return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
   }
 
+  if (
+    /\breads?\s+the\s+sticky\s+attribute\s+from\s+the\s+element/i.test(claimText) &&
+    !/data-sticky/i.test(claimText)
+  ) {
+    return stickyAttributeRead.test(methodBody) &&
+      evidenceItems.some((evidence) =>
+        stickyAttributeRead.test(evidence) &&
+        evidenceMatchesSource(evidence, methodBody) &&
+        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+      );
+  }
+
   if (/#handleBreakpointChange/i.test(claimText) &&
       /\breads?\b/i.test(claimText) &&
       /\bsticky\s+(?:HTML\s+)?attribute\b/i.test(claimText) &&
@@ -6916,6 +6929,12 @@ function supportsStickyBreakpointFlowClaim(
     return falsyStickyGuard.test(methodBody) &&
       returnStatements.length === 1 &&
       hasCompleteMethodEvidence();
+  }
+
+  if (/returns?\s+immediately\s+if\s+(?:the\s+)?sticky\s+mode\s+is\s+missing/i.test(claimText)) {
+    return stickyAttributeRead.test(methodBody) &&
+      falsyStickyGuard.test(methodBody) &&
+      hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
   }
 
   if (/returns?\s+immediately\s+(?:when|if)\s+stickyMode\s+is\s+falsy/i.test(claimText)) {
@@ -6944,6 +6963,32 @@ function supportsStickyBreakpointFlowClaim(
       replacePosition < addPosition &&
       completeScrollRebindBlock.test(methodBody) &&
       hasEvidence(completeScrollRebindBlock);
+  }
+
+  if (
+    /rebinds?\s+the\s+scroll\s+event\s+listener\s+when\s+#scrollContainer\s+is\s+present/i.test(claimText)
+  ) {
+    return completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
+
+  const orderedScrollRebindOperations =
+    /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+
+  if (
+    /removes?\s+the\s+old\s+listener/i.test(claimText) &&
+    /replaces?\s+the\s+scroll\s+container/i.test(claimText) &&
+    /adds?\s+the\s+new\s+listener/i.test(claimText) &&
+    /in\s+that\s+exact\s+order/i.test(claimText)
+  ) {
+    const removePosition = claimText.search(/removes?\s+the\s+old\s+listener/i);
+    const replacePosition = claimText.search(/replaces?\s+the\s+scroll\s+container/i);
+    const addPosition = claimText.search(/adds?\s+the\s+new\s+listener/i);
+    return removePosition >= 0 &&
+      removePosition < replacePosition &&
+      replacePosition < addPosition &&
+      orderedScrollRebindOperations.test(methodBody) &&
+      hasEvidence(orderedScrollRebindOperations);
   }
 
   const removeBeforeReplace =
@@ -6984,6 +7029,15 @@ function supportsStickyBreakpointFlowClaim(
   }
 
   if (
+    /resets?\s+the\s+intersectionobserver\s+by\s+calling\s+disconnect/i.test(claimText) &&
+    /setting\s+the\s+property\s+to\s+null/i.test(claimText)
+  ) {
+    const disconnectThenNull =
+      /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
+    return disconnectThenNull.test(methodBody) && hasEvidence(disconnectThenNull);
+  }
+
+  if (
     /disconnects?\s+(?:the\s+)?(?:existing\s+)?intersectionobserver/i.test(claimText) &&
     /sets?\s+it\s+to\s+null/i.test(claimText)
   ) {
@@ -7012,6 +7066,12 @@ function supportsStickyBreakpointFlowClaim(
   const observeStickyCall =
     /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
   if (/calls?\s+#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(claimText)) {
+    return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
+  }
+
+  if (
+    /passes?\s+stickyMode\s*===\s*['"]always['"]\s+to\s+#observeStickyPosition/i.test(claimText)
+  ) {
     return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
   }
 
