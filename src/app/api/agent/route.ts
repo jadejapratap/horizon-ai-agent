@@ -6586,8 +6586,7 @@ function supportsStickyConnectedCallbackBreakpointListenerClaim(
   return evidenceItems.some((evidence) => listener.test(evidence)) &&
     sourceSegments.some((segment) =>
       /connectedCallback\s*\(\s*\)\s*\{/.test(segment) &&
-      listener.test(segment) &&
-      /disconnectedCallback\s*\(\s*\)/.test(segment)
+      listener.test(segment)
     );
 }
 
