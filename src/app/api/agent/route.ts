@@ -6562,12 +6562,33 @@ function supportsStickyScrollRafHandlerClaim(
 ): boolean {
   const text = claim.toLowerCase();
   if (!/#handleWindowScroll/i.test(claim) || !/requestanimationframe/.test(text) ||
-      !/scroll event|scroll updates?/.test(text)) return false;
+      !/scroll event|scroll (?:state )?updates?/.test(text)) return false;
   return evidenceItems.some((evidence) =>
     /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{/i.test(evidence) &&
     /requestAnimationFrame\s*\(/i.test(evidence) &&
     /#updateScrollState\s*\(/i.test(evidence)
   );
+}
+
+function supportsStickyConnectedCallbackBreakpointListenerClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/connectedCallback/i.test(claim) ||
+      !/change event listener/i.test(claim) ||
+      !/scrollContainerMediaQuery/i.test(claim) ||
+      !/breakpoint/i.test(claim)) return false;
+
+  const listener =
+    /scrollContainerMediaQuery\.addEventListener\s*\(\s*['"]change['"]\s*,\s*this\.#handleBreakpointChange\s*\)/i;
+
+  return evidenceItems.some((evidence) => listener.test(evidence)) &&
+    sourceSegments.some((segment) =>
+      /connectedCallback\s*\(\s*\)\s*\{/.test(segment) &&
+      listener.test(segment) &&
+      /disconnectedCallback\s*\(\s*\)/.test(segment)
+    );
 }
 
 function supportsStickyConnectedCallbackSetupClaim(
@@ -6596,20 +6617,81 @@ function supportsStickyBreakpointAttributeReadClaim(claim: string, evidenceItems
   );
 }
 
-function supportsStickyBreakpointObserverResetClaim(claim: string, evidenceItems: string[]): boolean {
-  if (!/#handleBreakpointChange/i.test(claim) || !/intersection observer/i.test(claim) ||
-      !/disconnect/i.test(claim) || !/#observeStickyPosition/i.test(claim)) return false;
-  return evidenceItems.some((evidence) =>
-    /#intersectionObserver\s*\?\.disconnect\s*\(\s*\)/i.test(evidence) &&
-    /#intersectionObserver\s*=\s*null/i.test(evidence) &&
-    /#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(evidence)
-  );
+function supportsStickyBreakpointObserverResetClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/#handleBreakpointChange/i.test(claim) ||
+      !/intersection observer/i.test(claim) ||
+      !/disconnect/i.test(claim) ||
+      !/recreat/i.test(claim)) return false;
+
+  const provesReset = (value: string) =>
+    /#intersectionObserver\s*\?\.\s*disconnect\s*\(\s*\)/i.test(value) &&
+    /#intersectionObserver\s*=\s*null/i.test(value) &&
+    /#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(value);
+
+  return evidenceItems.some(provesReset) &&
+    sourceSegments.some((segment) =>
+      /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{/.test(segment) &&
+      provesReset(segment)
+    );
+}
+
+function supportsStickyObserverStateOrOffscreenBranchClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/#observeStickyPosition/i.test(claim) ||
+      !/alwayssticky/.test(text) ||
+      !/sticky state/.test(text) ||
+      !/offscreen state/.test(text)) return false;
+
+  const pairedAssignments =
+    /if\s*\(\s*alwaysSticky\s*\)\s*\{[\s\S]{0,1800}?this\.dataset\.stickyState\s*=\s*isIntersecting\s*\?\s*['"]inactive['"]\s*:\s*['"]active['"][\s\S]{0,500}?\}\s*else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
+
+  return evidenceItems.some((evidence) => pairedAssignments.test(evidence)) &&
+    sourceSegments.some((segment) => pairedAssignments.test(segment));
+}
+
+function supportsStickyObserverThemeColorClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/#observeStickyPosition/i.test(claim) ||
+      !/alwaysSticky/i.test(claim) ||
+      !/theme.?color/i.test(claim) ||
+      !/meta theme color/i.test(claim)) return false;
+
+  const themeColorOperation =
+    /if\s*\(\s*this\.dataset\.themeColor\s*\)\s*changeMetaThemeColor\s*\(\s*this\.dataset\.themeColor\s*\)/i;
+
+  const hasMethodContext = (segment: string) => {
+    const method = /#observeStickyPosition\s*=\s*\([^)]*\)\s*=>\s*\{/.exec(segment);
+    if (!method) return false;
+    const bodyStart = method.index + method[0].length;
+    const afterMethod = segment.slice(bodyStart);
+    const nextPrivateMethod = afterMethod.search(/\n\s*#[A-Za-z_$][A-Za-z0-9_$]*\s*=/);
+    const body = nextPrivateMethod >= 0
+      ? afterMethod.slice(0, nextPrivateMethod)
+      : afterMethod.slice(0, 12000);
+
+    return /if\s*\(\s*alwaysSticky\s*\)/i.test(body) &&
+      themeColorOperation.test(body);
+  };
+
+  return evidenceItems.some((evidence) => themeColorOperation.test(evidence)) &&
+    sourceSegments.some(hasMethodContext);
 }
 
 function supportsStickyIntersectionStateAssignmentClaim(claim: string, evidenceItems: string[]): boolean {
   const text = claim.toLowerCase();
   if (!(/intersection observer callback/.test(text) || /#observestickyposition/i.test(claim)) ||
-      !/dataset\.stickystate/.test(text) || !/isintersecting/.test(text) ||
+      !/dataset\.stickystate/.test(text) || !/(?:isintersecting|intersection)/.test(text) ||
       !/alwayssticky/.test(text)) return false;
   return evidenceItems.some((evidence) =>
     /if\s*\(\s*alwaysSticky\s*\)/i.test(evidence) &&
@@ -6626,11 +6708,13 @@ function supportsStickyOffscreenAssignmentClaim(
   if (!(/intersection\s*observer callback/.test(text) || /#observestickyposition/i.test(claim)) ||
       !/#offscreen/.test(claim) || !/alwayssticky/.test(text) || !/false/.test(text)) return false;
 
-  const pairedBranch = /if\s*\(\s*alwaysSticky\s*\)\s*\{[\s\S]{0,1800}?\}\s*else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
-  const quotedElseAssignment = /else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
-  return evidenceItems.some((evidence) =>
-    pairedBranch.test(evidence) && quotedElseAssignment.test(evidence)
-  ) && sourceSegments.some((segment) => pairedBranch.test(segment));
+  const pairedBranch =
+    /if\s*\(\s*alwaysSticky\s*\)\s*\{[\s\S]{0,1800}?\}\s*else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
+  const quotedElseAssignment =
+    /else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
+
+  return evidenceItems.some((evidence) => quotedElseAssignment.test(evidence)) &&
+    sourceSegments.some((segment) => pairedBranch.test(segment));
 }
 
 function supportsStickyScrollDirectionAssignmentClaim(claim: string, evidenceItems: string[]): boolean {
@@ -7357,8 +7441,11 @@ async function verifyAnswerClaim(
           supportsStickyIntersectionObserverBehaviorClaim(claim.claim, evidenceItems) ||
           supportsStickyScrollRafHandlerClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
+          supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
-          supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverStateOrOffscreenBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverThemeColorClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionStateAssignmentClaim(claim.claim, evidenceItems) ||
           supportsStickyOffscreenAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointRebindClaim(claim.claim, evidenceItems, sourceSegments) ||
@@ -7433,8 +7520,11 @@ async function verifyAnswerClaim(
           supportsStickyIntersectionObserverBehaviorClaim(claim.claim, evidenceItems) ||
           supportsStickyScrollRafHandlerClaim(claim.claim, evidenceItems) ||
           supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
+          supportsStickyConnectedCallbackBreakpointListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
-          supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverStateOrOffscreenBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverThemeColorClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionStateAssignmentClaim(claim.claim, evidenceItems) ||
           supportsStickyOffscreenAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyBreakpointRebindClaim(claim.claim, evidenceItems, sourceSegments) ||
