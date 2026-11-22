@@ -7027,10 +7027,11 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   if (!methodBody) return false;
 
   const methodSignature = /#updateScrollState\s*=\s*\(\)\s*=>\s*\{/i;
-  const assignment = new RegExp(
-    "this\\\\.dataset\\\\.scrollDirection\\\\s*=\\\\s*['\\"]" + value + "['\\"]\\\\s*;",
-    "i"
-  );
+  const hasAssignment = (candidate: string): boolean =>
+    new RegExp(
+      "this\\.dataset\\.scrollDirection\\s*=\\s*['\"]" + value + "['\"]\\s*;",
+      "i"
+    ).test(candidate);
 
   const matchingBrace = (source: string, openIndex: number): number => {
     let depth = 0;
@@ -7160,7 +7161,7 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
 
   let branchIsVerified = false;
   if (saysAlways && value === "none" && /\bisAtTop\s+is\s+true\b/.test(claimText)) {
-    branchIsVerified = Boolean(topIfBlock && assignment.test(topIfBlock.body));
+    branchIsVerified = Boolean(topIfBlock && hasAssignment(topIfBlock.body));
   } else if (
     saysAlways && value === "up" &&
     /\bisAtTop\s+is\s+false\b/.test(claimText) &&
@@ -7179,31 +7180,31 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
     /\bisScrollingUp\s+is\s+true\b/.test(claimText) &&
     /\bisAtTop\s+is\s+true\b/.test(claimText)
   ) {
-    branchIsVerified = Boolean(nonAlwaysTopBlock && assignment.test(nonAlwaysTopBlock.body));
+    branchIsVerified = Boolean(nonAlwaysTopBlock && hasAssignment(nonAlwaysTopBlock.body));
   } else if (
     saysNotAlways && value === "up" &&
     /\bisScrollingUp\s+is\s+true\b/.test(claimText) &&
     /\bisAtTop\s+is\s+false\b/.test(claimText)
   ) {
-    branchIsVerified = Boolean(scrollingUpElseBlock && assignment.test(scrollingUpElseBlock.body));
+    branchIsVerified = Boolean(scrollingUpElseBlock && hasAssignment(scrollingUpElseBlock.body));
   } else if (
     saysNotAlways && value === "none" &&
     /\bisScrollingUp\s+is\s+false\b/.test(claimText) &&
     /stickyState\s+is\s+equal\s+to\s+['"]active['"]/.test(claimText)
   ) {
-    branchIsVerified = Boolean(activeElseIfBlock && assignment.test(activeElseIfBlock.body));
+    branchIsVerified = Boolean(activeElseIfBlock && hasAssignment(activeElseIfBlock.body));
   } else if (
     saysNotAlways && value === "none" &&
     /\bisScrollingUp\s+is\s+false\b/.test(claimText) &&
     /stickyState\s+is\s+not\s+equal\s+to\s+['"]active['"]/.test(claimText)
   ) {
-    branchIsVerified = Boolean(finalElseBlock && assignment.test(finalElseBlock.body));
+    branchIsVerified = Boolean(finalElseBlock && hasAssignment(finalElseBlock.body));
   }
 
   if (!branchIsVerified) return false;
 
   return evidenceItems.some((evidence) =>
-    assignment.test(evidence) &&
+    hasAssignment(evidence) &&
     evidenceMatchesSource(evidence, methodBody) &&
     evidenceMatchesSource(evidence, actualSource) &&
     sourceSegments.some((segment) =>
