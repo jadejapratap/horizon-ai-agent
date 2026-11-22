@@ -27,7 +27,7 @@ export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
+  const [hydrated, setHydrated] = useState(false);\n  const [testSecret, setTestSecret] = useState("");\n  const [testRunning, setTestRunning] = useState(false);\n  const [testStatus, setTestStatus] = useState("");
 
   // Load chat history
   useEffect(() => {
@@ -126,6 +126,37 @@ export default function Home() {
     }
   }
 
+  // Run the sticky-header diagnostic and publish its structured log to GitHub.
+  async function runStickyHeaderTest() {
+    if (!testSecret.trim() || testRunning) return;
+    setTestRunning(true);
+    setTestStatus("Running agent and publishing runtime log...");
+    try {
+      const response = await fetch("/api/test-runner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret: testSecret, prompt: `Explain how the Horizon sticky header works. Trace how sections/header.liquid controls the sticky header setting, how assets/base.css handles sticky states, and how assets/header.js observes the header.
+
+Provide exact source evidence for every claim. Keep each claim atomic. Preserve the exact conditions, selectors, and operations in the answer. Do not make assumptions or include claims without verified source evidence.` }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || `Test failed (HTTP ${response.status})`);
+      const summary = data.result?.evidenceSummary;
+      const coverage = data.result?.retrievalCoverage;
+      const details = [
+        `Sticky Header test completed. HTTP ${data.httpStatus}; duration ${Math.round(data.durationMs / 1000)}s.`,
+        summary ? `Evidence claims: ${summary.verified}/${summary.total} verified; ${summary.unverified} unverified.` : "",
+        coverage ? `Retrieval coverage: ${JSON.stringify(coverage)}` : "",
+        `GitHub log: ${data.githubLogUrl}`,
+      ].filter(Boolean).join("\\n");
+      setTestStatus(details);
+    } catch (error) {
+      setTestStatus(error instanceof Error ? error.message : "Test runner failed.");
+    } finally {
+      setTestRunning(false);
+    }
+  }
+
   // Start new chat
   function startNewProject() {
     setMessages([]);
@@ -209,6 +240,29 @@ export default function Home() {
           </span>
 
         </header>
+
+        <div className="mx-8 mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
+          <div className="min-w-52 flex-1">
+            <p className="text-sm font-semibold text-violet-300">Runtime Test Runner</p>
+            <p className="text-xs text-gray-400">Run the Sticky Header test and publish its structured log to GitHub.</p>
+          </div>
+          <input
+            type="password"
+            value={testSecret}
+            onChange={(e) => setTestSecret(e.target.value)}
+            placeholder="Test runner secret"
+            autoComplete="off"
+            className="min-w-52 rounded-lg border border-white/10 bg-[#0c0d18] px-3 py-2 text-sm outline-none"
+          />
+          <button
+            onClick={runStickyHeaderTest}
+            disabled={!testSecret.trim() || testRunning}
+            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium disabled:opacity-40"
+          >
+            {testRunning ? "Running..." : "Run Sticky Header Test"}
+          </button>
+          {testStatus && <p className="w-full whitespace-pre-wrap break-words text-xs text-gray-300">{testStatus}</p>}
+        </div>
 
         {/* CHAT + PREVIEW */}
 
