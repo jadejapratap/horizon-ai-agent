@@ -7033,7 +7033,7 @@ function supportsStickyUpdateScrollCoreOperationClaim(
   const evidenceIsInMethodAndSentContext = (pattern: RegExp): boolean =>
     evidenceItems.some((evidence) =>
       pattern.test(evidence) &&
-      evidenceMatchesSource(evidence, actualSource) &&
+      evidenceMatchesSource(evidence, methodBody) &&
       sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
     );
 
@@ -7102,11 +7102,12 @@ function supportsStickyUpdateScrollCoreOperationClaim(
     const firstAssignment = methodBody.indexOf(assignmentText);
     const finalAssignment = methodBody.lastIndexOf(assignmentText);
     const assignmentCount = methodBody.split(assignmentText).length - 1;
-    const evidenceHasTerminalAssignment = evidenceItems.some((evidence) =>
-      /this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*(?:\};)?\s*$/i.test(evidence) &&
-      evidenceMatchesSource(evidence, actualSource) &&
-      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
-    );
+    const evidenceHasTerminalAssignment = evidenceItems.some((evidence) => {
+      const evidenceWithoutMethodClosure = evidence.replace(/\s*\};\s*$/i, "").trim();
+      return /this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*$/i.test(evidenceWithoutMethodClosure) &&
+        evidenceMatchesSource(evidenceWithoutMethodClosure, methodBody) &&
+        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment));
+    });
 
     return assignmentCount === 2 &&
       firstAssignment >= 0 &&
