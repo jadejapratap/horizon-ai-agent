@@ -7135,11 +7135,11 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
 
   const claimText = claim.toLowerCase();
   const saysAlways =
-    /stickyMode\s*(?:===|==)\s*['"]always['"]/.test(claimText) ||
-    /stickyMode\s+is\s+['"]always['"]/.test(claimText);
+    /stickyMode\s*(?:===|==)\s*['"]always['"]/i.test(claimText) ||
+    /stickyMode\s+is\s+['"]always['"]/i.test(claimText);
   const saysNotAlways =
-    /stickyMode\s*!==?\s*['"]always['"]/.test(claimText) ||
-    /stickyMode\s+is\s+not\s+['"]always['"]/.test(claimText);
+    /stickyMode\s*!==?\s*['"]always['"]/i.test(claimText) ||
+    /stickyMode\s+is\s+not\s+['"]always['"]/i.test(claimText);
   const saysTrue = (name: string) =>
     new RegExp("\\b" + name + "\\s+(?:is\\s+true|===\\s*true|==\\s*true)\\b", "i").test(claimText);
   const saysFalse = (name: string) =>
