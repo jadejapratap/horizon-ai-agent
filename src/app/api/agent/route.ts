@@ -7145,11 +7145,11 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   const saysFalse = (name: string) =>
     new RegExp("\\b" + name + "\\s+(?:is\\s+false|!==\\s*true|===\\s*false|==\\s*false)\\b", "i").test(claimText);
   const stickyStateIsActive =
-    /(?:this\.)?dataset\.stickyState\s*===\s*['"]active['"]/.test(claimText) ||
-    /stickyState\s+is\s+equal\s+to\s+['"]active['"]/.test(claimText);
+    /(?:this\.)?dataset\.stickyState\s*===\s*['"]active['"]/i.test(claimText) ||
+    /stickyState\s+is\s+equal\s+to\s+['"]active['"]/i.test(claimText);
   const stickyStateIsNotActive =
-    /(?:this\.)?dataset\.stickyState\s*!==\s*['"]active['"]/.test(claimText) ||
-    /stickyState\s+is\s+not\s+equal\s+to\s+['"]active['"]/.test(claimText);
+    /(?:this\.)?dataset\.stickyState\s*!==\s*['"]active['"]/i.test(claimText) ||
+    /stickyState\s+is\s+not\s+equal\s+to\s+['"]active['"]/i.test(claimText);
 
   let branchIsVerified = false;
   if (saysAlways && value === "none" && saysTrue("isAtTop")) {
