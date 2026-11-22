@@ -7012,6 +7012,113 @@ function supportsStickyOffscreenAssignmentClaim(
   ) && pairedBranch.test(methodBody);
 }
 
+function supportsStickyUpdateScrollCoreOperationClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const claimText = claim.toLowerCase();
+  const methodSignature = /#updateScrollState\s*=\s*\(\s*\)\s*=>\s*\{/i;
+  const signatureMatch = methodSignature.exec(actualSource);
+  if (!signatureMatch) return false;
+
+  const bodyStart = signatureMatch.index + signatureMatch[0].length;
+  const methodEnd = /\n[ \t]{2}\};[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*connectedCallback\s*\(/m.exec(
+    actualSource.slice(bodyStart)
+  );
+  if (!methodEnd) return false;
+
+  const methodBody = actualSource.slice(bodyStart, bodyStart + methodEnd.index);
+  const evidenceIsInMethodAndSentContext = (pattern: RegExp): boolean =>
+    evidenceItems.some((evidence) =>
+      pattern.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+
+  const scrollTopDeclaration = /const\s+scrollTop\s*=\s*getScrollTop\s*\(\s*\)\s*;/i;
+  if (
+    /obtains?\s+scrollTop\s+by\s+calling\s+getScrollTop\s*\(\s*\)/i.test(claimText)
+  ) {
+    return scrollTopDeclaration.test(methodBody) &&
+      evidenceIsInMethodAndSentContext(scrollTopDeclaration);
+  }
+
+  const headerTopDeclaration =
+    /const\s+headerTop\s*=\s*this\.getBoundingClientRect\s*\(\s*\)\.top\s*;/i;
+  if (
+    /obtains?\s+headerTop\s+from\s+this\.getBoundingClientRect\s*\(\s*\)\.top/i.test(claimText)
+  ) {
+    return headerTopDeclaration.test(methodBody) &&
+      evidenceIsInMethodAndSentContext(headerTopDeclaration);
+  }
+
+  const scrollingUpDeclaration =
+    /const\s+isScrollingUp\s*=\s*scrollTop\s*<\s*this\.#lastScrollTop\s*;/i;
+  if (
+    /calculates?\s+isScrollingUp\s+by\s+comparing\s+scrollTop\s*<\s*this\.#lastScrollTop/i.test(claimText)
+  ) {
+    return scrollingUpDeclaration.test(methodBody) &&
+      evidenceIsInMethodAndSentContext(scrollingUpDeclaration);
+  }
+
+  const atTopDeclaration = /const\s+isAtTop\s*=\s*headerTop\s*>=\s*0\s*;/i;
+  if (
+    /calculates?\s+isAtTop\s+by\s+checking\s+headerTop\s*>=\s*0/i.test(claimText)
+  ) {
+    return atTopDeclaration.test(methodBody) &&
+      evidenceIsInMethodAndSentContext(atTopDeclaration);
+  }
+
+  const timeoutBlock =
+    /if\s*\(\s*this\.#timeout\s*\)\s*\{\s*clearTimeout\s*\(\s*this\.#timeout\s*\)\s*;\s*this\.#timeout\s*=\s*null\s*;\s*\}/i;
+  if (
+    /when\s+this\.#timeout\s+is\s+truthy/i.test(claimText) &&
+    /clearTimeout\s*\(\s*this\.#timeout\s*\)/i.test(claimText) &&
+    /then\s+assigns?\s+null\s+to\s+this\.#timeout/i.test(claimText)
+  ) {
+    return timeoutBlock.test(methodBody) &&
+      evidenceIsInMethodAndSentContext(timeoutBlock);
+  }
+
+  const alwaysBranchThroughReturn =
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{[\s\S]*?this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;/i;
+  if (
+    /in\s+the\s+stickyMode\s*===\s*['"]always['"]\s+branch/i.test(claimText) &&
+    /assigns?\s+scrollTop\s+to\s+this\.#lastScrollTop\s+before\s+returning/i.test(claimText)
+  ) {
+    return alwaysBranchThroughReturn.test(methodBody) &&
+      evidenceIsInMethodAndSentContext(alwaysBranchThroughReturn);
+  }
+
+  const terminalAssignment =
+    /this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*$/i;
+  if (
+    /in\s+the\s+non[-\s]?always\s+path/i.test(claimText) &&
+    /assigns?\s+scrollTop\s+to\s+this\.#lastScrollTop\s+at\s+the\s+end/i.test(claimText)
+  ) {
+    const assignmentText = "this.#lastScrollTop = scrollTop;";
+    const firstAssignment = methodBody.indexOf(assignmentText);
+    const finalAssignment = methodBody.lastIndexOf(assignmentText);
+    const assignmentCount = methodBody.split(assignmentText).length - 1;
+    const evidenceHasTerminalAssignment = evidenceItems.some((evidence) =>
+      /this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*(?:\};)?\s*$/i.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+
+    return assignmentCount === 2 &&
+      firstAssignment >= 0 &&
+      finalAssignment > firstAssignment &&
+      alwaysBranchThroughReturn.test(methodBody) &&
+      terminalAssignment.test(methodBody) &&
+      evidenceHasTerminalAssignment;
+  }
+
+  return false;
+}
+
 function supportsStickyUpdateScrollEarlyReturnClaim(
   claim: string,
   evidenceItems: string[],
@@ -7973,7 +8080,12 @@ async function verifyAnswerClaim(
           evidenceItems,
           sourceSegments
         );
+        const verifiedStickyUpdateScrollCoreOperation =
+          supportsStickyUpdateScrollCoreOperationClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAtomicPattern =
+          verifiedStickyUpdateScrollCoreOperation ||
           supportsStickyUpdateScrollEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
@@ -8037,6 +8149,7 @@ async function verifyAnswerClaim(
           );
         const hasUnsupportedControlFlow = !verifiedRafOtherwiseFlow &&
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
+          !verifiedStickyUpdateScrollCoreOperation &&
           claimAddsUnsupportedControlFlow(
             claim.claim,
             evidenceItems,
@@ -8079,6 +8192,7 @@ async function verifyAnswerClaim(
           hasMeaningfulTokenOverlap(claim.claim, combinedEvidence);
 
         const evidenceSupportsClaim =
+          verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollEarlyReturnFlow ||
           genericTokenOverlap ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
