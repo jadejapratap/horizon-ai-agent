@@ -5,6 +5,7 @@
 // v53: matches branch-local scrollDirection evidence and terminal method-closure evidence for #updateScrollState.
 // v54: validates C10's method-closing evidence against the complete source while separately proving terminal assignment placement.
 // v55: verifies #handleBreakpointChange guard, scroll-listener rebinding, and IntersectionObserver reset from exact method evidence.
+// v56: anchors sticky attribute evidence to the method signature and enforces the claimed observer reset order.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6846,9 +6847,16 @@ function supportsStickyBreakpointFlowClaim(
 
   const stickyAttributeRead =
     /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
+  const stickyAttributeReadWithMethod =
+    /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{\s*const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
   if (/reads?\s+(?:the\s+)?sticky\s+attribute/i.test(claimText) &&
       /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(claimText)) {
-    return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
+    return stickyAttributeRead.test(methodBody) &&
+      evidenceItems.some((evidence) =>
+        stickyAttributeReadWithMethod.test(evidence) &&
+        evidenceMatchesSource(evidence, actualSource) &&
+        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+      );
   }
 
   const falsyStickyGuard =
@@ -6887,7 +6895,8 @@ function supportsStickyBreakpointFlowClaim(
   if (/resets?\s+the\s+intersectionobserver/i.test(claimText) &&
       /disconnect(?:ing)?/i.test(claimText) &&
       /\bnull\b/i.test(claimText) &&
-      /reinitializ|recreat/i.test(claimText)) {
+      /reinitializ|recreat/i.test(claimText) &&
+      /disconnect(?:ing)?[\s\S]*assign(?:ing)?\s+null[\s\S]*(?:reinitializ|recreat)/i.test(claimText)) {
     return observerReset.test(methodBody) && hasEvidence(observerReset);
   }
 
