@@ -13,6 +13,7 @@
 // v61: routes IntersectionObserver ordering assertions through exact reset-sequence verification.
 // v62: rejects unsupported positive data-sticky reads and verifies disconnect-before-null negative-order claims.
 // v63: blocks every unsupported positive data-sticky assertion, regardless of claim verb phrasing.
+// v64: requires complete-method evidence for every data-sticky absence claim; blocks alternate verifier bypasses.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -8523,8 +8524,16 @@ async function verifyAnswerClaim(
         const rejectsUnsupportedDataStickyRead =
           assertsPositiveDataStickyRead && !hasDirectDataStickyReadEvidence;
 
-        const evidenceSupportsClaim =
-          !rejectsUnsupportedDataStickyRead && (
+        const isDataStickyClaim = /data-sticky/i.test(claimTextLower);
+        const isDataStickyAbsenceClaim =
+          isDataStickyClaim &&
+          /\b(?:does\s+not|doesn't|never|not)\s+(?:read|access|use|reference)/i.test(claimTextLower);
+        const dataStickyClaimHasStrictEvidence =
+          isDataStickyAbsenceClaim && verifiedStickyBreakpointFlow;
+
+        const evidenceSupportsClaim = isDataStickyClaim
+          ? dataStickyClaimHasStrictEvidence
+          : !rejectsUnsupportedDataStickyRead && (
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollEarlyReturnFlow ||
           verifiedStickyUpdateScrollFlow ||
