@@ -1,3 +1,5 @@
+// v37: adds iterative explicit-only chunk-budget utilization and strict #updateScrollState evidence verification; preserves v36 scope isolation.
+// v50: verifies product-page quantity-break branch scope from contiguous source context and authorizes explicit verified caller-to-target render claims without requiring the caller path in the sentence.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -144,6 +146,8 @@ type SharedRetrievalState = {
   retrievedChunks: RetrievedChunk[];
   fullContents: Map<string, string>;
   processedDependencyRanges: Map<string, RetrievedRange[]>;
+  // When present, every content read and chunk retrieval is confined to this allowlist.
+  allowedFiles?: Set<string> | null;
 };
 
 type PlannerChunkRequest = {
@@ -345,6 +349,113 @@ async function fileExists(file: string): Promise<boolean> {
 }
 
 // --------------------------------------------------
+// EXPLICIT USER-REQUESTED FILE SCOPE (v35)
+// --------------------------------------------------
+
+type ExplicitFileRequest = {
+  enabled: boolean;
+  detectedPaths: string[];
+  canonicalPaths: string[];
+  invalidPaths: Array<{ path: string; reason: string }>;
+};
+
+function resolveExplicitFileRequest(
+  prompt: string,
+  themeFileManifest: string[]
+): ExplicitFileRequest {
+  // Match paths from supported Horizon theme roots, including traversal
+  // attempts. Both slash styles are accepted and normalized afterwards.
+  const pathPattern = /((?:(?:\.\.?)[\\/])*(?:(?:assets|blocks|config|layout|sections|snippets|templates)[\\/][A-Za-z0-9_@-]+(?:[\\/][A-Za-z0-9_@-]+)*\.(?:liquid|json|js|css)|(?:(?:\.\.?)[\\/]){1,}[A-Za-z0-9_@-]+(?:[\\/][A-Za-z0-9_@-]+)*\.(?:liquid|json|js|css)))/gi;
+  const occurrences: Array<{ path: string; index: number }> = [];
+  const detected = new Set<string>();
+
+  for (const match of prompt.matchAll(pathPattern)) {
+    const candidate = (match[1] ?? match[0])
+      .trim()
+      .replace(/^[\s"'`([{<]+/, "")
+      .replace(/[\s"'`),;.!?}>\]]+$/, "")
+      .replace(/\\/g, "/");
+    if (!candidate) continue;
+    detected.add(candidate);
+    occurrences.push({ path: candidate, index: match.index ?? 0 });
+  }
+
+  const scopeRestriction = /\b(?:only|just|exactly|exclusively)\b/i;
+  const hasDirectFileAnalysisIntent = occurrences.some(({ index, path: candidate }) => {
+    const beforePath = prompt.slice(Math.max(0, index - 100), index);
+    const afterPath = prompt.slice(index + candidate.length, Math.min(prompt.length, index + candidate.length + 100));
+    const localContext = `${beforePath} ${afterPath}`;
+    const directFileAction =
+      /\b(?:inspect|analy[sz]e|review|explain|describe|read|open|trace|debug|understand|summari[sz]e|check|examine|study|investigate|compare|diff|look\s+at|go\s+through|use)\b(?:\s+[A-Za-z0-9_#.-]+){0,5}\s*$/i.test(beforePath) ||
+      /\b(?:file|source|code|method|function|class|path)\b.{0,45}$/i.test(beforePath);
+    return directFileAction || scopeRestriction.test(localContext);
+  });
+  const enabled = detected.size > 0 && hasDirectFileAnalysisIntent;
+
+  if (!enabled) {
+    return {
+      enabled: false,
+      detectedPaths: [...detected],
+      canonicalPaths: [],
+      invalidPaths: [],
+    };
+  }
+
+  const canonicalByLowerPath = new Map(
+    themeFileManifest.map((file) => [normalizePath(file).toLowerCase(), normalizePath(file)])
+  );
+  const canonicalPaths = new Set<string>();
+  const invalidPaths: Array<{ path: string; reason: string }> = [];
+
+  for (const candidate of detected) {
+    const normalized = normalizePath(candidate).replace(/^(?:\.\/)+/, "");
+
+    if (!isSafeThemePath(normalized)) {
+      invalidPaths.push({ path: candidate, reason: "Unsafe path: traversal or path outside the Horizon theme." });
+      continue;
+    }
+
+    const root = normalized.split("/")[0]?.toLowerCase();
+    if (!["assets", "blocks", "config", "layout", "sections", "snippets", "templates"].includes(root)) {
+      invalidPaths.push({ path: candidate, reason: "Unsupported theme path root." });
+      continue;
+    }
+
+    if (!ALLOWED_EXTENSIONS.includes(path.extname(normalized).toLowerCase())) {
+      invalidPaths.push({ path: candidate, reason: "Unsupported theme file extension." });
+      continue;
+    }
+
+    const canonical = canonicalByLowerPath.get(normalized.toLowerCase());
+    if (!canonical) {
+      invalidPaths.push({ path: candidate, reason: "File does not exist in the Horizon theme manifest." });
+      continue;
+    }
+
+    canonicalPaths.add(canonical);
+  }
+
+  return {
+    enabled: true,
+    detectedPaths: [...detected],
+    canonicalPaths: [...canonicalPaths],
+    invalidPaths,
+  };
+}
+
+function isPathAllowedByScope(
+  file: string,
+  allowedFiles?: Set<string> | null
+): boolean {
+  if (!allowedFiles) return true;
+  const normalized = normalizePath(file).toLowerCase();
+  for (const allowed of allowedFiles) {
+    if (normalizePath(allowed).toLowerCase() === normalized) return true;
+  }
+  return false;
+}
+
+// --------------------------------------------------
 // FIND NEXT AVAILABLE GAP
 // --------------------------------------------------
 
@@ -495,7 +606,8 @@ function isRangeFullyRetrieved(
 function createRetrievalState(
   initialUsed: number,
   onDemandBudget: number,
-  maxOnDemandFiles: number
+  maxOnDemandFiles: number,
+  allowedFiles: Set<string> | null = null
 ): SharedRetrievalState {
   return {
     totalBudget: initialUsed + onDemandBudget,
@@ -507,6 +619,7 @@ function createRetrievalState(
     retrievedChunks: [],
     fullContents: new Map(),
     processedDependencyRanges: new Map(),
+    allowedFiles,
   };
 }
 
@@ -514,10 +627,15 @@ async function ensureFullContent(
   state: SharedRetrievalState,
   file: string
 ): Promise<string | null> {
-  if (state.fullContents.has(file)) return state.fullContents.get(file)!;
+  const normalizedFile = normalizePath(file);
+  if (!isPathAllowedByScope(normalizedFile, state.allowedFiles)) {
+    console.warn("EXPLICIT FILE SCOPE BLOCKED CONTENT READ:", normalizedFile);
+    return null;
+  }
+  if (state.fullContents.has(normalizedFile)) return state.fullContents.get(normalizedFile)!;
   try {
-    const content = await readThemeFile(file);
-    state.fullContents.set(file, content);
+    const content = await readThemeFile(normalizedFile);
+    state.fullContents.set(normalizedFile, content);
     return content;
   } catch {
     return null;
@@ -545,6 +663,10 @@ function retrieveChunk(
 
   if (!filePath || totalLength === 0) return null;
   if (state.remainingBudget <= 0) return null;
+  if (!isPathAllowedByScope(filePath, state.allowedFiles)) {
+    console.warn("EXPLICIT FILE SCOPE BLOCKED CHUNK RETRIEVAL:", normalizePath(filePath));
+    return null;
+  }
 
   console.log("CHUNK RETRIEVAL REQUEST:", {
     file: filePath,
@@ -840,6 +962,7 @@ function buildPlannerFileManifest(
   }
 
   const files = Array.from(state.fullContents.entries())
+    .filter(([file]) => isPathAllowedByScope(file, state.allowedFiles))
     .map(([file, content]) => {
       const fileState = state.fileStates.get(file);
       const retrievedRanges = mergeRanges(
@@ -881,6 +1004,7 @@ function buildIncludedSourceContentFromState(
   const result = new Map<string, string>();
 
   for (const [file, fs] of state.fileStates.entries()) {
+    if (!isPathAllowedByScope(file, state.allowedFiles)) continue;
     const full = state.fullContents.get(file);
 
     if (full === undefined) continue;
@@ -2351,8 +2475,13 @@ function buildSettingDefinitionDependencies(
 function filterRelevantThemeFiles(
   files: ThemeFile[],
   initialFiles: ThemeFile[],
-  dependencies: VerifiedDependency[]
+  dependencies: VerifiedDependency[],
+  explicitFileAllowlist?: Set<string> | null
 ): ThemeFile[] {
+  if (explicitFileAllowlist) {
+    return files.filter((file) => isPathAllowedByScope(file.file, explicitFileAllowlist));
+  }
+
   const relevantPaths = new Set<string>();
 
   for (const file of initialFiles) {
@@ -3514,6 +3643,224 @@ function buildLiquidSchemaSettingDefinitionRequests(
   return requests;
 }
 
+// Return only theme assets explicitly loaded by the owning section. Search
+// similarity alone must not make menu or sticky-add-to-cart JS look like
+// sticky-header implementation code.
+function getDirectlyReferencedThemeAssetFiles(
+  sourceText: string,
+  candidateFiles: Array<{ file: string }>
+): Set<string> {
+  const referenced = new Set<string>();
+  if (!sourceText) return referenced;
+
+  for (const candidate of candidateFiles) {
+    const normalized = normalizePath(candidate.file);
+    if (!/^assets\//.test(normalized) || !/\.(?:css|js)$/.test(normalized)) continue;
+
+    const basename = normalized.split('/').pop() || normalized;
+    const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`['"]${escaped}['"]\\s*\\|\\s*asset_url\\b`, 'i'),
+      new RegExp(`\\b(?:src|href)\\s*=\\s*['"][^'"]*${escaped}[^'"]*['"]`, 'i'),
+      new RegExp(`\\b(?:import|from)\\s*['"][^'"]*${escaped}['"]`, 'i'),
+      new RegExp(`\\bimport\\s*\\(\\s*['"][^'"]*${escaped}['"]`, 'i'),
+    ];
+
+    if (patterns.some((pattern) => pattern.test(sourceText))) referenced.add(normalized);
+  }
+
+  return referenced;
+}
+
+// Find additional base.css ranges that actually contain sticky-header CSS
+// selectors/declarations. The full source is already loaded server-side, so
+// use it to select evidence-bearing offsets rather than blindly reading the
+// next sequential 6,000 characters. Existing source ranges are never repeated.
+function buildStickyCssTargetRequests(
+  manifestFiles: PlannerManifestFile[],
+  fullContents: Map<string, string>,
+  maxRequests = 2
+): PlannerChunkRequest[] {
+  const cssPath = "assets/base.css";
+  const manifest = manifestFiles.find(
+    (file) => normalizePath(file.file).toLowerCase() === cssPath
+  );
+  const source = fullContents.get(cssPath);
+  if (!manifest || !source || !manifest.hasMore || maxRequests <= 0) return [];
+
+  const knownRanges = mergeRanges(manifest.retrievedRanges ?? []);
+  const selected: PlannerChunkRequest[] = [];
+  const patterns = [
+    /(?:^|\n)[^\n{}]*(?:sticky|not-sticky|scroll-up)[^\n{}]*\{/gim,
+    /\bposition\s*:\s*sticky\b/gi,
+  ];
+
+  const matches: number[] = [];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(source)) !== null) {
+      matches.push(match.index + (match[0].startsWith("\n") ? 1 : 0));
+      if (match[0].length === 0) pattern.lastIndex++;
+    }
+  }
+
+  matches.sort((a, b) => a - b);
+  const uniqueMatches = [...new Set(matches)];
+
+  const isCovered = (offset: number, ranges: RetrievedRange[]) =>
+    ranges.some((range) => range.startOffset <= offset && offset < range.endOffset);
+
+  for (const matchOffset of uniqueMatches) {
+    if (selected.length >= maxRequests) break;
+    if (isCovered(matchOffset, knownRanges)) continue;
+
+    const desiredStart = Math.max(0, matchOffset - 1800);
+    const requestStart = findNextGap(knownRanges, desiredStart, source.length);
+    if (requestStart >= source.length || requestStart > matchOffset) continue;
+
+    // Keep the target selector/declaration inside the requested window.
+    const maxChars = Math.min(MAX_CHUNK_SIZE, source.length - requestStart);
+    if (matchOffset >= requestStart + maxChars) continue;
+
+    selected.push({
+      file: cssPath,
+      start_offset: requestStart,
+      max_chars: maxChars,
+    });
+    knownRanges.push({
+      startOffset: requestStart,
+      endOffset: requestStart + maxChars,
+    });
+    const merged = mergeRanges(knownRanges);
+    knownRanges.splice(0, knownRanges.length, ...merged);
+  }
+
+  console.log("STICKY CSS TARGET RANGE CANDIDATES:", selected.map((request) => ({
+    file: request.file,
+    startOffset: request.start_offset,
+    maxChars: request.max_chars,
+  })));
+
+  return selected;
+}
+
+// Select the referenced header script range around actual scroll/observer
+// logic when present. This avoids assuming the relevant code is at byte zero.
+function buildStickyScriptTargetRequests(
+  manifestFiles: PlannerManifestFile[],
+  fullContents: Map<string, string>,
+  referencedAssets: Set<string>,
+  maxRequests = 2,
+  reservedRequests: PlannerChunkRequest[] = []
+): PlannerChunkRequest[] {
+  const candidates = manifestFiles
+    .filter((file) =>
+      file.hasMore &&
+      file.totalLength > 0 &&
+      /^assets\/.*\.js$/i.test(normalizePath(file.file)) &&
+      referencedAssets.has(normalizePath(file.file))
+    )
+    .sort((a, b) =>
+      getCoverageFilePriority(b.file, "sticky-header") -
+      getCoverageFilePriority(a.file, "sticky-header") ||
+      a.file.localeCompare(b.file)
+    );
+
+  const selected: PlannerChunkRequest[] = [];
+  const chunkSize = Math.min(3600, MAX_CHUNK_SIZE);
+  // Prefer actual observer/listener constructs. Method names are secondary
+  // navigation anchors only; they are not evidence that an observer/listener
+  // is actually installed. The final claim verifier still requires exact code.
+  const behaviorPatterns = [
+    /new\s+IntersectionObserver\b/gi,
+    /addEventListener\s*\(\s*['\"]scroll['\"]/gi,
+    /\b(?:window|document)\.onscroll\b/gi,
+    /#observeStickyPosition\b/gi,
+    /#handleWindowScroll\b/gi,
+  ];
+
+  for (const manifest of candidates) {
+    const source = fullContents.get(manifest.file);
+    if (!source) continue;
+
+    const plannerReservedRanges = reservedRequests
+      .filter((request) => normalizePath(request.file).toLowerCase() === normalizePath(manifest.file).toLowerCase())
+      .map((request) => {
+        // A null start_offset means "continue from the file's next uncovered
+        // offset" in retrieveChunk(); reserve that same range here so the
+        // targeted sticky-script window does not overlap it.
+        const requestedStart = request.start_offset ?? manifest.nextOffset;
+        const startOffset = Math.max(
+          0,
+          Math.min(source.length, requestedStart)
+        );
+        const endOffset = Math.max(
+          startOffset,
+          Math.min(source.length, requestedStart + request.max_chars)
+        );
+        return { startOffset, endOffset };
+      })
+      .filter((range) => range.endOffset > range.startOffset);
+    const knownRanges = mergeRanges([
+      ...(manifest.retrievedRanges ?? []),
+      ...plannerReservedRanges,
+    ]);
+    const offsets: Array<{ offset: number; priority: number }> = [];
+    for (let priority = 0; priority < behaviorPatterns.length; priority++) {
+      const pattern = behaviorPatterns[priority];
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(source)) !== null) {
+        offsets.push({ offset: match.index, priority });
+        if (match[0].length === 0) pattern.lastIndex++;
+      }
+    }
+
+    // Sort explicit constructs ahead of method-name anchors, then by source
+    // position. This lets two small windows cover separated observer/scroll
+    // implementations instead of spending the whole budget at byte zero.
+    offsets.sort((a, b) => a.priority - b.priority || a.offset - b.offset);
+    const seen = new Set<number>();
+
+    for (const candidate of offsets) {
+      if (selected.length >= maxRequests) break;
+      if (seen.has(candidate.offset)) continue;
+      seen.add(candidate.offset);
+      if (knownRanges.some((range) =>
+        range.startOffset <= candidate.offset && candidate.offset < range.endOffset
+      )) continue;
+
+      const desiredStart = Math.max(0, candidate.offset - 900);
+      const requestStart = findNextGap(knownRanges, desiredStart, source.length);
+      if (requestStart >= source.length || requestStart > candidate.offset) continue;
+
+      const maxChars = Math.min(chunkSize, source.length - requestStart);
+      if (candidate.offset >= requestStart + maxChars) continue;
+
+      selected.push({
+        file: manifest.file,
+        start_offset: requestStart,
+        max_chars: maxChars,
+      });
+      knownRanges.push({
+        startOffset: requestStart,
+        endOffset: requestStart + maxChars,
+      });
+      const merged = mergeRanges(knownRanges);
+      knownRanges.splice(0, knownRanges.length, ...merged);
+    }
+
+    if (selected.length > 0) break;
+  }
+
+  console.log("STICKY SCRIPT TARGET RANGE CANDIDATES:", selected.map((request) => ({
+    file: request.file,
+    startOffset: request.start_offset,
+    maxChars: request.max_chars,
+  })));
+
+  return selected;
+}
+
 // --------------------------------------------------
 // DETERMINISTIC, DOMAIN-AWARE BACKEND COVERAGE CHECK
 // --------------------------------------------------
@@ -3522,13 +3869,19 @@ function buildBackendCoverageRequests(
   manifestFiles: PlannerManifestFile[],
   plannerRequests: PlannerChunkRequest[],
   maxRequests = MAX_ON_DEMAND_FILES,
-  prompt = ""
+  prompt = "",
+  fullContents: Map<string, string> = new Map()
 ): PlannerChunkRequest[] {
   const requestedFiles = new Set(
     plannerRequests.map((request) => request.file)
   );
 
   const requestedDomains = detectCoverageDomains(prompt);
+  const stickyHeaderSource = fullContents.get("sections/header.liquid") ?? "";
+  const directlyReferencedStickyAssets = getDirectlyReferencedThemeAssetFiles(
+    stickyHeaderSource,
+    manifestFiles
+  );
   const domains = requestedDomains.filter((domain) =>
     manifestFiles.some((file) =>
       file.hasMore &&
@@ -3541,7 +3894,7 @@ function buildBackendCoverageRequests(
   const requestLimit = domains.length === 1 && domains[0] === "header"
     ? Math.min(maxRequests, 3)
     : domains.length === 1 && domains[0] === "sticky-header"
-      ? Math.min(maxRequests, 2)
+      ? Math.min(maxRequests, 4)
       : maxRequests;
 
   // A narrow request must never fall through to arbitrary high-priority
@@ -3555,12 +3908,26 @@ function buildBackendCoverageRequests(
 
   const makeDomainCandidates = (domain: CoverageDomain) =>
     manifestFiles
-      .filter((file) =>
-        file.hasMore &&
-        file.totalLength > 0 &&
-        !selectedFiles.has(file.file) &&
-        getCoverageFilePriority(file.file, domain) > 0
-      )
+      .filter((file) => {
+        if (
+          !file.hasMore ||
+          file.totalLength <= 0 ||
+          selectedFiles.has(file.file) ||
+          getCoverageFilePriority(file.file, domain) <= 0
+        ) return false;
+
+        // base.css is the explicit stylesheet root. Any other CSS/JS asset
+        // must be directly referenced by sections/header.liquid.
+        const normalizedFile = normalizePath(file.file);
+        if (
+          domain === "sticky-header" &&
+          /^assets\/.*\.(?:css|js)$/i.test(normalizedFile) &&
+          normalizedFile !== "assets/base.css"
+        ) {
+          return directlyReferencedStickyAssets.has(normalizedFile);
+        }
+        return true;
+      })
       .sort((a, b) => {
         const aDomain = getCoverageFilePriority(a.file, domain);
         const bDomain = getCoverageFilePriority(b.file, domain);
@@ -3570,6 +3937,37 @@ function buildBackendCoverageRequests(
           (aDomain + a.priorityScore * 0.2 + aUnseen) ||
           a.file.localeCompare(b.file);
       });
+
+  // Sticky-header needs broader CSS coverage than a single sequential chunk.
+  // Select up to three non-overlapping base.css windows around actual sticky CSS
+  // selectors/declarations, plus one explicitly referenced JS asset. This is
+  // still limited to the exact section-owned implementation files.
+  if (domains.length === 1 && domains[0] === "sticky-header") {
+    // Sticky CSS often has several separated state selectors. Retrieve up to
+    // three non-overlapping evidence windows before spending the remaining
+    // explicit-only budget on generic sequential gaps. This keeps the CSS
+    // state rules together in the model context instead of using a large
+    // portion of the budget on unrelated offsets.
+    const stickyCssRequests = buildStickyCssTargetRequests(
+      manifestFiles,
+      fullContents,
+      Math.min(3, requestLimit)
+    );
+    selected.push(...stickyCssRequests);
+
+    // STICKY HEADER RANGE FIX: include planner-reserved JS ranges and seek the next uncovered source gap.
+    const referencedScripts = buildStickyScriptTargetRequests(
+      manifestFiles,
+      fullContents,
+      directlyReferencedStickyAssets,
+      Math.min(2, Math.max(0, requestLimit - selected.length)),
+      plannerRequests
+    );
+
+    selected.push(...referencedScripts);
+
+    return selected;
+  }
 
   const addCandidate = (file: PlannerManifestFile) => {
     const startOffset = file.retrievedRanges.length > 0
@@ -4114,6 +4512,12 @@ const CLAIM_EVIDENCE_STOPWORDS = new Set([
 
   // Generic action words. Specific operations such as "calculate" are
   // deliberately NOT removed: the evidence must support that action too.
+  // Source-description verbs vary naturally between claim metadata and the
+  // user-facing sentence (for example, "implements" vs "defines"). They do
+  // not represent distinct implementation facts; identifiers and behavior
+  // tokens remain mandatory for traceability.
+  "define", "defines", "defined", "defining", "implement", "implements",
+  "implemented", "implementing", "implementation",
   "use", "used", "uses", "get", "gets", "got", "retrieve", "retrieves",
   "retrieved", "retrieving", "check", "checks", "checked", "checking",
   "set", "sets", "setup", "setting", "determine", "determines",
@@ -4292,6 +4696,164 @@ function hasMeaningfulTokenOverlap(left: string, right: string): boolean {
         rightToken.slice(0, prefixLength);
     })
   );
+}
+
+function isStickyHeaderSettingStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  if (!/\benable_sticky_header\b/.test(claimText) ||
+      !/\bsetting\b/.test(statementText) ||
+      !/\bsticky\s+(?:variable|mode|behavior|behaviour)\b/.test(statementText) ||
+      !/\bassign(?:ed|s)?\b/.test(statementText)) return false;
+
+  const values = ["always", "scroll-up"].filter((value) =>
+    new RegExp(`\\b${value.replace("-", "[- ]")}\\b`, "i").test(claimText)
+  );
+  if (values.length === 0) return false;
+
+  // Accept a general overview only when it explicitly describes the setting
+  // being mapped to an assigned sticky mode. Atomic sentences still need the
+  // specific mode value to be stated.
+  const hasConcreteMode = values.every((value) =>
+    new RegExp(`\\b${value.replace("-", "[- ]")}\\b`, "i").test(statementText)
+  );
+  const isExplicitSummary = /\b(?:accordingly|based\s+on|depending\s+on)\b/.test(statementText);
+  return hasConcreteMode || isExplicitSummary;
+}
+
+function isStickyHeaderAttributeOutputStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  const claimDescribesOutput = /header[- ]component/.test(claimText) &&
+    /sticky\s+attribute/.test(claimText) && /\boutputs?\b/.test(claimText);
+  const statementDescribesOutput = /header[- ]component/.test(statementText) &&
+    /sticky\s+attribute/.test(statementText) &&
+    /\b(?:receives?|outputs?|passes?|sets?|populates?|renders?)\b/.test(statementText);
+  const preservesPresenceCondition =
+    !/\b(?:when|if|while)\b/.test(claimText) ||
+    (/\bsticky\s+(?:mode|variable|value)\b/.test(statementText) &&
+      /\b(?:present|enabled|populated|truthy)\b/.test(statementText));
+  const exactQuotedGuard = /{%\s*if\s+sticky\s*%}/i.test(statement) &&
+    /sticky\s*=\s*["']{{\s*sticky\s*}}["']/i.test(statement);
+  return claimDescribesOutput && statementDescribesOutput &&
+    (exactQuotedGuard || preservesPresenceCondition);
+}
+
+function isStickyDesktopCssStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  const describesDesktopStickyContent = (value: string) =>
+    /\bdesktop\b/.test(value) &&
+    /sticky[-\s]content/.test(value) &&
+    (/\bposition\b.{0,32}\bsticky\b|\bsticky\s+position(?:ing)?\b/.test(value)) &&
+    /\btop\b|\boffset\b/.test(value);
+  return describesDesktopStickyContent(claimText) &&
+    describesDesktopStickyContent(statementText);
+}
+
+function isStickyCssDescriptionStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  const claimDescribesStickyContent = /\bsticky[-\s]+content\s+(?:css\s+)?(?:class|classes|style|styles|rule|rules)\b/.test(claimText);
+  const statementDescribesStickyContent = /\bsticky[-\s]+content\s+(?:css\s+)?(?:class|classes|style|styles|rule|rules)\b/.test(statementText);
+  const hasStickyPositionAndTop = (value: string) =>
+    /\bposition\b.{0,24}\bsticky\b|\bsticky\s+position(?:ing)?\b/.test(value) &&
+    /\b(?:top|offset)\b/.test(value);
+  return claimDescribesStickyContent && statementDescribesStickyContent &&
+    hasStickyPositionAndTop(claimText) && hasStickyPositionAndTop(statementText);
+}
+
+function isStickyObserverConstructionStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  const sameObserverOperation =
+    /#observestickyposition/i.test(claim) &&
+    /\bintersectionobserver\b/i.test(claim) &&
+    /\b(?:instantiat\w*|creat\w*|construct\w*)\b/.test(claimText) &&
+    /#observestickyposition/i.test(statement) &&
+    /\bintersectionobserver\b/i.test(statement) &&
+    /\b(?:instantiat\w*|creat\w*|construct\w*|uses?)\b/.test(statementText);
+  const thresholdPreserved = !/\bthreshold\b/i.test(claim) ||
+    /\bthreshold\b/i.test(statement);
+  return sameObserverOperation && thresholdPreserved;
+}
+
+function isStickyIntersectionStateStatementAligned(claim: string, statement: string): boolean {
+  const hasExactStateSemantics = (value: string) => {
+    const text = value.toLowerCase();
+    return /dataset\.stickystate/.test(text) &&
+      /isintersecting/.test(text) &&
+      /alwayssticky/.test(text) &&
+      /(?:intersection\s*observer callback|#observestickyposition)/i.test(value) &&
+      /inactive/.test(text) &&
+      /active/.test(text);
+  };
+  return hasExactStateSemantics(claim) && hasExactStateSemantics(statement);
+}
+
+function isStickyConnectedCallbackInitStatementAligned(claim: string, statement: string): boolean {
+  const claimDescribesInitFlow = /connectedcallback/i.test(claim) &&
+    /#observeStickyPosition/i.test(claim) && /sticky/i.test(claim);
+  const statementPreservesInitFlow = /connectedcallback/i.test(statement) &&
+    /#observeStickyPosition/i.test(statement) && /sticky/i.test(statement) &&
+    /always/i.test(statement);
+  return claimDescribesInitFlow && statementPreservesInitFlow;
+}
+
+// Keep scroll-listener claim wording aligned with the exact mode guard. This
+// accepts equivalent prose ("registers" / "adds") but never broadens the
+// source condition to every truthy sticky mode.
+function isStickyScrollListenerStatementAligned(claim: string, statement: string): boolean {
+  const describesExactScrollRegistration = (value: string): boolean => {
+    const normalized = value.toLowerCase();
+    const preservesBothModes = /\bstickyMode\b/i.test(value) &&
+      /\bscroll[- ]up\b/i.test(normalized) &&
+      /\balways\b/i.test(normalized) &&
+      /\b(?:or)\b|\|\|/i.test(normalized);
+    const describesRegistration = /\bscroll\s+event\s+listener\b/i.test(normalized) &&
+      /\b(?:adds?|registers?|attaches?|installs?)\b/i.test(normalized);
+    return preservesBothModes && describesRegistration;
+  };
+
+  return describesExactScrollRegistration(claim) &&
+    describesExactScrollRegistration(statement);
+}
+
+function isStickyObserverThresholdStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  const sameThreshold = /#observestickyposition/.test(claimText) &&
+    /#observestickyposition/.test(statementText) &&
+    /intersectionobserver/.test(claimText) && /intersectionobserver/.test(statementText) &&
+    /threshold/.test(claimText) && /threshold/.test(statementText) &&
+    /alwayssticky/.test(claimText) && /alwayssticky/.test(statementText);
+  const rootPreserved = !/getintersectionroot|\broot\b/.test(claimText) ||
+    /getintersectionroot|\broot\b/.test(statementText);
+  return sameThreshold && rootPreserved;
+}
+
+function isStickyOffscreenAssignmentStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  return /#offscreen/.test(claimText) && /#offscreen/.test(statementText) &&
+    /alwayssticky/.test(claimText) && /alwayssticky/.test(statementText) &&
+    /false/.test(claimText) && /false/.test(statementText) &&
+    /isintersecting/.test(claimText) && /isintersecting/.test(statementText) &&
+    /dataset\.stickystate/.test(claimText) && /dataset\.stickystate/.test(statementText);
+}
+
+function isStickyScrollRafStatementAligned(claim: string, statement: string): boolean {
+  const claimHasRafScrollHandler =
+    /(?:#handleWindowScroll|scroll\s+handling|scroll\s+handler)/i.test(claim) &&
+    /requestAnimationFrame/i.test(claim) &&
+    /#?updateScrollState/i.test(claim);
+  const statementDescribesSameHandler =
+    /(?:#handleWindowScroll|scroll\s+handler)/i.test(statement) &&
+    /\bscroll\b/i.test(statement) &&
+    /requestAnimationFrame/i.test(statement) &&
+    /#?updateScrollState/i.test(statement) &&
+    /\b(?:update|updates|call|calls|trigger|triggers|throttle|throttles)\b/i.test(statement);
+  return claimHasRafScrollHandler && statementDescribesSameHandler;
 }
 
 // The model is instructed to emit one independently verifiable fact per
@@ -4574,11 +5136,20 @@ function canAuthorizeDependencyTargetPath(
     statement, claim.file, dependency.to, dependency.relationship
   )) return true;
 
-  // A richer sentence can name a verified target path when its caller path is
-  // also named, the caller claim passed direct-source verification, the graph
-  // confirms the exact edge, and the sentence matches the cited claim.
+  // A richer sentence may name only the target snippet path when the cited
+  // direct-source claim itself explicitly proves that this caller renders that
+  // exact target. The verified dependency edge and sentence/claim overlap are
+  // still mandatory; this avoids rejecting valid wording such as
+  // "unit-price.liquid is rendered" solely because the caller path is omitted
+  // from the prose (the claim ID already anchors the caller source file).
+  const callerPathNamedInStatement =
+    statementFilePaths.includes(normalizePath(claim.file));
+  const callerToTargetEdgeExplicitInClaim =
+    dependencyTargetMentioned(claim.claim, dependency.to) &&
+    relationshipMatchesStatement(dependency.relationship, claim.claim);
+
   return claim.verificationMode === "direct_source" &&
-    statementFilePaths.includes(normalizePath(claim.file)) &&
+    (callerPathNamedInStatement || callerToTargetEdgeExplicitInClaim) &&
     hasMeaningfulTokenOverlap(claim.claim, statement);
 }
 
@@ -5331,10 +5902,20 @@ function supportsJsonSettingDefinitionClaim(
 
   return evidenceItems.some((evidence) => {
     let parsed: unknown;
+    const trimmedEvidence = evidence.trim();
     try {
-      parsed = JSON.parse(evidence.trim());
+      parsed = JSON.parse(trimmedEvidence);
     } catch {
-      return false;
+      // Gemini sometimes quotes every property of a complete Liquid schema
+      // setting object but omits only the surrounding `{` and `}`. Re-wrap
+      // that fragment and parse it as JSON; do not repair malformed values,
+      // missing properties, or incomplete nested structures.
+      try {
+        const propertyFragment = trimmedEvidence.replace(/,\s*$/, "");
+        parsed = JSON.parse(`{${propertyFragment}}`);
+      } catch {
+        return false;
+      }
     }
 
     if (
@@ -5356,8 +5937,9 @@ function supportsJsonSettingDefinitionClaim(
       return false;
     }
 
-    // Require the `id` property as well as its exact identifier in the claim.
-    if (!/\bid\b/i.test(claim)) return false;
+    // The exact setting identifier in the claim identifies the record's id;
+    // requiring the literal word "id" would reject natural claims such as
+    // "the enable_sticky_header setting" despite an exact source object quote.
 
     // If the claim names a known Shopify setting property, that property must
     // exist in the cited object. This prevents an excerpt missing `default`
@@ -5368,7 +5950,11 @@ function supportsJsonSettingDefinitionClaim(
       "accept", "content", "limit", "header", "group", "id",
     ];
     for (const property of knownSettingProperties) {
-      const propertyPattern = new RegExp(`\\b${property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+      // `header` frequently appears in a source path such as
+      // sections/header.liquid; that alone does not claim a JSON `header` field.
+      const propertyPattern = property === "header"
+        ? /\bheader\b(?:\s+(?:property|field)|\s*[:=])/i
+        : new RegExp(`\\b${property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
       if (propertyPattern.test(claim) && !Object.prototype.hasOwnProperty.call(definition, property)) {
         return false;
       }
@@ -5377,20 +5963,84 @@ function supportsJsonSettingDefinitionClaim(
     for (const [key, value] of Object.entries(definition)) {
       if (key === "id") continue;
 
-      // Do not claim verification of complex nested values from a loose
-      // paraphrase. Those can be supported later with a dedicated structure.
-      if (
-        value !== null &&
-        typeof value === "object"
-      ) {
-        return false;
+      const keyPattern = new RegExp(`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+      const naturalTypeWording =
+        key === "type" &&
+        typeof value === "string" &&
+        new RegExp(`\\b${String(value).replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\s+setting\\b`, "i").test(normalizedClaim);
+      if (!keyPattern.test(claim) && !naturalTypeWording) return false;
+
+      if (key === "options") {
+        if (
+          !Array.isArray(value) ||
+          value.length === 0 ||
+          !value.every((option) =>
+            option !== null &&
+            typeof option === "object" &&
+            !Array.isArray(option) &&
+            typeof (option as Record<string, unknown>).value === "string"
+          )
+        ) return false;
+
+        const optionValues = value.map((option) =>
+          String((option as Record<string, unknown>).value).toLowerCase()
+        );
+        if (new Set(optionValues).size !== optionValues.length) return false;
+        if (!optionValues.every((optionValue) => normalizedClaim.includes(optionValue))) return false;
+
+        const countMatch = normalizedClaim.match(
+          /\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+options?\b/
+        );
+        if (countMatch) {
+          const wordToNumber: Record<string, number> = {
+            one: 1, two: 2, three: 3, four: 4, five: 5,
+            six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+          };
+          const claimedCount = /^\d+$/.test(countMatch[1])
+            ? Number(countMatch[1])
+            : wordToNumber[countMatch[1]];
+          if (claimedCount !== value.length) return false;
+        }
+        continue;
       }
 
-      const keyPattern = new RegExp(`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
-      if (!keyPattern.test(claim)) return false;
+      // Keep non-options nested records unsupported until separately validated.
+      if (value !== null && typeof value === "object") return false;
 
       const renderedValue = value === null ? "null" : String(value);
-      if (!normalizedClaim.includes(renderedValue.toLowerCase())) {
+      const normalizedValue = renderedValue.toLowerCase();
+      const exactValueMentioned = normalizedClaim.includes(normalizedValue);
+      // Shopify Liquid schemas often store translated labels as keys such as
+      // `t:settings.sticky_header`. A claim that names the exact final key
+      // segment (while also identifying the label property) is sufficiently
+      // specific without inventing the translated UI text.
+      const translationKeySegmentMentioned =
+        key === "label" &&
+        /^t:[a-z0-9_-]+(?:\.[a-z0-9_-]+)+$/i.test(renderedValue) &&
+        normalizedClaim.includes(renderedValue.split(".").pop()!.toLowerCase());
+
+      // A scalar value must be associated with its own property. Merely
+      // mentioning `always` somewhere in the claim is not enough to prove it
+      // is the default, because the same word may also be one of the options.
+      const escapedValue = normalizedValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const labelAssociationValue = translationKeySegmentMentioned
+        ? renderedValue.split(".").pop()!.toLowerCase()
+        : normalizedValue;
+      const escapedLabelAssociationValue = labelAssociationValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const scalarAssociationPatterns: Record<string, RegExp> = {
+        type: new RegExp(`\\b(?:type\\s+${escapedValue}|${escapedValue}\\s+(?:type|setting))\\b`, "i"),
+        default: new RegExp(`\\b(?:default\\s+(?:value\\s+)?${escapedValue}|${escapedValue}\\s+default)\\b`, "i"),
+        label: new RegExp(`(?:\\blabel\\b.{0,48}${escapedLabelAssociationValue}|${escapedLabelAssociationValue}.{0,24}\\blabel\\b)`, "i"),
+      };
+      const scalarAssociation = scalarAssociationPatterns[key];
+      const associatedValueMentioned = scalarAssociation
+        ? scalarAssociation.test(normalizedClaim)
+        : new RegExp(`(?:\\b${key}\\b.{0,48}${escapedValue}|${escapedValue}.{0,24}\\b${key}\\b)`, "i").test(normalizedClaim);
+
+      if (key === "label") {
+        if (!exactValueMentioned && !translationKeySegmentMentioned) return false;
+        if (!associatedValueMentioned) return false;
+      } else if (!associatedValueMentioned) {
         return false;
       }
     }
@@ -5399,6 +6049,615 @@ function supportsJsonSettingDefinitionClaim(
   });
 }
 
+// Section-level Shopify settings are JSON objects embedded inside a Liquid
+// `{% schema %}` block. Verify the exact parsed object by its setting id and
+// only the properties/values that the claim actually asserts. These settings
+// must be attributed to their owning Liquid section file.
+function supportsLiquidSectionSchemaSettingDefinitionClaim(
+  claim: string,
+  evidenceItems: string[],
+  file: string
+): boolean {
+  if (
+    !/^sections\/[a-z0-9_./-]+\.liquid$/i.test(normalizePath(file)) ||
+    !/enable_sticky_header/i.test(claim)
+  ) return false;
+
+  const normalizedClaim = claim.toLowerCase();
+
+  return evidenceItems.some((evidence) => {
+    let parsed: unknown;
+    const trimmedEvidence = evidence.trim();
+    try {
+      parsed = JSON.parse(trimmedEvidence);
+    } catch {
+      // Accept a complete property fragment only when wrapping it in braces
+      // produces valid JSON. Do not repair malformed values or nested data.
+      try {
+        parsed = JSON.parse(`{${trimmedEvidence.replace(/,\s*$/, "")}}`);
+      } catch {
+        return false;
+      }
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const definition = parsed as Record<string, unknown>;
+    if (definition.id !== "enable_sticky_header") return false;
+
+    if (/\btype\b/i.test(claim)) {
+      if (typeof definition.type !== "string" ||
+          !normalizedClaim.includes(definition.type.toLowerCase())) return false;
+    }
+    if (/\blabel\b/i.test(claim)) {
+      if (typeof definition.label !== "string" ||
+          !normalizedClaim.includes(definition.label.toLowerCase())) return false;
+    }
+    if (/\bdefault\b/i.test(claim)) {
+      if (typeof definition.default !== "string" ||
+          !normalizedClaim.includes(definition.default.toLowerCase())) return false;
+    }
+    if (/\boptions?\b/i.test(claim)) {
+      if (!Array.isArray(definition.options) || definition.options.length === 0) return false;
+      const optionValues = definition.options.map((option) => {
+        if (!option || typeof option !== "object" || Array.isArray(option)) return null;
+        const value = (option as Record<string, unknown>).value;
+        return typeof value === "string" ? value.toLowerCase() : null;
+      });
+      if (optionValues.some((value) => value === null) ||
+          !optionValues.every((value) => normalizedClaim.includes(value!))) return false;
+    }
+    return true;
+  });
+}
+
+// Sticky CSS claims require the named selector and the claimed declarations
+// to occur together in one quoted rule. Generic mentions of `sticky` or `top`
+// cannot establish which selector owns those declarations.
+function supportsStickyCssRuleClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const claimWithoutThemePaths = claim.replace(
+    /\b(?:assets|blocks|config|layout|sections|snippets|templates)\/[A-Za-z0-9_./-]+\.(?:liquid|json|js|css)\b/gi,
+    " "
+  );
+  const selectorMatch = claimWithoutThemePaths.match(/\.(?:[A-Za-z_-][A-Za-z0-9_-]*)/);
+  if (!selectorMatch || !/\b(?:position|sticky|top|offset|z-index)\b/i.test(claim)) return false;
+
+  const selector = selectorMatch[0];
+  const requiresStickyPosition = /\bposition\b.{0,32}\bsticky\b|\bposition\s*:\s*sticky\b|\bsticky positioning\b/i.test(claim);
+  const requiresTop = /\btop\b|\boffset\b/i.test(claim);
+  const requiresZIndex = /\bz-index\b/i.test(claim);
+  const requiresDesktopMedia = /\bdesktop media query\b|\bdesktop\s+query\b/i.test(claim);
+  const normalizeCssEvidence = (value: string) =>
+    value.replace(/\s+/g, " ").trim().toLowerCase();
+
+  // CSS selectors may be grouped, so the claimed selector can be followed by
+  // a comma (or another selector suffix) before the rule's opening brace.
+  // Locate the next rule block after the selector instead of requiring
+  // `selector {` with no intervening selector-list syntax.
+  return sourceSegments.some((segment) => {
+    const normalizedSegment = normalizeCssEvidence(segment);
+    const evidenceForRule = evidenceItems.find((evidence) => {
+      const normalizedEvidence = normalizeCssEvidence(evidence);
+      return normalizedEvidence.length > 0 &&
+        normalizedSegment.includes(normalizedEvidence) &&
+        normalizedEvidence.includes(selector.toLowerCase()) &&
+        (!requiresStickyPosition || /position\s*:\s*sticky\b/i.test(evidence)) &&
+        (!requiresTop || /\btop\s*:/i.test(evidence)) &&
+        (!requiresZIndex || /\bz-index\s*:/i.test(evidence)) &&
+        (!requiresDesktopMedia || /@media\s+(?:screen\s+and\s+)?\(\s*min-width\s*:\s*750px\s*\)/i.test(evidence));
+    });
+    if (!evidenceForRule) return false;
+
+    const selectorIndex = segment.toLowerCase().indexOf(selector.toLowerCase());
+    if (selectorIndex < 0) return false;
+    const openingBrace = segment.indexOf("{", selectorIndex + selector.length);
+    if (openingBrace < 0) return false;
+    const closingBraceBeforeOpen = segment.indexOf("}", selectorIndex + selector.length);
+    if (closingBraceBeforeOpen >= 0 && closingBraceBeforeOpen < openingBrace) return false;
+    const closingBrace = segment.indexOf("}", openingBrace + 1);
+    if (closingBrace < 0) return false;
+
+    const declarations = segment.slice(openingBrace + 1, closingBrace);
+    const selectorList = segment.slice(selectorIndex, openingBrace);
+    if (!selectorList.toLowerCase().includes(selector.toLowerCase())) return false;
+
+    if (requiresStickyPosition && !/(?:^|;)\s*position\s*:\s*sticky\b/i.test(declarations)) return false;
+    if (requiresTop && !/(?:^|;)\s*top\s*:\s*[^;]+/i.test(declarations)) return false;
+    if (requiresZIndex && !/(?:^|;)\s*z-index\s*:\s*[^;]+/i.test(declarations)) return false;
+
+    if (requiresDesktopMedia) {
+      const mediaStart = segment.lastIndexOf("@media", selectorIndex);
+      if (mediaStart < 0) return false;
+      const mediaPrelude = segment.slice(mediaStart, selectorIndex);
+      if (!/@media\s+(?:screen\s+and\s+)?\(\s*min-width\s*:\s*750px\s*\)/i.test(mediaPrelude)) return false;
+    }
+
+    return true;
+  });
+}
+
+// Accept a natural-language description of the sticky-content class only
+// when the same quoted rule and contiguous source segment bind that exact
+// selector to both position: sticky and a top declaration.
+function supportsStickyCssContentClassDescriptionClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/\bsticky[-\s]+content\s+(?:css\s+)?(?:class|classes|style|styles)\b/.test(text) ||
+      !/\bposition\b/.test(text) || !/\bsticky\b/.test(text) ||
+      !/\b(?:top|offset)\b/.test(text)) return false;
+
+  const exactRule = (value: string) =>
+    /\.sticky-content\b[^{}]*\{[^}]*position\s*:\s*sticky\b[^}]*\btop\s*:[^}]*\}/i.test(value);
+
+  return evidenceItems.some((evidence) =>
+    exactRule(evidence) && sourceSegments.some((segment) =>
+      evidenceMatchesSource(evidence, segment) && exactRule(segment)
+    )
+  );
+}
+
+// v45: recognize exact sticky-header code excerpts when the model's claim
+// uses equivalent but shorter wording. Every check still requires both the
+// quoted evidence and the matching contiguous source segment.
+function supportsStickyObserverBooleanCallDescriptionClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/observeStickyPosition/i.test(claim) ||
+      !/stickyMode/i.test(claim) ||
+      !/\balways\b/.test(text) ||
+      !/\bboolean\b/.test(text)) return false;
+
+  const exactCall = /#observeStickyPosition\s*\(\s*stickyMode\s*===\s*["']always["']\s*\)/i;
+  const quotedCallPresent = evidenceItems.some((evidence) => exactCall.test(evidence));
+  const sourceShowsAttributeToBooleanFlow = sourceSegments.some((segment) =>
+    /const\s+stickyMode\s*=\s*this\.getAttribute\(\s*["']sticky["']\s*\)/i.test(segment) &&
+    exactCall.test(segment)
+  );
+  return quotedCallPresent && sourceShowsAttributeToBooleanFlow;
+}
+
+function supportsStickyScrollListenerDescriptionClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/stickyMode/i.test(claim) ||
+      !/scroll\s+event\s+listener/.test(text) ||
+      !/scroll-up/.test(text) || !/\balways\b/.test(text)) return false;
+
+  const exactRegistration = /if\s*\(\s*stickyMode\s*===\s*["']scroll-up["']\s*\|\|\s*stickyMode\s*===\s*["']always["']\s*\)\s*\{[\s\S]*?getScrollEventTarget\s*\(\s*\)[\s\S]*?addEventListener\s*\(\s*["']scroll["']\s*,\s*this\.#handleWindowScroll\s*\)/i;
+  return evidenceItems.some((evidence) => exactRegistration.test(evidence)) &&
+    sourceSegments.some((segment) => exactRegistration.test(segment));
+}
+
+function supportsStickyRafDescriptionClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/requestAnimationFrame/i.test(claim) ||
+      !/updateScrollState/i.test(claim) ||
+      !/\b(?:scroll|throttl)\w*\b/.test(text)) return false;
+
+  const exactHandler = /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{[\s\S]*?requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{[\s\S]*?#updateScrollState\s*\(\s*\)[\s\S]*?\}\s*\)\s*;?[\s\S]*?\};/i;
+  return evidenceItems.some((evidence) => exactHandler.test(evidence)) &&
+    sourceSegments.some((segment) => exactHandler.test(segment));
+}
+
+function supportsStickyDesktopCssDescriptionClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  const describesDesktopStickyRule =
+    /\bdesktop\b/.test(text) &&
+    /sticky[-\s]content(?:--desktop)?/.test(text) &&
+    (/\bposition\b.{0,32}\bsticky\b/.test(text) || /\bsticky\s+position(?:ing)?\b/.test(text)) &&
+    /\btop\b|\boffset\b/.test(text);
+  if (!describesDesktopStickyRule) return false;
+
+  // The claim may call this a desktop sticky-content rule without saying
+  // "media query". The quoted source must still prove the exact grouped
+  // selector, 750px media guard, position declaration, and top offset.
+  const desktopStickyRule = /@media\s+(?:screen\s+and\s*)?\(\s*min-width\s*:\s*750px\s*\)\s*\{[\s\S]*?\.sticky-content--desktop\s*,\s*\.sticky-content--desktop\.full-height--desktop\s*>\s*\.group-block\s*\{(?=[^}]*\bposition\s*:\s*sticky\s*;)(?=[^}]*\btop\s*:\s*var\(\s*--sticky-header-offset\s*,\s*0\s*\)\s*;)[^}]*\}\s*\}/i;
+  return evidenceItems.some((evidence) => desktopStickyRule.test(evidence)) &&
+    sourceSegments.some((segment) =>
+      evidenceItems.some((evidence) =>
+        evidenceMatchesSource(evidence, segment) && desktopStickyRule.test(segment)
+      )
+    );
+}
+
+// Verify connectedCallback's sticky-attribute-to-observer initialization flow.
+// The exact quote and its placement inside the lifecycle callback are required.
+function supportsStickyConnectedCallbackStickyObserverInitClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/connectedCallback/i.test(claim) || !/sticky/i.test(claim) ||
+      !/#observeStickyPosition/i.test(claim)) return false;
+
+  const exactFlow = (value: string) =>
+    /const\s+stickyMode\s*=\s*this\.getAttribute\(\s*["']sticky["']\s*\)/i.test(value) &&
+    /if\s*\(\s*stickyMode\s*\)\s*\{[\s\S]*?#observeStickyPosition\s*\(\s*stickyMode\s*===\s*["']always["']\s*\)/i.test(value);
+
+  if (!evidenceItems.some(exactFlow)) return false;
+  return sourceSegments.some((segment) => {
+    const callback = /\bconnectedCallback\b\s*(?:=\s*)?(?:async\s*)?\([^)]*\)\s*(?:=>\s*)?\{/i.exec(segment);
+    if (!callback) return false;
+    const bodyStart = callback.index + callback[0].length;
+    return exactFlow(segment.slice(bodyStart, bodyStart + 12000));
+  });
+}
+
+// Verify the threshold ternary only when it belongs to the actual observer
+// initialization inside #observeStickyPosition.
+function supportsStickyObserverThresholdClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/#observeStickyPosition/i.test(claim) ||
+      !/IntersectionObserver/i.test(claim) ||
+      !/threshold/i.test(claim) ||
+      !/alwaysSticky/i.test(claim)) return false;
+
+  const exactThreshold = /threshold\s*:\s*alwaysSticky\s*\?\s*1\s*:\s*0/i;
+  if (!evidenceItems.some((evidence) => exactThreshold.test(evidence))) return false;
+
+  return sourceSegments.some((segment) => {
+    const method = /#observeStickyPosition\s*(?:=\s*\([^)]*\)\s*=>|\([^)]*\))\s*\{/i.exec(segment);
+    if (!method) return false;
+    const bodyStart = method.index + method[0].length;
+    const afterMethod = segment.slice(bodyStart);
+    const nextPrivateMethod = afterMethod.search(/\n\s*#[A-Za-z_$][A-Za-z0-9_$]*\s*(?:=|\()/);
+    const body = nextPrivateMethod >= 0 ? afterMethod.slice(0, nextPrivateMethod) : afterMethod.slice(0, 12000);
+    return exactThreshold.test(body) &&
+      /new\s+IntersectionObserver\s*\(/i.test(body) &&
+      /\.observe\s*\(\s*this\s*\)/i.test(body);
+  });
+}
+
+// v44: align sticky Liquid-setting, sticky-content CSS, and observer-property
+// claims with their exact supplied source excerpts without weakening generic matching.
+// Narrow explicit-evidence validators for sticky-header claims. These validate
+// the exact quoted Liquid/JS constructs; they do not grant generic keyword-based
+// verification. The quoted evidence is separately required to match both the
+// sent context and the actual theme source by verifyAnswerClaim.
+// Verify the broader statement that the Liquid section evaluates the sticky
+// setting. The quote and contiguous source must show the actual setting
+// comparisons; merely mentioning the setting name is not enough.
+function supportsStickyHeaderSettingEvaluationClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/\benable_sticky_header\b/.test(text) ||
+      !/\b(?:evaluat\w*|read\w*|check\w*|control\w*|determin\w*)\b/.test(text)) return false;
+
+  const hasBothBranches = (value: string) =>
+    /if\s+section\.settings\.enable_sticky_header\s*==\s*['"]always['"]/i.test(value) &&
+    /elsif\s+section\.settings\.enable_sticky_header\s*==\s*['"]scroll-up['"]/i.test(value);
+
+  return evidenceItems.some(hasBothBranches) && sourceSegments.some(hasBothBranches);
+}
+
+// The connectedCallback excerpt must read the sticky attribute within that
+// lifecycle method, not merely somewhere else in HeaderComponent.
+function supportsStickyConnectedCallbackAttributeReadClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/connectedcallback/.test(text) || !/sticky attribute/.test(text) ||
+      !/\b(?:read|reads|reading|getattribute)\b/.test(text)) return false;
+
+  const hasQuotedRead = evidenceItems.some((evidence) =>
+    /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(evidence)
+  );
+  if (!hasQuotedRead) return false;
+
+  return sourceSegments.some((segment) => {
+    const callback = /connectedCallback\s*=\s*\(\)\s*=>\s*\{|connectedCallback\s*\(\s*\)\s*\{/i.exec(segment);
+    if (!callback) return false;
+    const bodyStart = callback.index + callback[0].length;
+    const body = segment.slice(bodyStart, bodyStart + 8000);
+    return /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(body);
+  });
+}
+
+// Verify that the boolean passed to #observeStickyPosition is derived from
+// the actual sticky attribute value, rather than accepting a generic method
+// mention or an unrelated boolean argument.
+function supportsStickyAttributeBooleanObserverCallClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/#observeStickyPosition/i.test(claim) || !/\bboolean\b/.test(text) ||
+      !/sticky attribute/.test(text)) return false;
+
+  const hasExactCall = (value: string) =>
+    /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(value) &&
+    /#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(value);
+  return evidenceItems.some(hasExactCall) && sourceSegments.some(hasExactCall);
+}
+
+// A scroll-listener claim is accepted only when the excerpt proves the mode
+// guard, resolves the scroll target, and registers the exact handler.
+function supportsStickyScrollContainerListenerClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/scroll container/.test(text) || !/scroll event listener/.test(text) ||
+      !/stickyMode/i.test(claim) || !/scroll-up/.test(text) || !/always/.test(text)) return false;
+
+  const hasExactRegistration = (value: string) =>
+    /if\s*\(\s*stickyMode\s*===\s*['"]scroll-up['"]\s*\|\|\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(value) &&
+    /getScrollEventTarget\s*\(\s*\)/i.test(value) &&
+    /addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)/i.test(value);
+  return evidenceItems.some(hasExactRegistration) && sourceSegments.some(hasExactRegistration);
+}
+
+// The dataset claim must be backed by an assignment inside the observed
+// sticky-position callback and be present verbatim in both supplied evidence
+// and the contiguous source segment.
+function supportsStickyIntersectionObserverDatasetUpdateClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/intersectionobserver/.test(text) || !/dataset\.stickystate/.test(text) ||
+      !/\b(?:update|updates|assign|sets?)\b/.test(text)) return false;
+
+  const hasStateAssignment = (value: string) =>
+    /if\s*\(\s*alwaysSticky\s*\)/i.test(value) &&
+    /dataset\.stickyState\s*=\s*isIntersecting\s*\?\s*['"]inactive['"]\s*:\s*['"]active['"]/i.test(value);
+
+  return evidenceItems.some(hasStateAssignment) && sourceSegments.some((segment) =>
+    /#observeStickyPosition\s*=\s*\([^)]*\)\s*=>\s*\{/i.test(segment) &&
+    /new\s+IntersectionObserver\s*\(/i.test(segment) &&
+    hasStateAssignment(segment)
+  );
+}
+
+function supportsStickyHeaderLiquidSettingAssignmentClaim(
+  claim: string,
+  evidenceItems: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/enable_sticky_header/.test(text) || !/\bsticky\b/.test(text) ||
+      !/\balways\b/.test(text) || !/scroll-up/.test(text)) return false;
+  return evidenceItems.some((evidence) =>
+    /if\s+section\.settings\.enable_sticky_header\s*==\s*['"]always['"]/i.test(evidence) &&
+    /assign\s+sticky\s*=\s*['"]always['"]/i.test(evidence) &&
+    /elsif\s+section\.settings\.enable_sticky_header\s*==\s*['"]scroll-up['"]/i.test(evidence) &&
+    /assign\s+sticky\s*=\s*['"]scroll-up['"]/i.test(evidence)
+  );
+}
+
+function supportsStickyHeaderAttributeOutputClaim(
+  claim: string,
+  evidenceItems: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/\bsticky\b/.test(text) || !/header component|header-component/.test(text) ||
+      !/attribute/.test(text)) return false;
+  return evidenceItems.some((evidence) =>
+    /{%\s*if\s+sticky\s*%}/i.test(evidence) &&
+    /sticky\s*=\s*["']{{\s*sticky\s*}}["']/i.test(evidence) &&
+    /{%\s*endif\s*%}/i.test(evidence)
+  );
+}
+
+function supportsStickyIntersectionObserverFieldClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  const identifiesObserverProperty = /intersectionobserver/.test(text) &&
+    /\b(?:property|field|instance\s+property)\b/.test(text);
+  if (!identifiesObserverProperty) return false;
+
+  const hasTypedFieldEvidence = (evidence: string) =>
+    /intersection observer for monitoring sticky header position/i.test(evidence) &&
+    /@type\s*\{\s*IntersectionObserver\s*\|\s*null\s*\}/i.test(evidence) &&
+    /#intersectionObserver\s*=\s*null\s*;/i.test(evidence);
+
+  return evidenceItems.some(hasTypedFieldEvidence) && sourceSegments.some((segment) =>
+    /class\s+HeaderComponent\b/.test(segment) &&
+    /#intersectionObserver\s*=\s*null\s*;/i.test(segment)
+  );
+}
+
+function supportsStickyIntersectionObserverBehaviorClaim(
+  claim: string,
+  evidenceItems: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/intersectionobserver/.test(text) || !/sticky position/.test(text) ||
+      !/alwaysSticky/.test(claim)) return false;
+  return evidenceItems.some((evidence) =>
+    /new\s+IntersectionObserver\s*\(/i.test(evidence) &&
+    /if\s*\(\s*alwaysSticky\s*\)/i.test(evidence) &&
+    /dataset\.stickyState\s*=/.test(evidence) &&
+    /#offscreen\s*=/.test(evidence)
+  );
+}
+
+function supportsStickyScrollRafHandlerClaim(
+  claim: string,
+  evidenceItems: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/#handleWindowScroll/i.test(claim) || !/requestanimationframe/.test(text) ||
+      !/scroll event|scroll updates?/.test(text)) return false;
+  return evidenceItems.some((evidence) =>
+    /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{/i.test(evidence) &&
+    /requestAnimationFrame\s*\(/i.test(evidence) &&
+    /#updateScrollState\s*\(/i.test(evidence)
+  );
+}
+
+function supportsStickyConnectedCallbackSetupClaim(
+  claim: string,
+  evidenceItems: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/connectedCallback/i.test(claim) || !/scroll event listener/.test(text) && !/scroll listeners/.test(text) ||
+      !/intersection observer/.test(text) || !/sticky mode/.test(text)) return false;
+  return evidenceItems.some((evidence) =>
+    /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(evidence) &&
+    /#observeStickyPosition\s*\(/i.test(evidence) &&
+    /addEventListener\s*\(\s*['"]scroll['"]/i.test(evidence) &&
+    /scrollContainerMediaQuery\.addEventListener/i.test(evidence)
+  );
+}
+
+// Exact validators for the concrete HeaderComponent excerpts commonly returned
+// by the planner. Each validator requires the quoted source operations; these
+// are not generic keyword exemptions.
+function supportsStickyBreakpointAttributeReadClaim(claim: string, evidenceItems: string[]): boolean {
+  if (!/#handleBreakpointChange/i.test(claim) || !/sticky attribute/i.test(claim)) return false;
+  return evidenceItems.some((evidence) =>
+    /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{/i.test(evidence) &&
+    /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(evidence)
+  );
+}
+
+function supportsStickyBreakpointObserverResetClaim(claim: string, evidenceItems: string[]): boolean {
+  if (!/#handleBreakpointChange/i.test(claim) || !/intersection observer/i.test(claim) ||
+      !/disconnect/i.test(claim) || !/#observeStickyPosition/i.test(claim)) return false;
+  return evidenceItems.some((evidence) =>
+    /#intersectionObserver\s*\?\.disconnect\s*\(\s*\)/i.test(evidence) &&
+    /#intersectionObserver\s*=\s*null/i.test(evidence) &&
+    /#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(evidence)
+  );
+}
+
+function supportsStickyIntersectionStateAssignmentClaim(claim: string, evidenceItems: string[]): boolean {
+  const text = claim.toLowerCase();
+  if (!/intersection observer callback/.test(text) || !/dataset\.stickystate/.test(text) ||
+      !/isintersecting/.test(text) || !/alwayssticky/.test(text)) return false;
+  return evidenceItems.some((evidence) =>
+    /if\s*\(\s*alwaysSticky\s*\)/i.test(evidence) &&
+    /dataset\.stickyState\s*=\s*isIntersecting\s*\?\s*['"]inactive['"]\s*:\s*['"]active['"]/i.test(evidence)
+  );
+}
+
+function supportsStickyOffscreenAssignmentClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/intersection\s*observer callback/.test(text) || !/#offscreen/.test(claim) ||
+      !/alwayssticky/.test(text) || !/false/.test(text)) return false;
+
+  const pairedBranch = /if\s*\(\s*alwaysSticky\s*\)\s*\{[\s\S]{0,1800}?\}\s*else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
+  const quotedElseAssignment = /else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
+  return evidenceItems.some((evidence) =>
+    pairedBranch.test(evidence) && quotedElseAssignment.test(evidence)
+  ) && sourceSegments.some((segment) => pairedBranch.test(segment));
+}
+
+function supportsStickyScrollDirectionAssignmentClaim(claim: string, evidenceItems: string[]): boolean {
+  const text = claim.toLowerCase();
+  if (!/#updateScrollState/i.test(claim) || !/dataset\.scrolldirection/.test(text) ||
+      !/stickyMode/i.test(claim) || !/always/.test(text)) return false;
+  return evidenceItems.some((evidence) =>
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(evidence) &&
+    /dataset\.scrollDirection\s*=\s*['"]none['"]/i.test(evidence) &&
+    /dataset\.scrollDirection\s*=\s*['"]up['"]/i.test(evidence) &&
+    /dataset\.scrollDirection\s*=\s*['"]down['"]/i.test(evidence)
+  );
+}
+
+// A claim that IntersectionObserver is installed by #observeStickyPosition
+// needs both the constructor in cited evidence and the constructor inside
+// that same method in the contiguous source segment sent to the model.
+function supportsStickyHeaderObserverClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/#observeStickyPosition/i.test(claim) || !/\bIntersectionObserver\b/i.test(claim)) return false;
+  if (!evidenceItems.some((evidence) => /new\s+IntersectionObserver\s*\(/i.test(evidence))) return false;
+
+  const methodPattern = /#observeStickyPosition\s*=\s*\([^)]*\)\s*=>\s*\{/;
+  return sourceSegments.some((segment) => {
+    const method = methodPattern.exec(segment);
+    if (!method) return false;
+    const bodyStart = method.index + method[0].length;
+    const afterMethodStart = segment.slice(bodyStart);
+    const nextPrivateMethod = afterMethodStart.search(/\n\s*#[A-Za-z_$][A-Za-z0-9_$]*\s*=/);
+    const methodBody = nextPrivateMethod >= 0
+      ? afterMethodStart.slice(0, nextPrivateMethod)
+      : afterMethodStart.slice(0, 12000);
+    return /new\s+IntersectionObserver\s*\(/i.test(methodBody);
+  });
+}
+
+// Verify sticky scroll-state claims only when the quoted evidence and one
+// contiguous supplied source segment contain the exact private method plus
+// the state/direction operations described by the claim. This is deliberately
+// structural: generic words such as "sticky" or "scroll" are not sufficient.
+function supportsStickyHeaderScrollStateClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/#updateScrollState/i.test(claim)) return false;
+  const claimText = claim.toLowerCase();
+  const mentionsState = /\b(?:state|sticky|active|dataset)\b/.test(claimText);
+  const mentionsDirection = /\b(?:direction|scrolling|scroll)\b/.test(claimText);
+  if (!mentionsState || !mentionsDirection) return false;
+
+  const methodPattern = /#updateScrollState\s*=\s*\(\)\s*=>\s*\{/;
+  return sourceSegments.some((segment) => {
+    const method = methodPattern.exec(segment);
+    if (!method) return false;
+    const bodyStart = method.index + method[0].length;
+    const afterMethodStart = segment.slice(bodyStart);
+    const nextPrivateMethod = afterMethodStart.search(/\n\s*#[A-Za-z_$][A-Za-z0-9_$]*\s*=/);
+    const methodBody = nextPrivateMethod >= 0
+      ? afterMethodStart.slice(0, nextPrivateMethod)
+      : afterMethodStart.slice(0, 12000);
+
+    const hasStickyMode = /getAttribute\s*\(\s*["']sticky["']\s*\)/i.test(methodBody);
+    const hasScrollPosition = /getScrollTop\s*\(/i.test(methodBody);
+    const hasDirectionState = /dataset\.scrollDirection\s*=/.test(methodBody);
+    const hasStickyState = /dataset\.stickyState\s*=/.test(methodBody);
+    const hasEvidenceQuote = evidenceItems.some((evidence) =>
+      /#updateScrollState/i.test(evidence) &&
+      /dataset\.scrollDirection\s*=/.test(evidence) &&
+      /dataset\.stickyState\s*=/.test(evidence)
+    );
+
+    return hasStickyMode && hasScrollPosition && hasDirectionState &&
+      hasStickyState && hasEvidenceQuote;
+  });
+}
 // Product-card currency settings are simple truthy Liquid guards rather than
 // equality comparisons. Verify the exact setting-to-flag assignment pair.
 function supportsUseCurrencySettingAssignmentClaim(
@@ -5423,10 +6682,11 @@ function supportsUseCurrencySettingAssignmentClaim(
   );
 }
 
-// Product-page quantity-break verification requires one single quoted
-// evidence item to contain the complete outer product-card split, the nested
-// selected-variant check, the assignment, and both relevant closing endif tags.
-// Finding the outer `if/else` elsewhere in the sent context is not enough.
+// Strict evidence helper retained for claims that explicitly describe the
+// complete `if is_product_card` / `else` block. A narrower product-page
+// quantity-break claim can instead quote its exact nested check + assignment;
+// the active `else` branch is then independently checked against the same
+// contiguous source segment sent to Gemini (see supportsVolumePricingDetectionClaim).
 function evidenceProvesCompleteProductPageQuantityBreakBlock(
   evidenceItems: string[]
 ): boolean {
@@ -5517,11 +6777,10 @@ function supportsVolumePricingDetectionClaim(
   const citesVariantCheckAndAssignment = evidenceItems.some((evidence) =>
     variantCheckPattern.test(evidence) && variantAssignmentPattern.test(evidence)
   );
-  // The full outer condition and inner operation must be present in one quoted
-  // evidence item; a context-only outer `if/else` cannot upgrade an `else`-only
-  // quote into proof of the complete product-page branch.
-  const productPageEvidenceIsComplete =
-    evidenceProvesCompleteProductPageQuantityBreakBlock(evidenceItems);
+  // Evidence must quote the exact nested selected-variant condition and true
+  // assignment together. The enclosing product-card `else` is verified from
+  // the same contiguous source segment, rather than requiring Gemini to repeat
+  // the entire outer block in its evidence quote.
   const productCardElseScopeInSentContext = sourceSegments.some((segment) =>
     /\bif\s+is_product_card\b[\s\S]{0,6000}\belse\b/i.test(segment)
   );
@@ -5542,13 +6801,13 @@ function supportsVolumePricingDetectionClaim(
       cardAssignmentIsInsideProductCardBranch;
   }
   if (productPageClaim) {
-    return citesVariantCheckAndAssignment && productPageEvidenceIsComplete &&
+    return citesVariantCheckAndAssignment &&
       productCardElseScopeInSentContext && variantAssignmentIsInsideProductPageBranch;
   }
 
   return (citesCardAssignment && citesCardGuard &&
       cardAssignmentIsInsideProductCardBranch) ||
-    (citesVariantCheckAndAssignment && productPageEvidenceIsComplete &&
+    (citesVariantCheckAndAssignment &&
       productCardElseScopeInSentContext && variantAssignmentIsInsideProductPageBranch);
 }
 
@@ -5830,7 +7089,8 @@ async function verifyAnswerClaim(
   availableThemeFiles: Set<string>,
   filesIncludedInContext: Set<string>,
   includedSourceContent: Map<string, string>,
-  verifiedDependencies: VerifiedDependency[] = []
+  verifiedDependencies: VerifiedDependency[] = [],
+  explicitFileAllowlist?: Set<string> | null
 ): Promise<VerifiedAnswerClaim> {
   const file = normalizePath(claim.file || "");
   const knownThemePaths = new Set<string>([
@@ -5860,6 +7120,9 @@ async function verifyAnswerClaim(
   ) {
     verificationReason =
       "Missing claim, file path, or evidence.";
+  } else if (explicitFileAllowlist && !isPathAllowedByScope(file, explicitFileAllowlist)) {
+    verificationReason =
+      "Claim source file is outside the user's explicit file-only scope.";
   } else if (!availableThemeFiles.has(file)) {
     verificationReason =
       "File does not exist in the Horizon theme.";
@@ -5950,6 +7213,33 @@ async function verifyAnswerClaim(
           supportsVolumePricingDetectionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsProductPageQuantityBreakBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsJsonSettingDefinitionClaim(claim.claim, evidenceItems) ||
+          supportsLiquidSectionSchemaSettingDefinitionClaim(claim.claim, evidenceItems, file) ||
+          supportsStickyCssRuleClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyCssContentClassDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderObserverClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderScrollStateClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverThresholdClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyAttributeBooleanObserverCallClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverBooleanCallDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyScrollContainerListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyScrollListenerDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyIntersectionObserverDatasetUpdateClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyHeaderAttributeOutputClaim(claim.claim, evidenceItems) ||
+          supportsStickyIntersectionObserverFieldClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyIntersectionObserverBehaviorClaim(claim.claim, evidenceItems) ||
+          supportsStickyScrollRafHandlerClaim(claim.claim, evidenceItems) ||
+          supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems) ||
+          supportsStickyIntersectionStateAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyOffscreenAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyScrollDirectionAssignmentClaim(claim.claim, evidenceItems) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments);
         const claimIsAtomic = isAtomicAnswerClaim(claim.claim) || verifiedAtomicPattern;
@@ -5970,6 +7260,10 @@ async function verifyAnswerClaim(
           (/\btransparent\b/.test(claimTextLower) && /not[- ]sticky/.test(claimTextLower)) ||
           (/\bshow_unit_price\b/.test(claimTextLower) && /\bunit_price\b/.test(claimTextLower)) ||
           (/\b[a-z0-9_-]+\.js\b/.test(claimTextLower) && /\bmodule\b/.test(claimTextLower) && /\bscript\b/.test(claimTextLower)) ||
+          (/enable_sticky_header/i.test(claimTextLower) && /\b(?:schema|setting|select|options?)\b/.test(claimTextLower)) ||
+          (/\.sticky-content\b/i.test(claimTextLower) && /\b(?:position|sticky|top|offset|z-index)\b/.test(claimTextLower)) ||
+          (/#observestickyposition/i.test(claimTextLower) && /\bintersectionobserver\b/.test(claimTextLower)) ||
+          (/#updatescrollstate/i.test(claimTextLower) && /\b(?:sticky|state|scroll|direction|dataset)\b/.test(claimTextLower)) ||
           (/\buse_currency\b/.test(claimTextLower) &&
             /\b(?:true|false|else)\b/.test(claimTextLower) &&
             /\b(?:money|format(?:s|ting)?|branch|else)\b/.test(claimTextLower)) ||
@@ -5993,6 +7287,33 @@ async function verifyAnswerClaim(
           supportsDefaultLiquidCaseBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsJsonSettingDefinitionClaim(claim.claim, evidenceItems) ||
+          supportsLiquidSectionSchemaSettingDefinitionClaim(claim.claim, evidenceItems, file) ||
+          supportsStickyCssRuleClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyCssContentClassDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderObserverClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderScrollStateClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverThresholdClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyAttributeBooleanObserverCallClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserverBooleanCallDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyScrollContainerListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyScrollListenerDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyIntersectionObserverDatasetUpdateClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyHeaderAttributeOutputClaim(claim.claim, evidenceItems) ||
+          supportsStickyIntersectionObserverFieldClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyIntersectionObserverBehaviorClaim(claim.claim, evidenceItems) ||
+          supportsStickyScrollRafHandlerClaim(claim.claim, evidenceItems) ||
+          supportsStickyConnectedCallbackSetupClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointAttributeReadClaim(claim.claim, evidenceItems) ||
+          supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems) ||
+          supportsStickyIntersectionStateAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyOffscreenAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyScrollDirectionAssignmentClaim(claim.claim, evidenceItems) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsProductPageQuantityBreakBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsModuleScriptLoadingClaim(claim.claim, evidenceItems) ||
@@ -6033,7 +7354,7 @@ async function verifyAnswerClaim(
           const possibleTargets =
             extractThemeFileReferences(claim.claim, knownThemePaths);
 
-          const matchingDependency = claimSubjectMatchesSourceFile
+          const matchingDependency = claimSubjectMatchesSourceFile && !explicitFileAllowlist
             ? possibleTargets
             .map((target) =>
               findVerifiedDependencyRelationship(
@@ -6484,7 +7805,61 @@ function enforceAnswerClaimReferences(
             getClaimEvidenceTokens(claim.claim)
               .filter((token) => token !== "else")
               .every((token) => getClaimEvidenceTokens(statementText).includes(token));
-          if (directTokenAlignment || useCurrencyElseAlignment) {
+          const stickyScrollRafAlignment = isStickyScrollRafStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyHeaderSettingAlignment = isStickyHeaderSettingStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyCssDescriptionAlignment = isStickyCssDescriptionStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyObserverConstructionAlignment = isStickyObserverConstructionStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyIntersectionStateAlignment = isStickyIntersectionStateStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyHeaderAttributeOutputAlignment = isStickyHeaderAttributeOutputStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyDesktopCssAlignment = isStickyDesktopCssStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyConnectedCallbackInitAlignment = isStickyConnectedCallbackInitStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyObserverThresholdAlignment = isStickyObserverThresholdStatementAligned(
+            claim.claim,
+            statementText
+          );
+          const stickyOffscreenAssignmentAlignment = isStickyOffscreenAssignmentStatementAligned(
+            claim.claim,
+            statementText
+          );
+          if (
+            directTokenAlignment ||
+            useCurrencyElseAlignment ||
+            stickyScrollRafAlignment ||
+            stickyHeaderSettingAlignment ||
+            stickyCssDescriptionAlignment ||
+            stickyObserverConstructionAlignment ||
+            stickyIntersectionStateAlignment ||
+            stickyHeaderAttributeOutputAlignment ||
+            stickyDesktopCssAlignment ||
+            stickyConnectedCallbackInitAlignment ||
+            isStickyScrollListenerStatementAligned(claim.claim, statementText) ||
+            stickyObserverThresholdAlignment ||
+            stickyOffscreenAssignmentAlignment
+          ) {
             return false;
           }
 
@@ -6843,12 +8218,67 @@ export async function POST(request: NextRequest) {
     }
 
     // -------------------------------------
-    // STEP 1: Search relevant theme files
+    // STEP 1: Resolve explicit source scope before broad search
     // -------------------------------------
 
-    const searchResults = await searchTheme(prompt);
+    const themeFileManifest = await getThemeFiles();
+    const explicitFileRequest = resolveExplicitFileRequest(prompt, themeFileManifest);
+    const explicitOnly = explicitFileRequest.enabled;
+    const explicitFileAllowlist = explicitOnly
+      ? new Set(explicitFileRequest.canonicalPaths)
+      : null;
 
-    if (searchResults.length === 0) {
+    console.log("\n========== EXPLICIT FILE REQUEST RESOLUTION ==========");
+    console.log({
+      explicitOnly,
+      detectedPaths: explicitFileRequest.detectedPaths,
+      canonicalPaths: explicitFileRequest.canonicalPaths,
+      invalidPaths: explicitFileRequest.invalidPaths,
+    });
+
+    if (explicitOnly && explicitFileRequest.invalidPaths.length > 0) {
+      return NextResponse.json({
+        success: false,
+        error: "One or more explicitly requested theme files are invalid or missing. No fallback search was performed.",
+        explicitOnly: true,
+        detectedPaths: explicitFileRequest.detectedPaths,
+        resolvedPaths: explicitFileRequest.canonicalPaths,
+        invalidPaths: explicitFileRequest.invalidPaths,
+        filesAnalyzed: [],
+        filesIncludedInContext: [],
+        filesSkippedFromContext: [],
+      }, { status: 400 });
+    }
+
+    if (explicitOnly && explicitFileRequest.canonicalPaths.length > MAX_FILES) {
+      return NextResponse.json({
+        success: false,
+        error: `The explicit request contains ${explicitFileRequest.canonicalPaths.length} files, exceeding the current limit of ${MAX_FILES}. No files were loaded.`,
+        explicitOnly: true,
+        detectedPaths: explicitFileRequest.detectedPaths,
+        resolvedPaths: explicitFileRequest.canonicalPaths,
+        filesAnalyzed: [],
+        filesIncludedInContext: [],
+        filesSkippedFromContext: [],
+      }, { status: 400 });
+    }
+
+    if (explicitOnly && explicitFileRequest.canonicalPaths.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: "An explicit file-analysis request was detected, but no valid Horizon theme file path could be resolved. No fallback search was performed.",
+        explicitOnly: true,
+        detectedPaths: explicitFileRequest.detectedPaths,
+        filesAnalyzed: [],
+        filesIncludedInContext: [],
+        filesSkippedFromContext: [],
+      }, { status: 400 });
+    }
+
+    // Explicit-only mode does not call broad semantic search at all.
+    const searchResults = explicitOnly ? [] : await searchTheme(prompt);
+
+    if (!explicitOnly && searchResults.length === 0) {
       return NextResponse.json({
         success: true,
         message:
@@ -6886,8 +8316,9 @@ export async function POST(request: NextRequest) {
     // SELECT ARCHITECTURAL ROOT FILES
     // -------------------------------------
 
-    const rootFilePriorities =
-      getArchitectureRootFiles(prompt);
+    const rootFilePriorities = explicitOnly
+      ? [...explicitFileRequest.canonicalPaths]
+      : getArchitectureRootFiles(prompt);
 
     // Map search results for quick lookup
     const searchResultMap = new Map(
@@ -6898,6 +8329,7 @@ export async function POST(request: NextRequest) {
     );
 
     const initialFiles: ThemeFile[] = [];
+    let directlyReferencedStickyAssets = new Set<string>();
 
     // -------------------------------------
     // FIRST: ADD ARCHITECTURAL ROOT FILES
@@ -6935,17 +8367,28 @@ export async function POST(request: NextRequest) {
       selectedFiles.set(rootFile.file, rootFile);
     }
 
+    if (isStickyHeaderIntent && !explicitOnly) {
+      directlyReferencedStickyAssets = getDirectlyReferencedThemeAssetFiles(
+        selectedFiles.get("sections/header.liquid")?.content ?? "",
+        searchResults
+      );
+      console.log("DIRECTLY REFERENCED STICKY-HEADER ASSETS:", [
+        ...directlyReferencedStickyAssets,
+      ]);
+    }
+
     // -------------------------------------
     // SECOND: ADD HIGHLY RELEVANT FILES
     // -------------------------------------
 
-    const maxScore = searchResults[0]?.score ?? 0;
+    if (!explicitOnly) {
+      const maxScore = searchResults[0]?.score ?? 0;
 
-    const relevanceThreshold = maxScore * 0.35;
+      const relevanceThreshold = maxScore * 0.35;
 
-    const MAX_INITIAL_FILES = 7;
+      const MAX_INITIAL_FILES = 7;
 
-    for (const result of searchResults) {
+      for (const result of searchResults) {
       if (
         initialFiles.length >= MAX_INITIAL_FILES
       ) {
@@ -6986,11 +8429,11 @@ export async function POST(request: NextRequest) {
       }
 
       if (isStickyHeaderIntent) {
+        const normalizedResultPath = normalizePath(result.file);
         const stickyRelevant =
-          result.file === "sections/header.liquid" ||
-          result.file === "assets/base.css" ||
-          /^assets\/[^/]*(?:header|sticky)[^/]*\.(?:css|js)$/i.test(result.file) ||
-          /^assets\/(?:global|theme)\.js$/i.test(result.file);
+          normalizedResultPath === "sections/header.liquid" ||
+          normalizedResultPath === "assets/base.css" ||
+          directlyReferencedStickyAssets.has(normalizedResultPath);
         if (!stickyRelevant) continue;
       }
 
@@ -7000,6 +8443,7 @@ export async function POST(request: NextRequest) {
         result.file,
         result
       );
+      }
     }
 
     console.log(
@@ -7019,17 +8463,21 @@ export async function POST(request: NextRequest) {
 
     let dependencies: Dependency[] = [];
 
-    for (const file of selectedFiles.values()) {
-      const extracted = extractDependencies(
-        file.file,
-        file.content,
-        prompt
-      );
+    if (!explicitOnly) {
+      for (const file of selectedFiles.values()) {
+        const extracted = extractDependencies(
+          file.file,
+          file.content,
+          prompt
+        );
 
-      dependencies.push(...extracted);
+        dependencies.push(...extracted);
+      }
+
+      dependencies = uniqueDependencies(dependencies);
+    } else {
+      console.log("EXPLICIT-ONLY: dependency extraction and dependency graph expansion disabled.");
     }
-
-    dependencies = uniqueDependencies(dependencies);
 
     // -------------------------------------
     // STEP 3: Recursive dependency loading
@@ -7052,7 +8500,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    for (const dependency of dependencies) {
+    for (const dependency of (explicitOnly ? [] : dependencies)) {
       if (
         isThemeFileDependency(dependency.to) &&
         dependency.relevanceScore >= MIN_DEPENDENCY_SCORE &&
@@ -7073,7 +8521,7 @@ export async function POST(request: NextRequest) {
 
     let loadedDependencyCount = 0;
 
-    while (dependencyQueue.length > 0) {
+    while (!explicitOnly && dependencyQueue.length > 0) {
       dependencyQueue.sort(
         (a, b) => b.score - a.score
       );
@@ -7169,29 +8617,33 @@ export async function POST(request: NextRequest) {
 
     let schemaContent = "";
 
-    try {
-      schemaContent = await readThemeFile(
-        "config/settings_schema.json"
-      );
-
-      if (
-        !selectedFiles.has(
+    if (!explicitOnly) {
+      try {
+        schemaContent = await readThemeFile(
           "config/settings_schema.json"
-        )
-      ) {
-        selectedFiles.set(
-          "config/settings_schema.json",
-          {
-            file: "config/settings_schema.json",
-            content: schemaContent,
-            score: 0,
-          }
+        );
+
+        if (
+          !selectedFiles.has(
+            "config/settings_schema.json"
+          )
+        ) {
+          selectedFiles.set(
+            "config/settings_schema.json",
+            {
+              file: "config/settings_schema.json",
+              content: schemaContent,
+              score: 0,
+            }
+          );
+        }
+      } catch {
+        console.warn(
+          "Could not read settings_schema.json"
         );
       }
-    } catch {
-      console.warn(
-        "Could not read settings_schema.json"
-      );
+    } else {
+      console.log("EXPLICIT-ONLY: automatic config/settings_schema.json loading disabled.");
     }
 
     // Strict maximum file limit.
@@ -7303,7 +8755,8 @@ export async function POST(request: NextRequest) {
     const relevantFiles = filterRelevantThemeFiles(
       allLoadedFiles,
       initialFiles,
-      relevantDependencies
+      relevantDependencies,
+      explicitFileAllowlist
     );
 
     const filesAnalyzed = Array.from(
@@ -7345,7 +8798,8 @@ export async function POST(request: NextRequest) {
     const retrievalState = createRetrievalState(
       themeContext.length,
       onDemandBudgetCap,
-      MAX_ON_DEMAND_FILES
+      MAX_ON_DEMAND_FILES,
+      explicitFileAllowlist
     );
 
     // Seed fileStates for every file already in the initial context.
@@ -7463,7 +8917,7 @@ export async function POST(request: NextRequest) {
     // STEP 11: Prepare Gemini history
     // -------------------------------------
 
-    const validHistory = history
+    const validHistory = (explicitOnly ? [] : history)
       .filter(
         (message: any) =>
           message &&
@@ -7486,7 +8940,7 @@ export async function POST(request: NextRequest) {
       }));
 
     const availableThemeFiles = new Set(
-      await getThemeFiles()
+      themeFileManifest
     );
 
 
@@ -7520,11 +8974,20 @@ VERIFICATION SUMMARY:
 ${verifiedCount} of ${verifiedDependencies.length} dependencies verified.
 
 AVAILABLE THEME FILE PATHS:
-${JSON.stringify([...availableThemeFiles], null, 2)}
+${JSON.stringify(explicitOnly ? [...(explicitFileAllowlist ?? [])] : [...availableThemeFiles], null, 2)}
 
 IMPORTANT:
 Only use files included in GEMINI CONTEXT as source-code evidence.
 Do not assume files in FILES ANALYZED BY BACKEND were sent to Gemini.
+${explicitOnly ? `
+EXPLICIT-ONLY FILE SCOPE (MANDATORY):
+The user explicitly selected these source files and no others:
+${JSON.stringify([...(explicitFileAllowlist ?? [])], null, 2)}
+Do not claim to have inspected, read, or verified any other theme file.
+Do not make claims whose claim.file is outside this exact allowlist.
+Do not infer the internal behavior of referenced dependencies that were not selected.
+Use only the selected file source text supplied above as evidence.
+` : ""}
 `,
           },
         ],
@@ -7554,7 +9017,7 @@ Do not assume files in FILES ANALYZED BY BACKEND were sent to Gemini.
 
     const settingsSchemaRequested = isSettingsSchemaIntent(prompt);
 
-    for (const dependency of relevantDependencies) {
+    for (const dependency of (explicitOnly ? [] : relevantDependencies)) {
       if (!dependency.verified) continue;
 
       // Rendering dependencies point to their target file. A setting
@@ -7763,24 +9226,27 @@ If no additional chunks are needed:
       fileLengths
     );
 
-    const availableCoverageDomains = getAvailableCoverageDomains(
-      prompt,
-      plannerManifest.files
-    );
+    const availableCoverageDomains = explicitOnly
+      ? []
+      : getAvailableCoverageDomains(prompt, plannerManifest.files);
 
     // Settings definitions are source objects in config/settings_schema.json,
     // not ordinary dependency.to files. Retrieve the exact objects referenced
     // by included source files instead of asking the planner to guess offsets.
-    const settingDefinitionRequests = buildSettingDefinitionChunkRequests(
-      prompt,
-      relevantDependencies,
-      retrievalState
-    );
-    const liquidSectionSettingRequests = buildLiquidSchemaSettingDefinitionRequests(
-      prompt,
-      relevantDependencies,
-      retrievalState
-    );
+    const settingDefinitionRequests = explicitOnly
+      ? []
+      : buildSettingDefinitionChunkRequests(
+          prompt,
+          relevantDependencies,
+          retrievalState
+        );
+    const liquidSectionSettingRequests = explicitOnly
+      ? []
+      : buildLiquidSchemaSettingDefinitionRequests(
+          prompt,
+          relevantDependencies,
+          retrievalState
+        );
     const deterministicSettingRequests = [
       ...settingDefinitionRequests,
       ...liquidSectionSettingRequests,
@@ -7798,7 +9264,15 @@ If no additional chunks are needed:
 
     const plannerRequestedChunks = rawPlannerRequestedChunks
       .filter((request) => !settingDefinitionFiles.has(request.file))
-      .slice(0, plannerRequestLimit);
+      // The sticky-header toggle is defined in sections/header.liquid's
+      // `{% schema %}` block, not in the global theme settings schema.
+      // Avoid spending the limited on-demand budget on that unrelated file.
+      .filter((request) => !(
+        availableCoverageDomains.includes("sticky-header") &&
+        normalizePath(request.file).toLowerCase() === "config/settings_schema.json"
+      ))
+      .slice(0, plannerRequestLimit)
+      .filter((request) => isPathAllowedByScope(request.file, explicitFileAllowlist));
 
     const plannedRequests = [
       ...deterministicSettingRequests,
@@ -7821,11 +9295,34 @@ If no additional chunks are needed:
       });
     }
 
+    // Explicit-only mode disables dependency discovery, not completion of the
+    // exact files the user explicitly selected. Let the deterministic backend
+    // coverage planner request missing ranges from the current manifest; the
+    // allowlist filter below remains the hard boundary, so no unselected file
+    // can be retrieved. In explicit-only mode, do not reserve slots for
+    // dependency/settings discovery: all available slots belong to selected
+    // files whose source is still incomplete.
+    const explicitIncompleteFileCount = explicitOnly
+      ? plannerManifest.files.filter((file) =>
+          isPathAllowedByScope(file.file, explicitFileAllowlist) &&
+          file.hasMore &&
+          file.totalLength > 0
+        ).length
+      : 0;
+
     const backendCoverageRequests = buildBackendCoverageRequests(
       plannerManifest.files,
       plannedRequests,
-      remainingCoverageSlots,
-      prompt
+      explicitOnly
+        ? Math.min(MAX_ON_DEMAND_FILES, explicitIncompleteFileCount)
+        : remainingCoverageSlots,
+      // Keep explicit-only retrieval inside the user's allowlist, but retain
+      // the detected domain so targeted source windows can be selected. For a
+      // sticky-header request this prioritizes actual sticky CSS selectors and
+      // declarations in base.css instead of spending the entire budget on the
+      // next sequential ranges. The allowlist remains the hard retrieval boundary.
+      prompt,
+      retrievalState.fullContents
     );
 
     const coverageCandidateRequests = [
@@ -7834,8 +9331,8 @@ If no additional chunks are needed:
     ];
 
     const requestedChunks = allocateChunkRequestBudgets(
-      coverageCandidateRequests,
-      plannerManifest.files,
+      coverageCandidateRequests.filter((item) => isPathAllowedByScope(item.file, explicitFileAllowlist)),
+      plannerManifest.files.filter((item) => isPathAllowedByScope(item.file, explicitFileAllowlist)),
       retrievalState.remainingBudget
     );
 
@@ -7910,6 +9407,95 @@ If no additional chunks are needed:
       plannerChunks.push(chunk);
     }
 
+    // Explicit-only retrieval gets a bounded second pass over the same
+    // allowlisted files. The first allocation can leave budget unused because
+    // each candidate is capped at MAX_CHUNK_SIZE; continue from the next
+    // uncovered offset while meaningful budget and incomplete files remain.
+    if (explicitOnly) {
+      const MAX_EXPLICIT_COVERAGE_ROUNDS = 4;
+      for (let round = 2; round <= MAX_EXPLICIT_COVERAGE_ROUNDS; round++) {
+        if (retrievalState.remainingBudget < 1200) break;
+
+        const nextRequests: PlannerChunkRequest[] = Array.from(
+          retrievalState.fileStates.values()
+        )
+          .filter((fileState) =>
+            isPathAllowedByScope(fileState.file, explicitFileAllowlist) &&
+            fileState.hasMore &&
+            fileState.nextOffset < fileState.totalLength
+          )
+          .sort((a, b) => a.file.localeCompare(b.file))
+          .slice(0, MAX_ON_DEMAND_FILES)
+          .map((fileState) => ({
+            file: fileState.file,
+            start_offset: fileState.nextOffset,
+            max_chars: Math.min(
+              MAX_CHUNK_SIZE,
+              fileState.totalLength - fileState.nextOffset
+            ),
+          }));
+
+        if (nextRequests.length === 0) break;
+
+        const currentManifest: PlannerManifestFile[] = nextRequests.map((request) => {
+          const fileState = retrievalState.fileStates.get(request.file)!;
+          const original = plannerManifest.files.find((item) => item.file === request.file);
+          return {
+            file: fileState.file,
+            totalLength: fileState.totalLength,
+            priorityScore: original?.priorityScore ?? 1,
+            includedInContext: true,
+            retrievedRanges: [...fileState.retrievedRanges],
+            nextOffset: fileState.nextOffset,
+            hasMore: fileState.hasMore,
+            isComplete: fileState.isComplete,
+          };
+        });
+
+        const roundRequests = allocateChunkRequestBudgets(
+          nextRequests,
+          currentManifest,
+          retrievalState.remainingBudget
+        );
+
+        console.log(`EXPLICIT-ONLY ADDITIONAL COVERAGE ROUND ${round}:`, {
+          candidates: nextRequests,
+          allocatedRequests: roundRequests,
+          budgetBefore: retrievalState.remainingBudget,
+        });
+
+        if (roundRequests.length === 0) break;
+
+        let roundRetrieved = 0;
+        for (const request of roundRequests) {
+          const fullContent = await ensureFullContent(retrievalState, request.file);
+          if (fullContent === null) continue;
+          const chunk = retrieveChunk(
+            retrievalState,
+            request.file,
+            fullContent,
+            request.start_offset,
+            request.max_chars
+          );
+          if (!chunk) continue;
+          plannerChunks.push(chunk);
+          roundRetrieved++;
+          if (!filesAnalyzed.includes(chunk.file)) filesAnalyzed.push(chunk.file);
+          if (!filesIncludedInContext.includes(chunk.file)) filesIncludedInContext.push(chunk.file);
+          const skippedIdx = filesSkippedFromContext.indexOf(chunk.file);
+          if (skippedIdx !== -1) filesSkippedFromContext.splice(skippedIdx, 1);
+        }
+
+        console.log(`EXPLICIT-ONLY ADDITIONAL COVERAGE ROUND ${round} RESULT:`, {
+          requested: roundRequests.length,
+          retrieved: roundRetrieved,
+          usedBudget: retrievalState.usedBudget,
+          remainingBudget: retrievalState.remainingBudget,
+        });
+        if (roundRetrieved === 0) break;
+      }
+    }
+
     console.log(
       "\n========== CHUNK RETRIEVAL PROGRESS =========="
     );
@@ -7962,11 +9548,15 @@ If no additional chunks are needed:
       verifiedDependencies.map(getDependencyKey)
     );
 
-    let expansionQueue: RetrievedChunk[] = [...plannerChunks];
+    let expansionQueue: RetrievedChunk[] = explicitOnly ? [] : [...plannerChunks];
+
+    if (explicitOnly) {
+      console.log("EXPLICIT-ONLY: dependency chunk expansion skipped.");
+    }
 
     for (
       let round = 1;
-      round <= MAX_DEPENDENCY_EXPANSION_ROUNDS;
+      !explicitOnly && round <= MAX_DEPENDENCY_EXPANSION_ROUNDS;
       round++
     ) {
       console.log(`\n--- DEPENDENCY EXPANSION ROUND ${round} ---`);
@@ -8197,6 +9787,74 @@ If no additional chunks are needed:
       }
     }
 
+    // --------------------------------------------------
+    // v35: FINAL EXPLICIT FILE SCOPE AUDIT + DEFENSIVE PRUNING
+    // --------------------------------------------------
+    if (explicitOnly && explicitFileAllowlist) {
+      const allowed = (file: string) => isPathAllowedByScope(file, explicitFileAllowlist);
+      const scopeViolations: string[] = [];
+      const auditArray = (label: string, values: string[]) => {
+        for (const file of values) if (!allowed(file)) scopeViolations.push(`${label}: ${file}`);
+      };
+
+      auditArray("filesAnalyzed", filesAnalyzed);
+      auditArray("filesIncludedInContext", filesIncludedInContext);
+      auditArray("filesSkippedFromContext", filesSkippedFromContext);
+      auditArray("selectedFiles", [...selectedFiles.keys()]);
+      auditArray("initialFiles", initialFiles.map((file) => file.file));
+      auditArray("relevantFiles", relevantFiles.map((file) => file.file));
+      auditArray("plannerManifest.files", plannerManifest.files.map((file) => file.file));
+      auditArray("fileLengths", [...fileLengths.keys()]);
+      auditArray("requestedChunks", requestedChunks.map((request) => request.file));
+      auditArray("plannerChunks", plannerChunks.map((chunk) => chunk.file));
+      auditArray("retrievalState.uniqueFiles", [...retrievalState.uniqueFiles]);
+      auditArray("retrievalState.fileStates", [...retrievalState.fileStates.keys()]);
+      auditArray("retrievalState.fullContents", [...retrievalState.fullContents.keys()]);
+      auditArray("retrievalState.retrievedChunks", retrievalState.retrievedChunks.map((chunk) => chunk.file));
+
+      if (scopeViolations.length > 0) {
+        console.error("EXPLICIT FILE SCOPE VIOLATIONS DETECTED:", scopeViolations);
+      }
+
+      for (const file of [...selectedFiles.keys()]) if (!allowed(file)) selectedFiles.delete(file);
+      for (const file of [...retrievalState.fileStates.keys()]) if (!allowed(file)) retrievalState.fileStates.delete(file);
+      for (const file of [...retrievalState.fullContents.keys()]) if (!allowed(file)) retrievalState.fullContents.delete(file);
+      for (const file of [...retrievalState.processedDependencyRanges.keys()]) if (!allowed(file)) retrievalState.processedDependencyRanges.delete(file);
+      retrievalState.retrievedChunks = retrievalState.retrievedChunks.filter((chunk) => allowed(chunk.file));
+      retrievalState.uniqueFiles = new Set([...retrievalState.uniqueFiles].filter(allowed));
+
+      for (const [file] of [...includedSourceContent.entries()]) if (!allowed(file)) includedSourceContent.delete(file);
+      filesAnalyzed.splice(0, filesAnalyzed.length, ...filesAnalyzed.filter(allowed));
+      filesIncludedInContext.splice(0, filesIncludedInContext.length, ...filesIncludedInContext.filter(allowed));
+      filesSkippedFromContext.splice(0, filesSkippedFromContext.length, ...filesSkippedFromContext.filter(allowed));
+      initialFiles.splice(0, initialFiles.length, ...initialFiles.filter((file) => allowed(file.file)));
+      relevantFiles.splice(0, relevantFiles.length, ...relevantFiles.filter((file) => allowed(file.file)));
+      dependencies = [];
+      verifiedDependencies.splice(0, verifiedDependencies.length);
+      relevantDependencies.splice(0, relevantDependencies.length);
+
+      console.log("\n========== EXPLICIT FILE SCOPE AUDIT ==========");
+      console.log({
+        explicitOnly: true,
+        allowedFiles: [...explicitFileAllowlist],
+        scopeViolations,
+        filesAnalyzed,
+        filesIncludedInContext,
+        filesSkippedFromContext,
+        selectedFiles: [...selectedFiles.keys()],
+        plannerManifestFiles: plannerManifest.files.map((file) => file.file),
+        fileLengthKeys: [...fileLengths.keys()],
+        requestedChunks: requestedChunks.map((request) => request.file),
+        plannerChunks: plannerChunks.map((chunk) => chunk.file),
+        retrievalState: {
+          uniqueFiles: [...retrievalState.uniqueFiles],
+          fileStates: [...retrievalState.fileStates.keys()],
+          fullContents: [...retrievalState.fullContents.keys()],
+          retrievedChunks: retrievalState.retrievedChunks.map((chunk) => chunk.file),
+        },
+      });
+    }
+
     dependencies = uniqueDependencies(dependencies);
 
     const finalRelevantDependencies = filterRelevantDependencies(
@@ -8230,11 +9888,13 @@ If no additional chunks are needed:
       includedSourceContent.set(file, content);
     }
 
-    const retrievalCoverage = buildRetrievalCoverageReport(
-      prompt,
-      plannerManifest.files,
-      retrievalState
-    );
+    const retrievalCoverage = explicitOnly
+      ? []
+      : buildRetrievalCoverageReport(
+          prompt,
+          plannerManifest.files,
+          retrievalState
+        );
 
     const sourceCoverageManifest = filesIncludedInContext.map((file) => {
       const fileManifest = plannerManifest.files.find(
@@ -8260,6 +9920,24 @@ If no additional chunks are needed:
         complete,
       };
     });
+
+    if (explicitOnly && explicitFileAllowlist) {
+      const coverageScopeViolations = sourceCoverageManifest
+        .filter((entry) => !isPathAllowedByScope(entry.file, explicitFileAllowlist))
+        .map((entry) => entry.file);
+      if (coverageScopeViolations.length > 0) {
+        console.error("EXPLICIT FILE SCOPE VIOLATIONS IN SOURCE COVERAGE MANIFEST:", coverageScopeViolations);
+        for (let index = sourceCoverageManifest.length - 1; index >= 0; index--) {
+          if (!isPathAllowedByScope(sourceCoverageManifest[index].file, explicitFileAllowlist)) {
+            sourceCoverageManifest.splice(index, 1);
+          }
+        }
+      }
+      console.log("EXPLICIT FILE SCOPE COVERAGE AUDIT:", {
+        allowedFiles: [...explicitFileAllowlist],
+        sourceCoverageFiles: sourceCoverageManifest.map((entry) => entry.file),
+      });
+    }
 
     if (retrievalState.retrievedChunks.length > 0) {
       const chunksSection = retrievalState.retrievedChunks
@@ -8304,9 +9982,11 @@ IMPORTANT:
     // Always give Gemini the backend-calculated source coverage so it
     // cannot describe a partial chunk as a complete file analysis.
     const finalUserTextPart = contents[contents.length - 1].parts[0];
-    const dependencyCallerAllowlist = sourceCoverageManifest
-      .filter((entry) => entry.includedCharacters > 0)
-      .map((entry) => entry.file);
+    const dependencyCallerAllowlist = explicitOnly
+      ? []
+      : sourceCoverageManifest
+          .filter((entry) => entry.includedCharacters > 0)
+          .map((entry) => entry.file);
 
     finalUserTextPart.text += `
 
@@ -8466,6 +10146,15 @@ RULES:
 9. Keep each excerpt short and specific; include only excerpts that directly
    support the single behavior asserted by that claim.
 10. If a claim cannot be supported by source code, do not include it as a verified claim.
+10A. STICKY HEADER SOURCE EVIDENCE: When analyzing \`enable_sticky_header\`, quote the complete setting object as one evidence item, including its opening and closing braces. Do not split the object into isolated property lines. Identify the literal option values exactly as written (for example, \`scroll-up\`); do not substitute an option's translation label (for example, \`t:options.on_scroll_up\`) for its value. Each setting-field claim must identify \`enable_sticky_header\` and state only the fields actually quoted.
+10B. STICKY LIQUID BRANCHES: For claims about \`sticky\`, quote the complete \`if/elsif/endif\` block, not an isolated assignment fragment. Create separate atomic claims for \`always\` and \`scroll-up\`. Do not claim what \`never\` does merely because no matching branch appears in a partial excerpt.
+10C. STICKY CSS: For each CSS claim, quote the exact selector and its complete relevant declaration block from the same contiguous excerpt. State \`position\`, \`top\`, or \`z-index\` only when that declaration is present in the quoted rule. Do not infer that a selector belongs to the sticky header from its name alone. Keep \`.sticky-content\` and \`.sticky-content--desktop\` as separate atomic claims; when mentioning a top offset, preserve that detail in the matching answer sentence.
+10D. STICKY JAVASCRIPT: Treat \`#observeStickyPosition\` and \`#handleWindowScroll\` as method names only. Claim an IntersectionObserver only when evidence includes the actual \`new IntersectionObserver\` construction; claim a scroll listener only when evidence includes the actual listener registration (such as \`addEventListener('scroll', ...)\`) and its relevant state update. Keep observer and scroll-listener claims separate.
+10E. STICKY SCROLL LISTENER CONDITION: If the listener is registered only inside a condition such as \`stickyMode === 'scroll-up' || stickyMode === 'always'\`, include both literal mode values and that exact OR condition in the claim and in the same contiguous evidence excerpt as \`addEventListener('scroll', ...)\`. Use wording such as "when stickyMode is 'scroll-up' or 'always'." Never summarize this as merely "when stickyMode is set" or "when stickyMode is present".
+10E-1. STICKY CALLBACK INITIALIZATION: When explaining \`connectedCallback\`, keep the \`getAttribute('sticky')\` read and the \`#observeStickyPosition(stickyMode === 'always')\` call in one exact evidence excerpt. State both operations in the claim.
+10E-2. STICKY OBSERVER THRESHOLD: When describing the observer threshold, quote the exact \`threshold: alwaysSticky ? 1 : 0\` config and the observer construction/use from \`#observeStickyPosition\`. Keep threshold claims separate from callback-state assignment claims.
+10F. STICKY OBSERVER ELSE BRANCH: To claim that \`#offscreen\` is updated when \`alwaysSticky\` is false, quote the paired \`if (alwaysSticky) { ... } else { ... }\` control flow, including the \`#offscreen\` assignment, in one contiguous excerpt. Do not infer false solely from an isolated \`else\` block. If the paired block is not present in the supplied context, omit this false-branch claim.
+10G. STICKY CLAIM-TO-ANSWER ALIGNMENT: Each final sentence must preserve every condition and operation in its cited claim. For scroll listeners, state the literal \`scroll-up\` OR \`always\` guard; if you cannot quote both modes and the registration, omit the claim. For observer threshold claims, do not mention \`root: getIntersectionRoot()\` unless the final sentence also states that root behavior and the evidence quotes it. Keep \`connectedCallback\` attribute reading, boolean observer initialization, observer threshold, observer state assignment, and scroll updates as separate facts.
 11. Do not treat relevance scores as proof.
 11A. Never add inferred qualifiers such as "when", "only when", "default branch",
      "desktop/mobile variant", or "truthy" unless the cited evidence includes the
@@ -8580,16 +10269,15 @@ RULES:
          quantity-price-break configuration". Never append a dot, suffix, or
          stray word after the literal identifier ending in \`?\` (for example,
          do not produce \`quantity_price_breaks_configured?. molds\`).
-     (b) Product-page claim: evidence must include the enclosing
-         \`if is_product_card\` and its corresponding \`else\`, plus the exact
+     (b) Product-page claim: one exact evidence excerpt must include both the
          \`if selected_variant.quantity_price_breaks.size > 0\` condition and
-         \`assign has_volume_pricing = true\` operation. Quote ONE exact
-         contiguous source excerpt beginning at the outer \`if is_product_card\`
-         statement and continuing through the \`else\`, inner quantity-break
-         condition, assignment, and the relevant closing \`endif\` statements.
-         An excerpt that starts at \`else\` is insufficient, even if the nested
-         quantity-break check and assignment are quoted. Do not infer page scope
-         from the variable name or from a quantity-break expression alone.
+         \`assign has_volume_pricing = true\` operation. Prefer to include the
+         enclosing \`if is_product_card\` and its matching \`else\` in that excerpt.
+         If the quote begins at \`else\`, backend verification must independently
+         confirm from the same contiguous source segment that this is the
+         \`else\` branch of \`if is_product_card\` and that the quoted assignment
+         is inside it. Never infer product-page scope from the variable name
+         or quantity-break expression alone.
 11M. For the currency \`else\` branch, do not cite only \`else\` plus \`money\`.
      Include the paired \`if use_currency\` condition and the money assignment
      in one exact contiguous evidence excerpt. State explicitly that this is
@@ -8615,12 +10303,13 @@ RULES:
      variant". For a branch label, state only that the file contains the literal
      \`when 'mobile'\` or \`when 'navigation_bar'\` label unless its exact branch and
      operation are both quoted.
-11Q. PRODUCT-PAGE QUANTITY BREAK: If the quote begins at \`else\`, still include
-     the complete outer \`if is_product_card\` through its matching \`else\` in the
-     evidence whenever that text is available in the same sent source segment.
-     Describe the behavior as the product-page quantity-break check and include
-     both \`if selected_variant.quantity_price_breaks.size > 0\` and
-     \`assign has_volume_pricing = true\`.
+11Q. PRODUCT-PAGE QUANTITY BREAK: Include both the exact
+     \`if selected_variant.quantity_price_breaks.size > 0\` condition and
+     \`assign has_volume_pricing = true\` in one evidence excerpt. You may start
+     the excerpt at \`else\` only when the source context also contains the
+     enclosing \`if is_product_card\`; backend verification will check that the
+     assignment is actually inside that \`else\` branch. Describe the behavior
+     as the product-page quantity-break check without broadening its condition.
 11R. PRODUCT-CARD QUANTITY BREAK: Use one direct assignment claim, e.g. "For
      product cards, has_volume_pricing is assigned from the product resource's
      quantity-price-break configuration." The evidence must show the
@@ -8901,9 +10590,18 @@ If no source evidence is available, return an empty claims array.
         .map((claim) => claim.id)
     );
 
-    const answerClaims = parsedAnswerClaims.filter(
+    const answerClaimsWithoutMetadata = parsedAnswerClaims.filter(
       (claim) => !backendMetadataClaimIds.has(claim.id)
     );
+    const outOfScopeModelClaims = explicitOnly && explicitFileAllowlist
+      ? answerClaimsWithoutMetadata.filter((claim) => !isPathAllowedByScope(claim.file, explicitFileAllowlist))
+      : [];
+    if (outOfScopeModelClaims.length > 0) {
+      console.warn("EXPLICIT FILE SCOPE: rejecting out-of-scope model claims:", outOfScopeModelClaims.map((claim) => ({ id: claim.id, file: claim.file })));
+    }
+    const answerClaims = explicitOnly && explicitFileAllowlist
+      ? answerClaimsWithoutMetadata.filter((claim) => isPathAllowedByScope(claim.file, explicitFileAllowlist))
+      : answerClaimsWithoutMetadata;
 
     if (backendMetadataClaimIds.size > 0) {
       console.log("IGNORED BACKEND-ONLY COVERAGE CLAIM IDS:", [
@@ -8929,7 +10627,8 @@ If no source evidence is available, return an empty claims array.
         availableThemeFiles,
         includedFilesSet,
         includedSourceContent,
-        verifiedDependencies
+        verifiedDependencies,
+        explicitFileAllowlist
       );
 
       verifiedAnswerClaims.push(verification);
@@ -9123,6 +10822,8 @@ If no source evidence is available, return an empty claims array.
 
     return NextResponse.json({
       success: true,
+      explicitOnly,
+      explicitFileAllowlist: explicitOnly ? [...(explicitFileAllowlist ?? [])] : [],
 
       message: finalAnswer,
 
