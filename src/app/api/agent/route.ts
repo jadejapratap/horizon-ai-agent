@@ -7023,10 +7023,16 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   if (!targetMatch) return false;
 
   const value = targetMatch[1].toLowerCase();
-  const methodBody = extractPrivateArrowMethodBody(actualSource, "updateScrollState");
-  if (!methodBody) return false;
+  const methodSignature = /#updateScrollState\s*=\s*\(\s*\)\s*=>\s*\{/;
+  const signatureMatch = methodSignature.exec(actualSource);
+  if (!signatureMatch) return false;
 
-  const methodSignature = /#updateScrollState\s*=\s*\(\)\s*=>\s*\{/i;
+  // The public connectedCallback follows this method, so isolate this exact method boundary.
+  const bodyStart = signatureMatch.index + signatureMatch[0].length;
+  const methodEnd = /\n[ \t]{2}\};[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*connectedCallback\s*\(/m.exec(actualSource.slice(bodyStart));
+  if (!methodEnd) return false;
+  const methodBody = actualSource.slice(bodyStart, bodyStart + methodEnd.index);
+
   const hasAssignment = (candidate: string): boolean =>
     new RegExp(
       "this\\.dataset\\.scrollDirection\\s*=\\s*['\"]" + value + "['\"]\\s*;",
@@ -7044,19 +7050,20 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
 
   const baseIndent = alwaysOpen[1];
   const childIndent = baseIndent + "  ";
-  const nestedIndent = childIndent + "  ";
-  const outerElsePattern = new RegExp(
-    "^" + escapeRegex(baseIndent) + "\\}\\s*else\\s*\\{",
-    "m"
-  );
-  const outerElseMatch = outerElsePattern.exec(methodBody.slice(alwaysOpen.index + alwaysOpen[0].length));
-  if (!outerElseMatch) return false;
-
   const alwaysBodyStart = alwaysOpen.index + alwaysOpen[0].length;
-  const alwaysBodyEnd = alwaysBodyStart + outerElseMatch.index;
-  const alwaysBody = methodBody.slice(alwaysBodyStart, alwaysBodyEnd);
-  const nonAlwaysBodyStart = alwaysBodyStart + outerElseMatch.index + outerElseMatch[0].length;
-  const nonAlwaysBody = methodBody.slice(nonAlwaysBodyStart);
+
+  // The source has an early-return always branch followed by a separate non-always if.
+  const alwaysClosing = new RegExp(
+    "^" + escapeRegex(baseIndent) + "\\}[\\t ]*(?:\\r?\\n|$)",
+    "m"
+  ).exec(methodBody.slice(alwaysBodyStart));
+  if (!alwaysClosing) return false;
+
+  const alwaysBody = methodBody.slice(alwaysBodyStart, alwaysBodyStart + alwaysClosing.index);
+  const nonAlwaysBody = methodBody.slice(
+    alwaysBodyStart + alwaysClosing.index + alwaysClosing[0].length
+  );
+  if (!/this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;/.test(alwaysBody)) return false;
 
   const openBranchBody = (
     source: string,
@@ -7065,13 +7072,13 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   ): string | null => {
     const match = opener.exec(source);
     if (!match) return null;
-    const bodyStart = match.index + match[0].length;
+    const branchBodyStart = match.index + match[0].length;
     const nextSibling = new RegExp(
       "^" + escapeRegex(indent) + "\\}\\s*(?:else\\s+if\\s*\\([^\\n]*\\)\\s*\\{|else\\s*\\{)",
       "m"
-    ).exec(source.slice(bodyStart));
+    ).exec(source.slice(branchBodyStart));
     if (!nextSibling) return null;
-    return source.slice(bodyStart, bodyStart + nextSibling.index);
+    return source.slice(branchBodyStart, branchBodyStart + nextSibling.index);
   };
 
   const openElseBranchBody = (
@@ -7083,11 +7090,11 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
       "m"
     ).exec(source);
     if (!opener) return null;
-    const bodyStart = opener.index + opener[0].length;
+    const branchBodyStart = opener.index + opener[0].length;
     const closing = new RegExp("^" + escapeRegex(indent) + "\\}", "m")
-      .exec(source.slice(bodyStart));
+      .exec(source.slice(branchBodyStart));
     if (!closing) return null;
-    return source.slice(bodyStart, bodyStart + closing.index);
+    return source.slice(branchBodyStart, branchBodyStart + closing.index);
   };
 
   const topBranch = openBranchBody(
@@ -7104,8 +7111,8 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
 
   const scrollingUpBranch = openBranchBody(
     nonAlwaysBody,
-    childIndent,
-    new RegExp("^" + escapeRegex(childIndent) + "if\\s*\\(\\s*isScrollingUp\\s*\\)\\s*\\{", "m")
+    baseIndent,
+    new RegExp("^" + escapeRegex(baseIndent) + "if\\s*\\(\\s*isScrollingUp\\s*\\)\\s*\\{", "m")
   );
 
   let scrollingUpTopBranch: string | null = null;
@@ -7113,18 +7120,18 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
   if (scrollingUpBranch !== null) {
     scrollingUpTopBranch = openBranchBody(
       scrollingUpBranch,
-      nestedIndent,
-      new RegExp("^" + escapeRegex(nestedIndent) + "if\\s*\\(\\s*isAtTop\\s*\\)\\s*\\{", "m")
+      childIndent,
+      new RegExp("^" + escapeRegex(childIndent) + "if\\s*\\(\\s*isAtTop\\s*\\)\\s*\\{", "m")
     );
-    scrollingUpDownBranch = openElseBranchBody(scrollingUpBranch, nestedIndent);
+    scrollingUpDownBranch = openElseBranchBody(scrollingUpBranch, childIndent);
   }
 
   const stickyActiveBranch = openBranchBody(
     nonAlwaysBody,
-    childIndent,
-    new RegExp("^" + escapeRegex(childIndent) + "\\}\\s*else\\s+if\\s*\\(\\s*this\\.dataset\\.stickyState\\s*===\\s*'active'\\s*\\)\\s*\\{", "m")
+    baseIndent,
+    new RegExp("^" + escapeRegex(baseIndent) + "\\}\\s*else\\s+if\\s*\\(\\s*this\\.dataset\\.stickyState\\s*===\\s*'active'\\s*\\)\\s*\\{", "m")
   );
-  const stickyNotActiveBranch = openElseBranchBody(nonAlwaysBody, childIndent);
+  const stickyNotActiveBranch = openElseBranchBody(nonAlwaysBody, baseIndent);
 
   const claimText = claim.toLowerCase();
   const saysAlways =
@@ -7182,7 +7189,10 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
     saysFalse("isScrollingUp") &&
     stickyStateIsNotActive
   ) {
-    branchIsVerified = stickyNotActiveBranch !== null && hasAssignment(stickyNotActiveBranch);
+    branchIsVerified =
+      stickyActiveBranch !== null &&
+      stickyNotActiveBranch !== null &&
+      hasAssignment(stickyNotActiveBranch);
   }
 
   if (!branchIsVerified) return false;
@@ -7197,7 +7207,6 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
     )
   );
 }
-
 function supportsStickyScrollDirectionAssignmentClaim(claim: string, evidenceItems: string[]): boolean {
   const text = claim.toLowerCase();
   if (!/#updateScrollState/i.test(claim) || !/dataset\.scrolldirection/.test(text) ||
