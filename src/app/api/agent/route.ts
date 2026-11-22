@@ -1,5 +1,6 @@
 // v37: adds iterative explicit-only chunk-budget utilization and strict #updateScrollState evidence verification; preserves v36 scope isolation.
 // v50: verifies product-page quantity-break branch scope from contiguous source context and authorizes explicit verified caller-to-target render claims without requiring the caller path in the sentence.
+// v51: verifies ten #updateScrollState order and nested-branch claims against exact contiguous method evidence.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -7120,6 +7121,147 @@ function supportsStickyUpdateScrollCoreOperationClaim(
   return false;
 }
 
+
+function supportsStickyUpdateScrollFlowClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const claimText = claim.toLowerCase();
+  const methodSignature = /#updateScrollState\s*=\s*\(\s*\)\s*=>\s*\{/i;
+  const signatureMatch = methodSignature.exec(actualSource);
+  if (!signatureMatch) return false;
+
+  const bodyStart = signatureMatch.index + signatureMatch[0].length;
+  const methodEnd = /\n[ \t]{2}\};[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*connectedCallback\s*\(/m.exec(
+    actualSource.slice(bodyStart)
+  );
+  if (!methodEnd) return false;
+
+  const methodBody = actualSource.slice(bodyStart, bodyStart + methodEnd.index);
+  const methodText = actualSource.slice(
+    signatureMatch.index,
+    bodyStart + methodEnd.index
+  );
+  const hasEvidence = (pattern: RegExp): boolean =>
+    evidenceItems.some((evidence) =>
+      pattern.test(evidence) &&
+      evidenceMatchesSource(evidence, methodText) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+
+  const earlyReturnGuard =
+    /if\s*\(\s*!\s*this\.#offscreen\s*&&\s*stickyMode\s*!==\s*['"]always['"]\s*\)\s*return\s*;/i;
+  const earlyReturnThenScroll =
+    /if\s*\(\s*!\s*this\.#offscreen\s*&&\s*stickyMode\s*!==\s*['"]always['"]\s*\)\s*return\s*;\s*const\s+scrollTop\s*=\s*getScrollTop\s*\(\s*\)\s*;/i;
+  const calculationsBeforeTimeout =
+    /const\s+isScrollingUp\s*=\s*scrollTop\s*<\s*this\.#lastScrollTop\s*;\s*const\s+isAtTop\s*=\s*headerTop\s*>=\s*0\s*;\s*if\s*\(\s*this\.#timeout\s*\)\s*\{/i;
+  const timeoutBeforeAlwaysBranch =
+    /if\s*\(\s*this\.#timeout\s*\)\s*\{\s*clearTimeout\s*\(\s*this\.#timeout\s*\)\s*;\s*this\.#timeout\s*=\s*null\s*;\s*\}\s*if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{/i;
+  const alwaysChecksTopBeforeDirection =
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{[\s\S]*?\}\s*else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{/i;
+  const alwaysDirectionMapping =
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*\}\s*else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;\s*\}\s*else\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;\s*\}/i;
+  const alwaysAssignmentBeforeReturn =
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{[\s\S]*?this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;/i;
+  const nonAlwaysUpAtTop =
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{[\s\S]*?this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*return\s*;\s*\}\s*if\s*\(\s*isScrollingUp\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{\s*this\.#offscreen\s*=\s*false\s*;\s*this\.dataset\.stickyState\s*=\s*['"]inactive['"]\s*;\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;/i;
+  const nonScrollingUpBranches =
+    /if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?\}\s*else\s+if\s*\(\s*this\.dataset\.stickyState\s*===\s*['"]active['"]\s*\)\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}\s*else\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}/i;
+
+  if (
+    /returns?\s+early\s+when\s+!\s*this\.#offscreen\s*&&\s*stickyMode\s*!==\s*['"]always['"]/i.test(claimText)
+  ) {
+    return earlyReturnGuard.test(methodBody) && hasEvidence(earlyReturnGuard);
+  }
+
+  if (
+    /early\s+return\s+happens\s+before\s+(?:the\s+)?method\s+calls\s+getScrollTop\s*\(\s*\)/i.test(claimText)
+  ) {
+    return earlyReturnThenScroll.test(methodBody) && hasEvidence(earlyReturnThenScroll);
+  }
+
+  if (
+    /calculates?\s+isScrollingUp\s+and\s+isAtTop\s+before\s+timeout\s+cleanup/i.test(claimText)
+  ) {
+    return calculationsBeforeTimeout.test(methodBody) && hasEvidence(calculationsBeforeTimeout);
+  }
+
+  if (
+    /timeout\s+cleanup\s+occurs\s+before\s+the\s+stickyMode\s*===\s*['"]always['"]\s+branch/i.test(claimText)
+  ) {
+    return timeoutBeforeAlwaysBranch.test(methodBody) && hasEvidence(timeoutBeforeAlwaysBranch);
+  }
+
+  if (
+    /in\s+the\s+always\s+branch,\s*isAtTop\s+is\s+checked\s+before\s+isScrollingUp/i.test(claimText)
+  ) {
+    return alwaysChecksTopBeforeDirection.test(methodBody) &&
+      hasEvidence(alwaysChecksTopBeforeDirection);
+  }
+
+  if (
+    /in\s+the\s+always\s+branch/i.test(claimText) &&
+    /scrollDirection\s+becomes/i.test(claimText) &&
+    /['"]none['"]\s+when\s+isAtTop\s+is\s+true/i.test(claimText) &&
+    /['"]up['"]\s+when\s+isAtTop\s+is\s+false\s+and\s+isScrollingUp\s+is\s+true/i.test(claimText) &&
+    /['"]down['"]\s+otherwise/i.test(claimText)
+  ) {
+    return alwaysDirectionMapping.test(methodBody) &&
+      hasEvidence(alwaysDirectionMapping);
+  }
+
+  if (
+    /always\s+branch\s+assigns\s+scrollTop\s+to\s+this\.#lastScrollTop\s+before\s+returning/i.test(claimText)
+  ) {
+    return alwaysAssignmentBeforeReturn.test(methodBody) &&
+      hasEvidence(alwaysAssignmentBeforeReturn);
+  }
+
+  if (
+    /in\s+the\s+non[-\s]?always\s+path,\s*when\s+isScrollingUp\s+and\s+isAtTop\s+are\s+both\s+true/i.test(claimText) &&
+    /this\.#offscreen\s+becomes\s+false/i.test(claimText) &&
+    /stickyState\s+becomes\s+['"]inactive['"]/i.test(claimText) &&
+    /scrollDirection\s+becomes\s+['"]none['"]/i.test(claimText)
+  ) {
+    const evidencePattern =
+      /if\s*\(\s*isScrollingUp\s*\)\s*\{\s*if\s*\(\s*isAtTop\s*\)\s*\{\s*this\.#offscreen\s*=\s*false\s*;\s*this\.dataset\.stickyState\s*=\s*['"]inactive['"]\s*;\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;/i;
+    return nonAlwaysUpAtTop.test(methodBody) &&
+      hasEvidence(evidencePattern);
+  }
+
+  if (
+    /in\s+the\s+non[-\s]?always\s+path,\s*both\s+branches\s+for\s*!isScrollingUp\s+assign/i.test(claimText) &&
+    /scrollDirection\s*=\s*['"]none['"]/i.test(claimText) &&
+    /stickyState\s*=\s*['"]idle['"]/i.test(claimText)
+  ) {
+    const evidencePattern =
+      /else\s+if\s*\(\s*this\.dataset\.stickyState\s*===\s*['"]active['"]\s*\)\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}\s*else\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;/i;
+    return nonScrollingUpBranches.test(methodBody) &&
+      hasEvidence(evidencePattern);
+  }
+
+  if (
+    /non[-\s]?always\s+path\s+assigns\s+scrollTop\s+to\s+this\.#lastScrollTop\s+after\s+the\s+conditional\s+branch\s+structure/i.test(claimText)
+  ) {
+    const assignment = "this.#lastScrollTop = scrollTop;";
+    const assignmentCount = methodBody.split(assignment).length - 1;
+    const firstAssignment = methodBody.indexOf(assignment);
+    const finalAssignment = methodBody.lastIndexOf(assignment);
+    const terminalEvidence =
+      /this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}\s*this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*$/i;
+    return assignmentCount === 2 &&
+      firstAssignment >= 0 &&
+      finalAssignment > firstAssignment &&
+      methodBody.trimEnd().endsWith(assignment) &&
+      nonScrollingUpBranches.test(methodBody) &&
+      hasEvidence(terminalEvidence);
+  }
+
+  return false;
+}
+
 function supportsStickyUpdateScrollEarlyReturnClaim(
   claim: string,
   evidenceItems: string[],
@@ -8085,8 +8227,13 @@ async function verifyAnswerClaim(
           supportsStickyUpdateScrollCoreOperationClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedStickyUpdateScrollFlow =
+          supportsStickyUpdateScrollFlowClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAtomicPattern =
           verifiedStickyUpdateScrollCoreOperation ||
+          verifiedStickyUpdateScrollFlow ||
           supportsStickyUpdateScrollEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
@@ -8151,6 +8298,7 @@ async function verifyAnswerClaim(
         const hasUnsupportedControlFlow = !verifiedRafOtherwiseFlow &&
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
           !verifiedStickyUpdateScrollCoreOperation &&
+          !verifiedStickyUpdateScrollFlow &&
           claimAddsUnsupportedControlFlow(
             claim.claim,
             evidenceItems,
@@ -8195,6 +8343,7 @@ async function verifyAnswerClaim(
         const evidenceSupportsClaim =
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollEarlyReturnFlow ||
+          verifiedStickyUpdateScrollFlow ||
           genericTokenOverlap ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
