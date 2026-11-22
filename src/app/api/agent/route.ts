@@ -23,7 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
-// v76: verifies skipped removeEventListener for a falsy scroll container and literal remove -> reassign -> add operation-order wording.
+// v77: recognizes guarded skipped-listener, evaluated observer-argument, and concise ordered-operation claim wording.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6992,6 +6992,19 @@ function supportsStickyBreakpointFlowClaim(
     /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*\}/i;
 
   if (
+    /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
+    /this\.#scrollContainer\.removeEventListener\s+is\s+skipped/i.test(claimText) &&
+    /conditional\s+block/i.test(claimText) &&
+    !/\b(?:not|never|without|isn't|is\s+not)\b/i.test(claimText)
+  ) {
+    const guardedRemoveOperation =
+      /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+    return falsyStickyGuard.test(methodBody) &&
+      guardedRemoveOperation.test(methodBody) &&
+      hasEvidence(guardedRemoveOperation);
+  }
+
+  if (
     /when\s+stickyMode\s+is\s+truthy\s+but\s+this\.#scrollContainer\s+is\s+null(?:\s+or\s+falsy)?/i.test(claimText) &&
     /this\.#scrollContainer\.removeEventListener\s+is\s+skipped/i.test(claimText) &&
     !/\b(?:not|never|without)\b/i.test(claimText)
@@ -7057,6 +7070,15 @@ function supportsStickyBreakpointFlowClaim(
 
   const orderedScrollRebindOperations =
     /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+
+  if (
+    /when\s+this\.#scrollContainer\s+is\s+truthy/i.test(claimText) &&
+    /exact\s+order\s+of\s+operations\s+is\s+removeeventlistener\s*,\s*reassigning\s+this\.#scrollcontainer\s*,\s*and\s+addeventlistener/i.test(claimText) &&
+    !/\b(?:not|never|without|rather\s+than|instead\s+of)\b/i.test(claimText)
+  ) {
+    return orderedScrollRebindOperations.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
 
   if (
     /when\s+this\.#scrollContainer\s+is\s+truthy/i.test(claimText) &&
@@ -7216,6 +7238,15 @@ function supportsStickyBreakpointFlowClaim(
 
   const observeStickyCall =
     /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+
+  if (
+    /the\s+argument\s+passed\s+to\s+#observeStickyPosition\s+evaluates\s+whether\s+stickyMode\s+is\s+equal\s+to\s+['"]always['"]/i.test(claimText)
+  ) {
+    const evaluatedArgumentCall =
+      /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+    return evaluatedArgumentCall.test(methodBody) &&
+      hasEvidence(evaluatedArgumentCall);
+  }
 
   if (
     /the\s+argument\s+passed\s+to\s+#observeStickyPosition\s+is\s+stickyMode\s*===\s*['"]always['"]/i.test(claimText)
