@@ -23,7 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
-// v78: recognizes if-guarded skipped-listener wording, verifies observer call outside that block, and the boolean equality-argument description.
+// v79: recognizes simple early-return, if-guard shorthand, concise outside-block call, and getScrollEventTarget operation-order wording.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6934,6 +6934,15 @@ function supportsStickyBreakpointFlowClaim(
     return falsyStickyGuard.test(methodBody) &&
       hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
   }
+  if (
+    /when\s+stickyMode\s+is\s+falsy/i.test(claimText) &&
+    /the\s+method\s+returns?\s+early/i.test(claimText) &&
+    !/\b(?:does\s+not|doesn't|never|not)\b/i.test(claimText)
+  ) {
+    return falsyStickyGuard.test(methodBody) &&
+      hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
+  }
+
   if (/reads?\s+(?:the\s+)?sticky\s+attribute/i.test(claimText) &&
       /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(claimText)) {
     return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
@@ -7018,6 +7027,19 @@ function supportsStickyBreakpointFlowClaim(
   }
 
   if (
+    /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
+    /this\.#scrollContainer\.removeEventListener\s+is\s+skipped/i.test(claimText) &&
+    /because\s+of\s+the\s+if\s*\(\s*this\.#scrollContainer\s*\)\s+guard/i.test(claimText) &&
+    !/\b(?:not|never|without|isn't|is\s+not)\b/i.test(claimText)
+  ) {
+    const guardedRemoveOperation =
+      /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+    return falsyStickyGuard.test(methodBody) &&
+      guardedRemoveOperation.test(methodBody) &&
+      hasEvidence(guardedRemoveOperation);
+  }
+
+  if (
     /when\s+stickyMode\s+is\s+truthy\s+but\s+this\.#scrollContainer\s+is\s+null(?:\s+or\s+falsy)?/i.test(claimText) &&
     /this\.#scrollContainer\.removeEventListener\s+is\s+skipped/i.test(claimText) &&
     !/\b(?:not|never|without)\b/i.test(claimText)
@@ -7083,6 +7105,21 @@ function supportsStickyBreakpointFlowClaim(
 
   const orderedScrollRebindOperations =
     /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+
+  if (
+    /when\s+this\.#scrollContainer\s+is\s+truthy/i.test(claimText) &&
+    /exact\s+order\s+of\s+operations\s+is\s+removeeventlistener\s*,\s*reassigning\s+this\.#scrollContainer\s+using\s+getScrollEventTarget\s*\(\)\s*,\s*then\s+addeventlistener/i.test(claimText) &&
+    !/\b(?:not|never|without|rather\s+than|instead\s+of)\b/i.test(claimText)
+  ) {
+    const removePosition = claimText.indexOf("removeeventlistener");
+    const targetPosition = claimText.indexOf("getscrollEventTarget".toLowerCase());
+    const addPosition = claimText.indexOf("addeventlistener");
+    return removePosition >= 0 &&
+      removePosition < targetPosition &&
+      targetPosition < addPosition &&
+      orderedScrollRebindOperations.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
 
   if (
     /when\s+this\.#scrollContainer\s+is\s+truthy/i.test(claimText) &&
@@ -7270,6 +7307,27 @@ function supportsStickyBreakpointFlowClaim(
     });
     return falsyStickyGuard.test(methodBody) &&
       !!scrollBlockMatch &&
+      !!observeCallMatch &&
+      observeCallMatch.index >= scrollBlockMatch.index + scrollBlockMatch[0].length &&
+      contiguousOutsideEvidence;
+  }
+
+  if (
+    /the\s+call\s+to\s+#observeStickyPosition\s+is\s+outside\s+the\s+scrollContainer\s+conditional\s+block/i.test(claimText) &&
+    !/\b(?:not|never|without|inside\s+the|within\s+the)\b/i.test(claimText)
+  ) {
+    const scrollBlockMatch = completeScrollRebindBlock.exec(methodBody);
+    const observeCallMatch = observeStickyCall.exec(methodBody);
+    const contiguousOutsideEvidence = evidenceItems.some((evidence) => {
+      const evidenceBlockMatch = completeScrollRebindBlock.exec(evidence);
+      const evidenceCallMatch = observeStickyCall.exec(evidence);
+      return !!evidenceBlockMatch &&
+        !!evidenceCallMatch &&
+        evidenceCallMatch.index >= evidenceBlockMatch.index + evidenceBlockMatch[0].length &&
+        evidenceMatchesSource(evidence, methodSource) &&
+        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment));
+    });
+    return !!scrollBlockMatch &&
       !!observeCallMatch &&
       observeCallMatch.index >= scrollBlockMatch.index + scrollBlockMatch[0].length &&
       contiguousOutsideEvidence;
