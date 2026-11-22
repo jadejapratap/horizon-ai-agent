@@ -19,6 +19,7 @@
 // v67: supports the concise six-claim breakpoint execution-flow wording with exact source-order evidence.
 // v68: handles truthy/present and exact/non-exact order variants, Observer disconnect/null wording, and matching answer paraphrases.
 // v69: accepts runtime claim wording for stickyMode missing, if-scrollContainer, order-of-operations, and Observer disconnect/assign-null while preserving action order.
+// v70: accepts old/new scroll-event-listener wording and rejects alternate target APIs while retaining remove -> replace -> add source order.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -4872,9 +4873,9 @@ function isStickyBreakpointFlowStatementAligned(claim: string, statement: string
     /#scrollcontainer/.test(claimText) && /rebinds?/.test(claimText) && /scroll\s+event\s+listener/.test(claimText) &&
     /scroll\s+container\s+is\s+present/.test(statementText) && /rebinds?/.test(statementText) && /scroll\s+event\s+listener/.test(statementText);
   const operationPositions = (value: string): number[] => [
-    value.search(/remov(?:e|es|ing)\s+(?:the\s+)?old\s+listener/),
+    value.search(/remov(?:e|es|ing)\s+(?:the\s+)?old\s+(?:scroll\s+event\s+)?listener/),
     value.search(/replac(?:e|es|ing)\s+(?:the\s+)?scroll\s+container/),
-    value.search(/add(?:s|ing)\s+(?:the\s+)?new\s+listener/),
+    value.search(/add(?:s|ing)\s+(?:the\s+)?new\s+(?:scroll\s+event\s+)?listener/),
   ];
   const claimOrder = operationPositions(claimText);
   const statementOrder = operationPositions(statementText);
@@ -7007,17 +7008,18 @@ function supportsStickyBreakpointFlowClaim(
     /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
 
   if (
-    /removes?\s+the\s+old\s+listener/i.test(claimText) &&
+    /removes?\s+the\s+old\s+(?:scroll\s+event\s+)?listener/i.test(claimText) &&
     /replaces?\s+the\s+scroll\s+container/i.test(claimText) &&
-    /adds?\s+the\s+new\s+listener/i.test(claimText) &&
-    /(?:in\s+that\s+(?:exact\s+)?order|order\s+of\s+operations)/i.test(claimText)
+    /adds?\s+the\s+new\s+(?:scroll\s+event\s+)?listener/i.test(claimText)
   ) {
-    const removePosition = claimText.search(/removes?\s+the\s+old\s+listener/i);
+    const removePosition = claimText.search(/removes?\s+the\s+old\s+(?:scroll\s+event\s+)?listener/i);
     const replacePosition = claimText.search(/replaces?\s+the\s+scroll\s+container/i);
-    const addPosition = claimText.search(/adds?\s+the\s+new\s+listener/i);
+    const addPosition = claimText.search(/adds?\s+the\s+new\s+(?:scroll\s+event\s+)?listener/i);
+    const unsupportedScrollTarget = /\b(?:via|with|using)\s+(?!getScrollEventTarget\b)[A-Za-z_$][A-Za-z0-9_$]*\s*\(/i;
     return removePosition >= 0 &&
       removePosition < replacePosition &&
       replacePosition < addPosition &&
+      !unsupportedScrollTarget.test(claimText) &&
       orderedScrollRebindOperations.test(methodBody) &&
       hasEvidence(orderedScrollRebindOperations);
   }
