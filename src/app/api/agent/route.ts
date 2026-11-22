@@ -6275,6 +6275,60 @@ function supportsStickyRafDescriptionClaim(
   ) && exactOperation.test(methodBody);
 }
 
+function supportsStickyRafEarlyReturnClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#handleWindowScroll/i.test(claim) ||
+      !/#scrollRafId/i.test(claim) ||
+      !/return early|returns early|early return/i.test(claim) ||
+      !/not null|!==\s*null/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleWindowScroll");
+  if (!methodBody) return false;
+
+  const guard = /if\s*\(\s*this\.#scrollRafId\s*!==\s*null\s*\)\s*return\s*;/i;
+  return guard.test(methodBody) &&
+    evidenceItems.some((evidence) =>
+      guard.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+}
+
+function supportsStickyRafOtherwiseCallbackClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (!/otherwise/.test(text) ||
+      !/requestAnimationFrame/i.test(claim) ||
+      !/#scrollRafId/i.test(claim) ||
+      !/#updateScrollState/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleWindowScroll");
+  if (!methodBody) return false;
+
+  const earlyGuard =
+    /if\s*\(\s*this\.#scrollRafId\s*!==\s*null\s*\)\s*return\s*;/i;
+  const callback =
+    /this\.#scrollRafId\s*=\s*requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{[\s\S]*?this\.#scrollRafId\s*=\s*null\s*;[\s\S]*?this\.#updateScrollState\s*\(\s*\)\s*;[\s\S]*?\}\s*\)\s*;/i;
+
+  return earlyGuard.test(methodBody) &&
+    callback.test(methodBody) &&
+    evidenceItems.some((evidence) =>
+      /requestAnimationFrame\s*\(/i.test(evidence) &&
+      /this\.#scrollRafId\s*=\s*null/i.test(evidence) &&
+      /#updateScrollState\s*\(/i.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+}
+
 function supportsStickyDesktopCssDescriptionClaim(
   claim: string,
   evidenceItems: string[],
@@ -6645,7 +6699,7 @@ function supportsStickyBreakpointObserverResetClaim(
   if (!/#handleBreakpointChange/i.test(claim) ||
       !/intersection observer/i.test(claim) ||
       !/disconnect/i.test(claim) ||
-      !/(?:recreat|reset|reinitializ)/i.test(claim)) return false;
+      !/(?:recreat|reset|reinitializ|call(?:s|ed)? again)/i.test(claim)) return false;
 
   const methodBody = extractPrivateArrowMethodBody(actualSource, "handleBreakpointChange");
   if (!methodBody) return false;
@@ -7464,6 +7518,8 @@ async function verifyAnswerClaim(
           supportsStickyScrollContainerListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollListenerDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafOtherwiseCallbackClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionObserverDatasetUpdateClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
@@ -7485,12 +7541,17 @@ async function verifyAnswerClaim(
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments);
         const claimIsAtomic = isAtomicAnswerClaim(claim.claim) || verifiedAtomicPattern;
-        const hasUnsupportedControlFlow = claimAddsUnsupportedControlFlow(
-          claim.claim,
-          evidenceItems,
-          evidenceContexts,
-          sourceSegments
-        );
+        const verifiedRafOtherwiseFlow =
+          supportsStickyRafOtherwiseCallbackClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
+        const hasUnsupportedControlFlow = !verifiedRafOtherwiseFlow &&
+          claimAddsUnsupportedControlFlow(
+            claim.claim,
+            evidenceItems,
+            evidenceContexts,
+            sourceSegments
+          );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
           (/\bdrawer_menu\b/.test(claimTextLower) && /\bmobile\b/.test(claimTextLower)) ||
@@ -7543,6 +7604,8 @@ async function verifyAnswerClaim(
           supportsStickyScrollContainerListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollListenerDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafOtherwiseCallbackClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionObserverDatasetUpdateClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
