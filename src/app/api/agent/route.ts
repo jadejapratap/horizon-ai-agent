@@ -6291,10 +6291,15 @@ function supportsStickyRafEarlyReturnClaim(
 
   const guard = /if\s*\(\s*this\.#scrollRafId\s*!==\s*null\s*\)\s*return\s*;/i;
   return guard.test(methodBody) &&
-    evidenceItems.some((evidence) =>
-      guard.test(evidence) &&
-      evidenceMatchesSource(evidence, methodBody) &&
-      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    sourceSegments.some((segment) =>
+      /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{/.test(segment) &&
+      guard.test(segment) &&
+      evidenceItems.some((evidence) =>
+        guard.test(evidence) &&
+        /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{/.test(evidence) &&
+        evidenceMatchesSource(evidence, segment) &&
+        evidenceMatchesSource(evidence, actualSource)
+      )
     );
 }
 
