@@ -20,6 +20,7 @@
 // v68: handles truthy/present and exact/non-exact order variants, Observer disconnect/null wording, and matching answer paraphrases.
 // v69: accepts runtime claim wording for stickyMode missing, if-scrollContainer, order-of-operations, and Observer disconnect/assign-null while preserving action order.
 // v70: accepts old/new scroll-event-listener wording and rejects alternate target APIs while retaining remove -> replace -> add source order.
+// v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6866,12 +6867,7 @@ function supportsStickyConnectedCallbackSetupClaim(
 function supportsStickyBreakpointAttributeReadClaim(claim: string, evidenceItems: string[]): boolean {
   if (!/#handleBreakpointChange/i.test(claim) || !/sticky attribute/i.test(claim)) return false;
   return evidenceItems.some((evidence) =>
-    /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{/i.test(evidence) &&
-    /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(evidence)
-  );
-}
-
-function supportsStickyBreakpointFlowClaim(
+    /#handleBreakpointCfunction supportsStickyBreakpointFlowClaim(
   claim: string,
   evidenceItems: string[],
   sourceSegments: string[],
@@ -7008,13 +7004,13 @@ function supportsStickyBreakpointFlowClaim(
     /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
 
   if (
-    /removes?\s+the\s+old\s+(?:scroll\s+event\s+)?listener/i.test(claimText) &&
+    /removes?\s+the\s+old\s+(?:scroll\s+(?:event\s+)?)?listener/i.test(claimText) &&
     /replaces?\s+the\s+scroll\s+container/i.test(claimText) &&
-    /adds?\s+the\s+new\s+(?:scroll\s+event\s+)?listener/i.test(claimText)
+    /adds?\s+the\s+new\s+(?:scroll\s+(?:event\s+)?)?listener/i.test(claimText)
   ) {
-    const removePosition = claimText.search(/removes?\s+the\s+old\s+(?:scroll\s+event\s+)?listener/i);
+    const removePosition = claimText.search(/removes?\s+the\s+old\s+(?:scroll\s+(?:event\s+)?)?listener/i);
     const replacePosition = claimText.search(/replaces?\s+the\s+scroll\s+container/i);
-    const addPosition = claimText.search(/adds?\s+the\s+new\s+(?:scroll\s+event\s+)?listener/i);
+    const addPosition = claimText.search(/adds?\s+the\s+new\s+(?:scroll\s+(?:event\s+)?)?listener/i);
     const unsupportedScrollTarget = /\b(?:via|with|using)\s+(?!getScrollEventTarget\b)[A-Za-z_$][A-Za-z0-9_$]*\s*\(/i;
     return removePosition >= 0 &&
       removePosition < replacePosition &&
@@ -7121,6 +7117,13 @@ function supportsStickyBreakpointFlowClaim(
 
   if (
     /passes?\s+stickyMode\s*===\s*['"]always['"]\s+to\s+#observeStickyPosition/i.test(claimText)
+  ) {
+    return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
+  }
+
+  return false;
+}
+mText)
   ) {
     return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
   }
