@@ -14,6 +14,7 @@
 // v62: rejects unsupported positive data-sticky reads and verifies disconnect-before-null negative-order claims.
 // v63: blocks every unsupported positive data-sticky assertion, regardless of claim verb phrasing.
 // v64: requires complete-method evidence for every data-sticky absence claim; blocks alternate verifier bypasses.
+// v65: matches breakpoint-flow excerpts against the complete method range so signature-prefixed guard evidence is accepted.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6844,29 +6845,36 @@ function supportsStickyBreakpointFlowClaim(
 ): boolean {
   const claimText = claim.toLowerCase();
   const methodBody = extractPrivateArrowMethodBody(actualSource, "handleBreakpointChange");
-  if (!methodBody) return false;
+  const methodSource = (() => {
+    const signature = /#handleBreakpointChange\s*=\s*\(\s*\)\s*=>\s*\{/i.exec(actualSource);
+    if (!signature) return null;
 
+    const bodyStart = signature.index + signature[0].length;
+    const methodEnd = /\n[ \t]{2}\};[ \t]*\r?\n/.exec(actualSource.slice(bodyStart));
+    if (!methodEnd) return null;
+
+    return actualSource.slice(
+      signature.index,
+      bodyStart + methodEnd.index + methodEnd[0].length
+    );
+  })();
+
+  if (!methodBody || !methodSource) return false;
+
+  // Evidence excerpts may include the method signature as well as the
+  // operation itself. Match against the complete method source, not only its
+  // body, while still requiring the relevant operation pattern in the quote.
   const hasEvidence = (pattern: RegExp): boolean =>
     evidenceItems.some((evidence) =>
       pattern.test(evidence) &&
-      evidenceMatchesSource(evidence, methodBody) &&
+      evidenceMatchesSource(evidence, methodSource) &&
       sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
     );
 
   const hasCompleteMethodEvidence = (): boolean => {
-    const signature = /#handleBreakpointChange\s*=\s*\(\s*\)\s*=>\s*\{/i.exec(actualSource);
-    if (!signature) return false;
-    const bodyStart = signature.index + signature[0].length;
-    const methodEnd = /\n[ \t]{2}\};[ \t]*\r?\n/.exec(actualSource.slice(bodyStart));
-    if (!methodEnd) return false;
-
-    const fullMethod = actualSource.slice(
-      signature.index,
-      bodyStart + methodEnd.index + methodEnd[0].length
-    );
     const normalizeSourceText = (value: string): string =>
       value.replace(/\s+/g, " ").trim();
-    const expected = normalizeSourceText(fullMethod);
+    const expected = normalizeSourceText(methodSource);
 
     return evidenceItems.some((evidence) =>
       normalizeSourceText(evidence) === expected &&
