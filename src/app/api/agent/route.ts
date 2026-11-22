@@ -15,6 +15,7 @@
 // v63: blocks every unsupported positive data-sticky assertion, regardless of claim verb phrasing.
 // v64: requires complete-method evidence for every data-sticky absence claim; blocks alternate verifier bypasses.
 // v65: matches breakpoint-flow excerpts against the complete method range so signature-prefixed guard evidence is accepted.
+// v66: verifies natural-language breakpoint execution-flow summaries against exact guarded source sequences.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6892,6 +6893,19 @@ function supportsStickyBreakpointFlowClaim(
     return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
   }
 
+  if (/#handleBreakpointChange/i.test(claimText) &&
+      /\breads?\b/i.test(claimText) &&
+      /\bsticky\s+(?:HTML\s+)?attribute\b/i.test(claimText) &&
+      !/data-sticky/i.test(claimText)) {
+    return stickyAttributeRead.test(methodBody) &&
+      evidenceItems.some((evidence) =>
+        /#handleBreakpointChange\s*=\s*\(\s*\)\s*=>\s*\{/i.test(evidence) &&
+        stickyAttributeRead.test(evidence) &&
+        evidenceMatchesSource(evidence, methodSource) &&
+        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+      );
+  }
+
   if (/does\s+not\s+read[\s\S]*getAttribute\s*\(\s*['"]data-sticky['"]\s*\)/i.test(claimText)) {
     const dataStickyRead = /this\.getAttribute\s*\(\s*['"]data-sticky['"]\s*\)/i;
     return !dataStickyRead.test(methodBody) && hasCompleteMethodEvidence();
@@ -6904,7 +6918,7 @@ function supportsStickyBreakpointFlowClaim(
       hasCompleteMethodEvidence();
   }
 
-  if (/returns?\s+immediately\s+when\s+stickyMode\s+is\s+falsy/i.test(claimText)) {
+  if (/returns?\s+immediately\s+(?:when|if)\s+stickyMode\s+is\s+falsy/i.test(claimText)) {
     return falsyStickyGuard.test(methodBody) &&
       hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
   }
@@ -6914,6 +6928,22 @@ function supportsStickyBreakpointFlowClaim(
     /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*\}/i;
   if (/scroll\s+listener\s+rebinding\s+operations\s+are\s+inside\s+an?\s+if\s*\(\s*this\.#scrollContainer\s*\)\s+block/i.test(claimText)) {
     return completeScrollRebindBlock.test(methodBody) && hasEvidence(scrollContainerGuard);
+  }
+
+  if (
+    /(?:when|if)\s+this\.#scrollContainer\s+exists/i.test(claimText) &&
+    /removes?\s+(?:the\s+)?old\s+scroll\s+listener/i.test(claimText) &&
+    /replaces?\s+the\s+scroll\s+container/i.test(claimText) &&
+    /adds?\s+(?:the\s+)?new\s+listener/i.test(claimText)
+  ) {
+    const removePosition = claimText.search(/removes?\s+(?:the\s+)?old\s+scroll\s+listener/i);
+    const replacePosition = claimText.search(/replaces?\s+the\s+scroll\s+container/i);
+    const addPosition = claimText.search(/adds?\s+(?:the\s+)?new\s+listener/i);
+    return removePosition >= 0 &&
+      removePosition < replacePosition &&
+      replacePosition < addPosition &&
+      completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
   }
 
   const removeBeforeReplace =
@@ -6953,12 +6983,30 @@ function supportsStickyBreakpointFlowClaim(
     return disconnectBeforeNull.test(methodBody) && hasEvidence(disconnectBeforeNull);
   }
 
+  if (
+    /disconnects?\s+(?:the\s+)?(?:existing\s+)?intersectionobserver/i.test(claimText) &&
+    /sets?\s+it\s+to\s+null/i.test(claimText)
+  ) {
+    const disconnectBeforeNull =
+      /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
+    return disconnectBeforeNull.test(methodBody) && hasEvidence(disconnectBeforeNull);
+  }
+
   if (/resets?\s+the\s+intersectionobserver/i.test(claimText) &&
       /disconnect(?:ing)?/i.test(claimText) &&
       /\bnull\b/i.test(claimText) &&
       /reinitializ|recreat|then\s+(?:call(?:ing)?\s+)?#observestickyposition/i.test(claimText) &&
       /disconnect(?:ing)?[\s\S]*assign(?:ing)?\s+null[\s\S]*(?:(?:reinitializ|recreat)|then\s+(?:call(?:ing)?\s+)?#observestickyposition)/i.test(claimText)) {
     return observerReset.test(methodBody) && hasEvidence(observerReset);
+  }
+
+  if (
+    /calls?\s+#observeStickyPosition/i.test(claimText) &&
+    /with\s+stickyMode\s*===\s*['"]always['"]/i.test(claimText)
+  ) {
+    const exactObserveCall =
+      /this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
+    return exactObserveCall.test(methodBody) && hasEvidence(exactObserveCall);
   }
 
   const observeStickyCall =
