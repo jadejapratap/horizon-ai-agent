@@ -7159,13 +7159,14 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
     saysFalse("isAtTop") &&
     saysTrue("isScrollingUp")
   ) {
-    branchIsVerified = upBranch !== null && hasAssignment(upBranch);
+    branchIsVerified = topBranch !== null && upBranch !== null && hasAssignment(upBranch);
   } else if (
     saysAlways && value === "down" &&
     saysFalse("isAtTop") &&
     saysFalse("isScrollingUp")
   ) {
-    branchIsVerified = downBranch !== null && hasAssignment(downBranch);
+    branchIsVerified =
+      topBranch !== null && upBranch !== null && downBranch !== null && hasAssignment(downBranch);
   } else if (
     saysNotAlways && value === "none" &&
     saysTrue("isScrollingUp") &&
@@ -7177,19 +7178,22 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
     saysTrue("isScrollingUp") &&
     saysFalse("isAtTop")
   ) {
-    branchIsVerified = scrollingUpDownBranch !== null && hasAssignment(scrollingUpDownBranch);
+    branchIsVerified =
+      scrollingUpTopBranch !== null && scrollingUpDownBranch !== null && hasAssignment(scrollingUpDownBranch);
   } else if (
     saysNotAlways && value === "none" &&
     saysFalse("isScrollingUp") &&
     stickyStateIsActive
   ) {
-    branchIsVerified = stickyActiveBranch !== null && hasAssignment(stickyActiveBranch);
+    branchIsVerified =
+      scrollingUpBranch !== null && stickyActiveBranch !== null && hasAssignment(stickyActiveBranch);
   } else if (
     saysNotAlways && value === "none" &&
     saysFalse("isScrollingUp") &&
     stickyStateIsNotActive
   ) {
     branchIsVerified =
+      scrollingUpBranch !== null &&
       stickyActiveBranch !== null &&
       stickyNotActiveBranch !== null &&
       hasAssignment(stickyNotActiveBranch);
