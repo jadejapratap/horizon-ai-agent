@@ -6251,6 +6251,133 @@ function extractPrivateArrowMethodBody(source: string, methodName: string): stri
   return nextMethod >= 0 ? rest.slice(0, nextMethod) : rest.slice(0, 16000);
 }
 
+function supportsStickyRafEarlyReturnOperationClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#scrollRafId/i.test(claim) ||
+      !/(?:not\s+null|!==\s*null)/i.test(claim) ||
+      !/return(?:s)?\s+(?:early|immediately)/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleWindowScroll");
+  if (!methodBody) return false;
+
+  const guard =
+    /if\s*\(\s*this\.#scrollRafId\s*!==\s*null\s*\)\s*return\s*;/i;
+  const methodSignature =
+    /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{/i;
+
+  if (!guard.test(methodBody)) return false;
+
+  return evidenceItems.some((evidence) =>
+    methodSignature.test(evidence) &&
+    guard.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      methodSignature.test(segment) &&
+      guard.test(segment) &&
+      evidenceMatchesSource(evidence, segment)
+    )
+  );
+}
+
+function supportsStickyRafOtherwiseAssignmentClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/\botherwise\b/i.test(claim) ||
+      !/requestAnimationFrame/i.test(claim) ||
+      !/#scrollRafId/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleWindowScroll");
+  if (!methodBody) return false;
+
+  const guard =
+    /if\s*\(\s*this\.#scrollRafId\s*!==\s*null\s*\)\s*return\s*;/i;
+  const assignment =
+    /this\.#scrollRafId\s*=\s*requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{/i;
+  const methodSignature =
+    /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{/i;
+
+  const guardIndex = methodBody.search(guard);
+  const assignmentIndex = methodBody.search(assignment);
+  if (guardIndex < 0 || assignmentIndex <= guardIndex) return false;
+
+  return evidenceItems.some((evidence) => {
+    const evidenceGuardIndex = evidence.search(guard);
+    const evidenceAssignmentIndex = evidence.search(assignment);
+    return methodSignature.test(evidence) &&
+      evidenceGuardIndex >= 0 &&
+      evidenceAssignmentIndex > evidenceGuardIndex &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) =>
+        methodSignature.test(segment) &&
+        evidenceGuardIndex >= 0 &&
+        evidenceAssignmentIndex > evidenceGuardIndex &&
+        evidenceMatchesSource(evidence, segment)
+      );
+  });
+}
+
+function supportsStickyRafCallbackResetClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/callback/i.test(claim) ||
+      !/#scrollRafId/i.test(claim) ||
+      !/\bnull\b/i.test(claim) ||
+      !/\b(?:set|sets|reset|resets|assign|assigns)\b/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleWindowScroll");
+  if (!methodBody) return false;
+
+  const callbackOperation =
+    /this\.#scrollRafId\s*=\s*requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{[\s\S]*?this\.#scrollRafId\s*=\s*null\s*;[\s\S]*?\}\s*\)\s*;/i;
+
+  return callbackOperation.test(methodBody) &&
+    evidenceItems.some((evidence) =>
+      callbackOperation.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) =>
+        callbackOperation.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    );
+}
+
+function supportsStickyRafCallbackUpdateClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/callback/i.test(claim) ||
+      !/#updateScrollState/i.test(claim) ||
+      !/\b(?:call|calls|invoke|invokes)\b/i.test(claim)) return false;
+
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleWindowScroll");
+  if (!methodBody) return false;
+
+  const callbackOperation =
+    /this\.#scrollRafId\s*=\s*requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{[\s\S]*?this\.#updateScrollState\s*\(\s*\)\s*;[\s\S]*?\}\s*\)\s*;/i;
+
+  return callbackOperation.test(methodBody) &&
+    evidenceItems.some((evidence) =>
+      callbackOperation.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) =>
+        callbackOperation.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    );
+}
+
 function supportsStickyRafDescriptionClaim(
   claim: string,
   evidenceItems: string[],
@@ -7601,6 +7728,10 @@ async function verifyAnswerClaim(
           supportsStickyScrollContainerListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollListenerDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafEarlyReturnOperationClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafOtherwiseAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafCallbackResetClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafCallbackUpdateClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyRafEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyRafOtherwiseCallbackClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
@@ -7628,7 +7759,9 @@ async function verifyAnswerClaim(
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments);
         const claimIsAtomic = isAtomicAnswerClaim(claim.claim) || verifiedAtomicPattern;
         const verifiedRafOtherwiseFlow =
-          supportsStickyRafOtherwiseCallbackClaim(
+          supportsStickyRafOtherwiseAssignmentClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          ) || supportsStickyRafOtherwiseCallbackClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
         const hasUnsupportedControlFlow = !verifiedRafOtherwiseFlow &&
@@ -7656,6 +7789,10 @@ async function verifyAnswerClaim(
           (/#observeStickyPosition/i.test(claimTextLower) && /stickyMode\s*===\s*['"]always['"]/i.test(claimTextLower)) ||
           (/#observestickyposition/i.test(claimTextLower) && /\bintersectionobserver\b/.test(claimTextLower)) ||
           (/#updatescrollstate/i.test(claimTextLower) && /\b(?:sticky|state|scroll|direction|dataset)\b/.test(claimTextLower)) ||
+          (/#scrollRafId/i.test(claimTextLower) && /(?:not\s+null|!==\s*null)/i.test(claimTextLower) && /return(?:s)?\s+(?:early|immediately)/i.test(claimTextLower)) ||
+          (/\botherwise\b/i.test(claimTextLower) && /requestAnimationFrame/i.test(claimTextLower) && /#scrollRafId/i.test(claimTextLower)) ||
+          (/#scrollRafId/i.test(claimTextLower) && /\bnull\b/.test(claimTextLower) && /callback/i.test(claimTextLower)) ||
+          (/#updateScrollState/i.test(claimTextLower) && /callback/i.test(claimTextLower)) ||
           (/\buse_currency\b/.test(claimTextLower) &&
             /\b(?:true|false|else)\b/.test(claimTextLower) &&
             /\b(?:money|format(?:s|ting)?|branch|else)\b/.test(claimTextLower)) ||
@@ -7693,6 +7830,10 @@ async function verifyAnswerClaim(
           supportsStickyScrollContainerListenerClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollListenerDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafEarlyReturnOperationClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafOtherwiseAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafCallbackResetClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyRafCallbackUpdateClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyRafEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyRafOtherwiseCallbackClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
