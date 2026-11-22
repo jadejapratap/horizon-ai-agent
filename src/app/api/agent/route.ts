@@ -22,6 +22,7 @@
 // v70: accepts old/new scroll-event-listener wording and rejects alternate target APIs while retaining remove -> replace -> add source order.
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
+// v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6935,7 +6936,7 @@ function supportsStickyBreakpointFlowClaim(
     return stickyAttributeRead.test(methodBody) &&
       evidenceItems.some((evidence) =>
         stickyAttributeRead.test(evidence) &&
-        evidenceMatchesSource(evidence, methodBody) &&
+        evidenceMatchesSource(evidence, methodSource) &&
         sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
       );
   }
