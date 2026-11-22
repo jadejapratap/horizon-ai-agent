@@ -11,6 +11,8 @@
 // v59: routes all scroll-container order assertions through the exact breakpoint flow verifier.
 // v60: routes stickyMode truthy-return assertions through complete-method control-flow evidence.
 // v61: routes IntersectionObserver ordering assertions through exact reset-sequence verification.
+// v62: rejects unsupported positive data-sticky reads and verifies disconnect-before-null negative-order claims.
+// v63: blocks every unsupported positive data-sticky assertion, regardless of claim verb phrasing.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -6937,7 +6939,9 @@ function supportsStickyBreakpointFlowClaim(
   const observerReset =
     /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;\s*this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*;/i;
   if (/does\s+not\s+reset\s+the\s+intersectionobserver\s+by\s+assigning\s+null\s+before\s+disconnecting/i.test(claimText)) {
-    return observerReset.test(methodBody) && hasEvidence(observerReset);
+    const disconnectBeforeNull =
+      /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
+    return disconnectBeforeNull.test(methodBody) && hasEvidence(disconnectBeforeNull);
   }
 
   if (/resets?\s+the\s+intersectionobserver/i.test(claimText) &&
@@ -8504,7 +8508,23 @@ async function verifyAnswerClaim(
         const genericTokenOverlap = !requiresSpecializedEvidence &&
           hasMeaningfulTokenOverlap(claim.claim, combinedEvidence);
 
+        const assertsPositiveDataStickyRead =
+          /data-sticky/i.test(claimTextLower) &&
+          !/\b(?:does\s+not|doesn't|never|not)\b/i.test(claimTextLower);
+        const methodDataStickyRead =
+          /this\.getAttribute\s*\(\s*['"]data-sticky['"]\s*\)/i;
+        const hasDirectDataStickyReadEvidence =
+          methodDataStickyRead.test(actualSource) &&
+          evidenceItems.some((evidence) =>
+            methodDataStickyRead.test(evidence) &&
+            evidenceMatchesSource(evidence, actualSource) &&
+            sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+          );
+        const rejectsUnsupportedDataStickyRead =
+          assertsPositiveDataStickyRead && !hasDirectDataStickyReadEvidence;
+
         const evidenceSupportsClaim =
+          !rejectsUnsupportedDataStickyRead && (
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollEarlyReturnFlow ||
           verifiedStickyUpdateScrollFlow ||
@@ -8580,7 +8600,8 @@ async function verifyAnswerClaim(
           supportsUnitPriceRenderConditionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsMobileCaseLabelClaim(claim.claim, evidenceItems) ||
           supportsMobileVariantRenderClaim(claim.claim, evidenceItems, sourceSegments) ||
-          supportsVolumePricingDetectionClaim(claim.claim, evidenceItems, sourceSegments);
+          supportsVolumePricingDetectionClaim(claim.claim, evidenceItems, sourceSegments)
+          );
 
         if (
           claimSubjectMatchesSourceFile &&
