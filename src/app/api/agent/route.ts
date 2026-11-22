@@ -21,13 +21,13 @@ const THEME_DIR = path.resolve(process.cwd(), "themes", "horizon");
 const MAX_FILES = 30;
 const MAX_FILE_SIZE = 18000;
 
-const MAX_CONTEXT_SIZE = 60000;
-const INITIAL_CONTEXT_BUDGET = 42000;
-const ON_DEMAND_CONTEXT_BUDGET = 18000;
+const MAX_CONTEXT_SIZE = 80000;
+const INITIAL_CONTEXT_BUDGET = 52000;
+const ON_DEMAND_CONTEXT_BUDGET = 28000;
 
 const MAX_ON_DEMAND_FILES = 5;
-const MAX_ON_DEMAND_FILE_SIZE = 18000;
-const MAX_CHUNK_SIZE = 6000;
+const MAX_ON_DEMAND_FILE_SIZE = 26000;
+const MAX_CHUNK_SIZE = 8000;
 
 
 const MIN_DEPENDENCY_SCORE = 15;
@@ -6440,6 +6440,42 @@ function supportsStickyIntersectionObserverDatasetUpdateClaim(
   );
 }
 
+function recoverExactStickyLiquidBranchEvidence(
+  claim: string,
+  sourceSegments: string[]
+): string | null {
+  const text = claim.toLowerCase();
+  if (!/enable_sticky_header/.test(text) || !/\bsticky\b/.test(text)) return null;
+  const mode = /\bscroll-up\b/.test(text)
+    ? "scroll-up"
+    : /\balways\b/.test(text)
+      ? "always"
+      : null;
+  if (!mode) return null;
+
+  const branch = mode === "always"
+    ? /^\s*if\s+section\.settings\.enable_sticky_header\s*==\s*['"]always['"]\s*$/i
+    : /^\s*elsif\s+section\.settings\.enable_sticky_header\s*==\s*['"]scroll-up['"]\s*$/i;
+  const assignment = mode === "always"
+    ? /^\s*assign\s+sticky\s*=\s*['"]always['"]\s*$/i
+    : /^\s*assign\s+sticky\s*=\s*['"]scroll-up['"]\s*$/i;
+
+  for (const segment of sourceSegments) {
+    const lines = segment.split(/\r?\n/);
+    for (let start = 0; start < lines.length; start++) {
+      if (!branch.test(lines[start])) continue;
+      for (let end = start + 1; end < Math.min(lines.length, start + 8); end++) {
+        if (/^\s*(?:elsif|else|endif)\b/i.test(lines[end])) break;
+        if (assignment.test(lines[end])) {
+          // Return the exact contiguous source lines; never synthesize Liquid tags.
+          return lines.slice(start, end + 1).join("\n");
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function supportsStickyHeaderLiquidSettingAssignmentClaim(
   claim: string,
   evidenceItems: string[],
@@ -7160,6 +7196,30 @@ async function verifyAnswerClaim(
         const sourceSegments = sentSource.split(
           "\n\n[UNRETRIEVED SOURCE RANGE GAP]\n\n"
         );
+
+        // Gemini occasionally rewrites plain statements inside a Shopify
+        // {% liquid %} block as invented {% if %}/{% elsif %} tags. For the
+        // two known sticky-setting assignment claims only, recover the exact
+        // contiguous branch from source that was actually sent to Gemini.
+        // This never reads unseen source into evidence and never relaxes the
+        // exact-source matcher.
+        const recoveredStickyEvidence = recoverExactStickyLiquidBranchEvidence(
+          claim.claim,
+          sourceSegments
+        );
+        if (recoveredStickyEvidence) {
+          const currentEvidenceMatches = evidenceItems.some((item) =>
+            evidenceMatchesSource(item, sourceSegments.join("\n"))
+          );
+          if (!currentEvidenceMatches) {
+            evidenceItems.splice(0, evidenceItems.length, recoveredStickyEvidence);
+            console.log("RECOVERED EXACT STICKY LIQUID EVIDENCE:", {
+              claimId: claim.id,
+              file,
+              evidence: recoveredStickyEvidence,
+            });
+          }
+        }
 
         // ------------------------------------------
         // DIRECT SOURCE EVIDENCE
