@@ -2,6 +2,8 @@
 // v50: verifies product-page quantity-break branch scope from contiguous source context and authorizes explicit verified caller-to-target render claims without requiring the caller path in the sentence.
 // v51: verifies ten #updateScrollState order and nested-branch claims against exact contiguous method evidence.
 // v52: accepts the exact always-branch assignment excerpt and the source's intervening explanatory comment.
+// v53: matches branch-local scrollDirection evidence and terminal method-closure evidence for #updateScrollState.
+// v54: validates C10's method-closing evidence against the complete source while separately proving terminal assignment placement.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -7210,8 +7212,10 @@ function supportsStickyUpdateScrollFlowClaim(
     /['"]up['"]\s+when\s+isAtTop\s+is\s+false\s+and\s+isScrollingUp\s+is\s+true/i.test(claimText) &&
     /['"]down['"]\s+otherwise/i.test(claimText)
   ) {
+    const alwaysDirectionEvidence =
+      /if\s*\(\s*isAtTop\s*\)\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]none['"]\s*;\s*\}\s*else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;\s*\}\s*else\s*\{\s*this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;\s*\}/i;
     return alwaysDirectionMapping.test(methodBody) &&
-      hasEvidence(alwaysDirectionMapping);
+      hasEvidence(alwaysDirectionEvidence);
   }
 
   if (
@@ -7254,13 +7258,18 @@ function supportsStickyUpdateScrollFlowClaim(
     const firstAssignment = methodBody.indexOf(assignment);
     const finalAssignment = methodBody.lastIndexOf(assignment);
     const terminalEvidence =
-      /this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}\s*this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*$/i;
+      /this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}\s*this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*(?:\}\s*;)?\s*$/i;
+    const terminalEvidenceIsPresent = evidenceItems.some((evidence) =>
+      terminalEvidence.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
     return assignmentCount === 2 &&
       firstAssignment >= 0 &&
       finalAssignment > firstAssignment &&
       methodBody.trimEnd().endsWith(assignment) &&
       nonScrollingUpBranches.test(methodBody) &&
-      hasEvidence(terminalEvidence);
+      terminalEvidenceIsPresent;
   }
 
   return false;
