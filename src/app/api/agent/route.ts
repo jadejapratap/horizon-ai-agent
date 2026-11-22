@@ -6608,8 +6608,9 @@ function supportsStickyBreakpointObserverResetClaim(claim: string, evidenceItems
 
 function supportsStickyIntersectionStateAssignmentClaim(claim: string, evidenceItems: string[]): boolean {
   const text = claim.toLowerCase();
-  if (!/intersection observer callback/.test(text) || !/dataset\.stickystate/.test(text) ||
-      !/isintersecting/.test(text) || !/alwayssticky/.test(text)) return false;
+  if (!(/intersection observer callback/.test(text) || /#observestickyposition/i.test(claim)) ||
+      !/dataset\.stickystate/.test(text) || !/isintersecting/.test(text) ||
+      !/alwayssticky/.test(text)) return false;
   return evidenceItems.some((evidence) =>
     /if\s*\(\s*alwaysSticky\s*\)/i.test(evidence) &&
     /dataset\.stickyState\s*=\s*isIntersecting\s*\?\s*['"]inactive['"]\s*:\s*['"]active['"]/i.test(evidence)
@@ -6622,8 +6623,8 @@ function supportsStickyOffscreenAssignmentClaim(
   sourceSegments: string[]
 ): boolean {
   const text = claim.toLowerCase();
-  if (!/intersection\s*observer callback/.test(text) || !/#offscreen/.test(claim) ||
-      !/alwayssticky/.test(text) || !/false/.test(text)) return false;
+  if (!(/intersection\s*observer callback/.test(text) || /#observestickyposition/i.test(claim)) ||
+      !/#offscreen/.test(claim) || !/alwayssticky/.test(text) || !/false/.test(text)) return false;
 
   const pairedBranch = /if\s*\(\s*alwaysSticky\s*\)\s*\{[\s\S]{0,1800}?\}\s*else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
   const quotedElseAssignment = /else\s*\{\s*this\.#offscreen\s*=\s*!isIntersecting\s*\|\|\s*this\.dataset\.stickyState\s*===\s*['"]active['"]/i;
@@ -6642,6 +6643,52 @@ function supportsStickyScrollDirectionAssignmentClaim(claim: string, evidenceIte
     /dataset\.scrollDirection\s*=\s*['"]up['"]/i.test(evidence) &&
     /dataset\.scrollDirection\s*=\s*['"]down['"]/i.test(evidence)
   );
+}
+
+function supportsStickyBreakpointRebindClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/#handleBreakpointChange/i.test(claim) ||
+      !/rebind|re-register|register.*again/i.test(claim) ||
+      !/scroll listener/i.test(claim) ||
+      !/intersectionobserver/i.test(claim)) return false;
+
+  const provesRebind = (value: string) =>
+    /#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]/i.test(value) &&
+    /#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)/i.test(value) &&
+    /#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]/i.test(value) &&
+    /#intersectionObserver\?\.disconnect\s*\(\s*\)/i.test(value) &&
+    /#intersectionObserver\s*=\s*null/i.test(value) &&
+    /#observeStickyPosition\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)/i.test(value);
+
+  return evidenceItems.some(provesRebind) &&
+    sourceSegments.some((segment) =>
+      /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{/.test(segment) &&
+      provesRebind(segment)
+    );
+}
+
+function supportsStickyDisconnectedCleanupClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[]
+): boolean {
+  if (!/disconnectedCallback/i.test(claim) ||
+      !/observer/i.test(claim) ||
+      !/event listener/i.test(claim) ||
+      !/header.height|header-height/i.test(claim)) return false;
+
+  const provesCleanup = (value: string) =>
+    /disconnectedCallback\s*\(\s*\)\s*\{/.test(value) &&
+    /#resizeObserver\.disconnect\s*\(\s*\)/i.test(value) &&
+    /#intersectionObserver\?\.disconnect\s*\(\s*\)/i.test(value) &&
+    /removeEventListener\s*\(/i.test(value) &&
+    /--header-height['"]\s*,\s*['"]0px['"]/i.test(value);
+
+  return evidenceItems.some(provesCleanup) &&
+    sourceSegments.some(provesCleanup);
 }
 
 // A claim that IntersectionObserver is installed by #observeStickyPosition
@@ -7314,6 +7361,8 @@ async function verifyAnswerClaim(
           supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems) ||
           supportsStickyIntersectionStateAssignmentClaim(claim.claim, evidenceItems) ||
           supportsStickyOffscreenAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyBreakpointRebindClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyDisconnectedCleanupClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollDirectionAssignmentClaim(claim.claim, evidenceItems) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments);
@@ -7388,6 +7437,8 @@ async function verifyAnswerClaim(
           supportsStickyBreakpointObserverResetClaim(claim.claim, evidenceItems) ||
           supportsStickyIntersectionStateAssignmentClaim(claim.claim, evidenceItems) ||
           supportsStickyOffscreenAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyBreakpointRebindClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyDisconnectedCleanupClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollDirectionAssignmentClaim(claim.claim, evidenceItems) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsProductPageQuantityBreakBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
