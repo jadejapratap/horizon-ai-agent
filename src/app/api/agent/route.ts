@@ -7032,123 +7032,99 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
       "this\\.dataset\\.scrollDirection\\s*=\\s*['\"]" + value + "['\"]\\s*;",
       "i"
     ).test(candidate);
-
-  const matchingBrace = (source: string, openIndex: number): number => {
-    let depth = 0;
-    let quote: "'" | '"' | "\`" | null = null;
-    let lineComment = false;
-    let blockComment = false;
-
-    for (let index = openIndex; index < source.length; index++) {
-      const current = source[index];
-      const next = source[index + 1];
-
-      if (lineComment) {
-        if (current === "\n") lineComment = false;
-        continue;
-      }
-      if (blockComment) {
-        if (current === "*" && next === "/") {
-          blockComment = false;
-          index++;
-        }
-        continue;
-      }
-      if (quote) {
-        if (current === "\\") {
-          index++;
-          continue;
-        }
-        if (current === quote) quote = null;
-        continue;
-      }
-      if (current === "/" && next === "/") {
-        lineComment = true;
-        index++;
-        continue;
-      }
-      if (current === "/" && next === "*") {
-        blockComment = true;
-        index++;
-        continue;
-      }
-      if (current === "'" || current === '"' || current === "\`") {
-        quote = current;
-        continue;
-      }
-      if (current === "{") depth++;
-      if (current === "}") {
-        depth--;
-        if (depth === 0) return index;
-      }
-    }
-    return -1;
+  const escapeRegex = (input: string): string => {
+    const special = new Set([".", "*", "+", "?", "^", "$", "{", "}", "(", ")", "|", "[", "]", "\\"]);
+    return input.split("").map((character) =>
+      special.has(character) ? "\\" + character : character
+    ).join("");
   };
 
-  const readBlock = (
-    source: string,
-    match: RegExpExecArray | null
-  ): { body: string; end: number } | null => {
-    if (!match) return null;
-    const openIndex = match.index + match[0].lastIndexOf("{");
-    const closeIndex = matchingBrace(source, openIndex);
-    if (closeIndex < 0) return null;
-    return { body: source.slice(openIndex + 1, closeIndex), end: closeIndex + 1 };
-  };
+  const alwaysOpen = /^([ \t]*)if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{/m.exec(methodBody);
+  if (!alwaysOpen) return false;
 
-  const alwaysMatch =
-    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{/i.exec(methodBody);
-  const alwaysBlock = readBlock(methodBody, alwaysMatch);
-  if (!alwaysBlock) return false;
-
-  const outerElseMatch = /^\s*else\s*\{/i.exec(methodBody.slice(alwaysBlock.end));
+  const baseIndent = alwaysOpen[1];
+  const childIndent = baseIndent + "  ";
+  const nestedIndent = childIndent + "  ";
+  const outerElsePattern = new RegExp(
+    "^" + escapeRegex(baseIndent) + "\\}\\s*else\\s*\\{",
+    "m"
+  );
+  const outerElseMatch = outerElsePattern.exec(methodBody.slice(alwaysOpen.index + alwaysOpen[0].length));
   if (!outerElseMatch) return false;
 
-  const nonAlwaysBlock = readBlock(methodBody, {
-    ...outerElseMatch,
-    index: alwaysBlock.end + outerElseMatch.index,
-  } as RegExpExecArray);
-  if (!nonAlwaysBlock) return false;
+  const alwaysBodyStart = alwaysOpen.index + alwaysOpen[0].length;
+  const alwaysBodyEnd = alwaysBodyStart + outerElseMatch.index;
+  const alwaysBody = methodBody.slice(alwaysBodyStart, alwaysBodyEnd);
+  const nonAlwaysBodyStart = alwaysBodyStart + outerElseMatch.index + outerElseMatch[0].length;
+  const nonAlwaysBody = methodBody.slice(nonAlwaysBodyStart);
 
-  const topIfMatch = /if\s*\(\s*isAtTop\s*\)\s*\{/i.exec(alwaysBlock.body);
-  const topIfBlock = readBlock(alwaysBlock.body, topIfMatch);
+  const openBranchBody = (
+    source: string,
+    indent: string,
+    opener: RegExp
+  ): string | null => {
+    const match = opener.exec(source);
+    if (!match) return null;
+    const bodyStart = match.index + match[0].length;
+    const nextSibling = new RegExp(
+      "^" + escapeRegex(indent) + "\\}\\s*(?:else\\s+if\\s*\\([^\\n]*\\)\\s*\\{|else\\s*\\{)",
+      "m"
+    ).exec(source.slice(bodyStart));
+    if (!nextSibling) return null;
+    return source.slice(bodyStart, bodyStart + nextSibling.index);
+  };
 
-  const alwaysUpAndDown =
-    /if\s*\(\s*isAtTop\s*\)\s*\{[\s\S]*?\}\s*else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;[\s\S]*?\}\s*else\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;/i.test(alwaysBlock.body);
+  const openElseBranchBody = (
+    source: string,
+    indent: string
+  ): string | null => {
+    const opener = new RegExp(
+      "^" + escapeRegex(indent) + "\\}\\s*else\\s*\\{",
+      "m"
+    ).exec(source);
+    if (!opener) return null;
+    const bodyStart = opener.index + opener[0].length;
+    const closing = new RegExp("^" + escapeRegex(indent) + "\\}", "m")
+      .exec(source.slice(bodyStart));
+    if (!closing) return null;
+    return source.slice(bodyStart, bodyStart + closing.index);
+  };
 
-  const scrollingUpMatch = /if\s*\(\s*isScrollingUp\s*\)\s*\{/i.exec(nonAlwaysBlock.body);
-  const scrollingUpBlock = readBlock(nonAlwaysBlock.body, scrollingUpMatch);
-  if (!scrollingUpBlock) return false;
+  const topBranch = openBranchBody(
+    alwaysBody,
+    childIndent,
+    new RegExp("^" + escapeRegex(childIndent) + "if\\s*\\(\\s*isAtTop\\s*\\)\\s*\\{", "m")
+  );
+  const upBranch = openBranchBody(
+    alwaysBody,
+    childIndent,
+    new RegExp("^" + escapeRegex(childIndent) + "\\}\\s*else\\s+if\\s*\\(\\s*isScrollingUp\\s*\\)\\s*\\{", "m")
+  );
+  const downBranch = openElseBranchBody(alwaysBody, childIndent);
 
-  const nonAlwaysTopMatch = /if\s*\(\s*isAtTop\s*\)\s*\{/i.exec(scrollingUpBlock.body);
-  const nonAlwaysTopBlock = readBlock(scrollingUpBlock.body, nonAlwaysTopMatch);
+  const scrollingUpBranch = openBranchBody(
+    nonAlwaysBody,
+    childIndent,
+    new RegExp("^" + escapeRegex(childIndent) + "if\\s*\\(\\s*isScrollingUp\\s*\\)\\s*\\{", "m")
+  );
 
-  const scrollingUpElseMatch =
-    /^\s*else\s*\{/i.exec(scrollingUpBlock.body.slice(scrollingUpBlock.end));
-  const scrollingUpElseBlock = scrollingUpElseMatch
-    ? readBlock(scrollingUpBlock.body, {
-        ...scrollingUpElseMatch,
-        index: scrollingUpBlock.end + scrollingUpElseMatch.index,
-      } as RegExpExecArray)
-    : null;
+  let scrollingUpTopBranch: string | null = null;
+  let scrollingUpDownBranch: string | null = null;
+  if (scrollingUpBranch !== null) {
+    scrollingUpTopBranch = openBranchBody(
+      scrollingUpBranch,
+      nestedIndent,
+      new RegExp("^" + escapeRegex(nestedIndent) + "if\\s*\\(\\s*isAtTop\\s*\\)\\s*\\{", "m")
+    );
+    scrollingUpDownBranch = openElseBranchBody(scrollingUpBranch, nestedIndent);
+  }
 
-  const afterScrollingUp = nonAlwaysBlock.body.slice(scrollingUpBlock.end);
-  const activeElseIfMatch =
-    /^\s*else\s+if\s*\(\s*this\.dataset\.stickyState\s*===\s*['"]active['"]\s*\)\s*\{/i.exec(afterScrollingUp);
-  const activeElseIfBlock = activeElseIfMatch
-    ? readBlock(nonAlwaysBlock.body, {
-        ...activeElseIfMatch,
-        index: scrollingUpBlock.end + activeElseIfMatch.index,
-      } as RegExpExecArray)
-    : null;
-
-  const afterActiveElseIf = activeElseIfBlock
-    ? nonAlwaysBlock.body.slice(activeElseIfBlock.end)
-    : "";
-  const finalElseMatch = /^\s*else\s*\{/i.exec(afterActiveElseIf);
-  const finalElseBlock = finalElseMatch
-    ? readBlock(afterActiveElseIf, finalElseMatch)
-    : null;
+  const stickyActiveBranch = openBranchBody(
+    nonAlwaysBody,
+    childIndent,
+    new RegExp("^" + escapeRegex(childIndent) + "\\}\\s*else\\s+if\\s*\\(\\s*this\\.dataset\\.stickyState\\s*===\\s*['"]active['"]\\s*\\)\\s*\\{", "m")
+  );
+  const stickyNotActiveBranch = openElseBranchBody(nonAlwaysBody, childIndent);
 
   const claimText = claim.toLowerCase();
   const saysAlways =
@@ -7170,45 +7146,43 @@ function supportsStickyUpdateScrollDirectionBranchClaim(
 
   let branchIsVerified = false;
   if (saysAlways && value === "none" && saysTrue("isAtTop")) {
-    branchIsVerified = Boolean(topIfBlock && hasAssignment(topIfBlock.body));
+    branchIsVerified = topBranch !== null && hasAssignment(topBranch);
   } else if (
     saysAlways && value === "up" &&
     saysFalse("isAtTop") &&
     saysTrue("isScrollingUp")
   ) {
-    branchIsVerified = alwaysUpAndDown &&
-      /else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;/i.test(alwaysBlock.body);
+    branchIsVerified = upBranch !== null && hasAssignment(upBranch);
   } else if (
     saysAlways && value === "down" &&
     saysFalse("isAtTop") &&
     saysFalse("isScrollingUp")
   ) {
-    branchIsVerified = alwaysUpAndDown &&
-      /else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?\}\s*else\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;/i.test(alwaysBlock.body);
+    branchIsVerified = downBranch !== null && hasAssignment(downBranch);
   } else if (
     saysNotAlways && value === "none" &&
     saysTrue("isScrollingUp") &&
     saysTrue("isAtTop")
   ) {
-    branchIsVerified = Boolean(nonAlwaysTopBlock && hasAssignment(nonAlwaysTopBlock.body));
+    branchIsVerified = scrollingUpTopBranch !== null && hasAssignment(scrollingUpTopBranch);
   } else if (
     saysNotAlways && value === "up" &&
     saysTrue("isScrollingUp") &&
     saysFalse("isAtTop")
   ) {
-    branchIsVerified = Boolean(scrollingUpElseBlock && hasAssignment(scrollingUpElseBlock.body));
+    branchIsVerified = scrollingUpDownBranch !== null && hasAssignment(scrollingUpDownBranch);
   } else if (
     saysNotAlways && value === "none" &&
     saysFalse("isScrollingUp") &&
     stickyStateIsActive
   ) {
-    branchIsVerified = Boolean(activeElseIfBlock && hasAssignment(activeElseIfBlock.body));
+    branchIsVerified = stickyActiveBranch !== null && hasAssignment(stickyActiveBranch);
   } else if (
     saysNotAlways && value === "none" &&
     saysFalse("isScrollingUp") &&
     stickyStateIsNotActive
   ) {
-    branchIsVerified = Boolean(finalElseBlock && hasAssignment(finalElseBlock.body));
+    branchIsVerified = stickyNotActiveBranch !== null && hasAssignment(stickyNotActiveBranch);
   }
 
   if (!branchIsVerified) return false;
