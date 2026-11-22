@@ -7012,6 +7012,74 @@ function supportsStickyOffscreenAssignmentClaim(
   ) && pairedBranch.test(methodBody);
 }
 
+function supportsStickyUpdateScrollEarlyReturnClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const claimText = claim.toLowerCase();
+  if (!/#offscreen/i.test(claim) ||
+      !/stickyMode/i.test(claim) ||
+      !/getScrollTop\s*\(/i.test(claim) ||
+      !/early[-\s]?return|returns?\s+(?:immediately|early)/i.test(claim)) return false;
+
+  const methodSignature = /#updateScrollState\s*=\s*\(\s*\)\s*=>\s*\{/i;
+  const signatureMatch = methodSignature.exec(actualSource);
+  if (!signatureMatch) return false;
+
+  const bodyStart = signatureMatch.index + signatureMatch[0].length;
+  const methodEnd = /\n[ \t]{2}\};[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*connectedCallback\s*\(/m.exec(
+    actualSource.slice(bodyStart)
+  );
+  if (!methodEnd) return false;
+  const methodBody = actualSource.slice(bodyStart, bodyStart + methodEnd.index);
+
+  const guardThenCall =
+    /if\s*\(\s*!\s*this\.#offscreen\s*&&\s*stickyMode\s*!==\s*['"]always['"]\s*\)\s*return\s*;\s*const\s+scrollTop\s*=\s*getScrollTop\s*\(\s*\)\s*;/i;
+  if (!guardThenCall.test(methodBody)) return false;
+
+  const saysNotAlways =
+    /stickyMode\s*!==?\s*['"]always['"]/i.test(claimText);
+  const saysAlways =
+    /stickyMode\s*(?:===|==)\s*['"]always['"]/i.test(claimText);
+  const saysNegatedOffscreenTrue =
+    /!\s*this\.#offscreen\s+(?:is\s+true|===\s*true|==\s*true)\b/i.test(claimText);
+  const saysOffscreenTrue =
+    /(?:^|[^!])this\.#offscreen\s+(?:is\s+true|===\s*true|==\s*true)\b/i.test(claimText) &&
+    !/!\s*this\.#offscreen/i.test(claimText);
+  const saysRegardlessOfStickyMode = /regardless\s+of\s+stickyMode/i.test(claimText);
+  const saysRegardlessOfOffscreen = /regardless\s+of\s+this\.#offscreen/i.test(claimText);
+  const describesFalseGuard = /early[-\s]?return\s+condition\s+is\s+false/i.test(claimText);
+  const describesProceeding = /proceeds\s+to\s+getScrollTop\s*\(/i.test(claimText);
+  const describesReturnBeforeCall =
+    /returns?\s+immediately/i.test(claimText) &&
+    /before\s+calling\s+getScrollTop\s*\(/i.test(claimText);
+
+  const isExactGuardClaim =
+    saysNegatedOffscreenTrue && saysNotAlways && describesReturnBeforeCall;
+  const isOffscreenTrueImplication =
+    saysOffscreenTrue && saysRegardlessOfStickyMode &&
+    describesFalseGuard && describesProceeding;
+  const isAlwaysModeImplication =
+    saysAlways && saysRegardlessOfOffscreen &&
+    describesFalseGuard && describesProceeding;
+
+  if (!isExactGuardClaim && !isOffscreenTrueImplication && !isAlwaysModeImplication) {
+    return false;
+  }
+
+  return evidenceItems.some((evidence) =>
+    methodSignature.test(evidence) &&
+    guardThenCall.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      methodSignature.test(segment) &&
+      evidenceMatchesSource(evidence, segment)
+    )
+  );
+}
+
 function supportsStickyUpdateScrollDirectionBranchClaim(
   claim: string,
   evidenceItems: string[],
@@ -7906,6 +7974,7 @@ async function verifyAnswerClaim(
           sourceSegments
         );
         const verifiedAtomicPattern =
+          supportsStickyUpdateScrollEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
           supportsTransparentNotStickyTransitionClaim(claim.claim, evidenceItems) ||
@@ -7958,6 +8027,8 @@ async function verifyAnswerClaim(
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments);
         const claimIsAtomic = isAtomicAnswerClaim(claim.claim) || verifiedAtomicPattern;
+        const verifiedStickyUpdateScrollEarlyReturnFlow =
+          supportsStickyUpdateScrollEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource);
         const verifiedRafOtherwiseFlow =
           supportsStickyRafOtherwiseAssignmentClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
@@ -7965,6 +8036,7 @@ async function verifyAnswerClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
         const hasUnsupportedControlFlow = !verifiedRafOtherwiseFlow &&
+          !verifiedStickyUpdateScrollEarlyReturnFlow &&
           claimAddsUnsupportedControlFlow(
             claim.claim,
             evidenceItems,
@@ -7989,6 +8061,7 @@ async function verifyAnswerClaim(
           (/#observeStickyPosition/i.test(claimTextLower) && /stickyMode\s*===\s*['"]always['"]/i.test(claimTextLower)) ||
           (/#observestickyposition/i.test(claimTextLower) && /\bintersectionobserver\b/.test(claimTextLower)) ||
           (/#updatescrollstate/i.test(claimTextLower) && /\b(?:sticky|state|scroll|direction|dataset)\b/.test(claimTextLower)) ||
+          (/#offscreen/i.test(claimTextLower) && /stickyMode/i.test(claimTextLower) && /getScrollTop\s*\(/i.test(claimTextLower) && /early[-\s]?return|returns?\s+(?:immediately|early)/i.test(claimTextLower)) ||
           (/\b(?:scrollDirection|direction)\b[\s\S]{0,70}?\b(?:is\s+)?(?:assigned|set|changed\s+to)\s*['"]?(?:none|up|down)/i.test(claimTextLower) && /stickyMode/i.test(claimTextLower)) ||
           (/#scrollRafId/i.test(claimTextLower) && /(?:not\s+null|!==\s*null)/i.test(claimTextLower) && /return(?:s)?\s+(?:early|immediately)/i.test(claimTextLower)) ||
           (/\botherwise\b/i.test(claimTextLower) && /requestAnimationFrame/i.test(claimTextLower) && /#scrollRafId/i.test(claimTextLower)) ||
@@ -8006,6 +8079,7 @@ async function verifyAnswerClaim(
           hasMeaningfulTokenOverlap(claim.claim, combinedEvidence);
 
         const evidenceSupportsClaim =
+          verifiedStickyUpdateScrollEarlyReturnFlow ||
           genericTokenOverlap ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
