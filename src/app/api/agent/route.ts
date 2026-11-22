@@ -18,6 +18,7 @@
 // v66: verifies natural-language breakpoint execution-flow summaries against exact guarded source sequences.
 // v67: supports the concise six-claim breakpoint execution-flow wording with exact source-order evidence.
 // v68: handles truthy/present and exact/non-exact order variants, Observer disconnect/null wording, and matching answer paraphrases.
+// v69: accepts runtime claim wording for stickyMode missing, if-scrollContainer, order-of-operations, and Observer disconnect/assign-null while preserving action order.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -4861,25 +4862,34 @@ function isStickyOffscreenAssignmentStatementAligned(claim: string, statement: s
 }
 
 function isStickyBreakpointFlowStatementAligned(claim: string, statement: string): boolean {
-  const claimText = claim.toLowerCase().replace(/[`*_]/g, " ");
-  const statementText = statement.toLowerCase().replace(/[`*_]/g, " ");
-  const isBreakpointClaim = /#handlebreakpointchange/.test(claimText);
-  const missingStickyModeReturn = isBreakpointClaim &&
-    /returns?\s+immediately/.test(claimText) &&
-    /sticky\s+mode\s+is\s+missing/.test(claimText) &&
-    /returns?\s+immediately/.test(statementText) &&
-    /sticky\s+attribute\s+is\s+missing/.test(statementText);
-  const observerBooleanArgument = isBreakpointClaim &&
-    /passes?/.test(claimText) && /stickymode/.test(claimText) && /always/.test(claimText) &&
-    /#observestickyposition/.test(claimText) &&
-    /passes?/.test(statementText) && /stickymode/.test(statementText) && /always/.test(statementText) &&
-    /#observestickyposition/.test(statementText);
-  const observerDisconnectAndNull = isBreakpointClaim &&
-    /disconnects?\s+and\s+nulls?/.test(claimText) && /intersectionobserver/.test(claimText) &&
-    /resets?\s+the\s+intersectionobserver/.test(statementText) &&
-    /disconnect/.test(statementText) && /null/.test(statementText);
-  return missingStickyModeReturn || observerBooleanArgument || observerDisconnectAndNull;
+  const normalize = (value: string): string => value.toLowerCase().replace(/[`*_]/g, " ");
+  const claimText = normalize(claim);
+  const statementText = normalize(statement);
+  const missingStickyModeReturn =
+    /sticky\s*mode/.test(claimText) && /missing/.test(claimText) && /returns?\s+immediately/.test(claimText) &&
+    /sticky\s+mode\s+is\s+missing/.test(statementText) && /returns?\s+immediately/.test(statementText);
+  const scrollContainerRebind =
+    /#scrollcontainer/.test(claimText) && /rebinds?/.test(claimText) && /scroll\s+event\s+listener/.test(claimText) &&
+    /scroll\s+container\s+is\s+present/.test(statementText) && /rebinds?/.test(statementText) && /scroll\s+event\s+listener/.test(statementText);
+  const operationPositions = (value: string): number[] => [
+    value.search(/remov(?:e|es|ing)\s+(?:the\s+)?old\s+listener/),
+    value.search(/replac(?:e|es|ing)\s+(?:the\s+)?scroll\s+container/),
+    value.search(/add(?:s|ing)\s+(?:the\s+)?new\s+listener/),
+  ];
+  const claimOrder = operationPositions(claimText);
+  const statementOrder = operationPositions(statementText);
+  const orderedListenerOperations =
+    claimOrder.every((position) => position >= 0) && claimOrder[0] < claimOrder[1] && claimOrder[1] < claimOrder[2] &&
+    statementOrder.every((position) => position >= 0) && statementOrder[0] < statementOrder[1] && statementOrder[1] < statementOrder[2];
+  const observerDisconnectAndNull =
+    /intersectionobserver/.test(claimText) && /resets?/.test(claimText) && /disconnect/.test(claimText) && /null/.test(claimText) &&
+    /intersectionobserver/.test(statementText) && /resets?/.test(statementText) && /disconnect/.test(statementText) && /null/.test(statementText);
+  const observerBooleanArgument =
+    /passes?/.test(claimText) && /stickymode/.test(claimText) && /always/.test(claimText) && /#observestickyposition/.test(claimText) &&
+    /passes?/.test(statementText) && /stickymode/.test(statementText) && /always/.test(statementText) && /#observestickyposition/.test(statementText);
+  return missingStickyModeReturn || scrollContainerRebind || orderedListenerOperations || observerDisconnectAndNull || observerBooleanArgument;
 }
+
 function isStickyScrollRafStatementAligned(claim: string, statement: string): boolean {
   const claimHasRafScrollHandler =
     /(?:#handleWindowScroll|scroll\s+handling|scroll\s+handler)/i.test(claim) &&
@@ -6952,7 +6962,7 @@ function supportsStickyBreakpointFlowClaim(
       hasCompleteMethodEvidence();
   }
 
-  if (/returns?\s+immediately\s+if\s+(?:the\s+)?sticky\s+mode\s+is\s+missing/i.test(claimText)) {
+  if (/returns?\s+immediately\s+if\s+(?:the\s+)?sticky\s*mode\s+is\s+missing/i.test(claimText)) {
     return stickyAttributeRead.test(methodBody) &&
       falsyStickyGuard.test(methodBody) &&
       hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
@@ -6987,7 +6997,7 @@ function supportsStickyBreakpointFlowClaim(
   }
 
   if (
-    /rebinds?\s+the\s+scroll\s+event\s+listener\s+when\s+(?:this\.)?#scrollContainer\s+is\s+(?:present|truthy)/i.test(claimText)
+    /rebinds?\s+the\s+scroll\s+event\s+listener\s+(?:when|if)\s+(?:this\.)?#scrollContainer\s+is\s+(?:present|truthy)/i.test(claimText)
   ) {
     return completeScrollRebindBlock.test(methodBody) &&
       hasEvidence(completeScrollRebindBlock);
@@ -7000,7 +7010,7 @@ function supportsStickyBreakpointFlowClaim(
     /removes?\s+the\s+old\s+listener/i.test(claimText) &&
     /replaces?\s+the\s+scroll\s+container/i.test(claimText) &&
     /adds?\s+the\s+new\s+listener/i.test(claimText) &&
-    /in\s+that\s+(?:exact\s+)?order/i.test(claimText)
+    /(?:in\s+that\s+(?:exact\s+)?order|order\s+of\s+operations)/i.test(claimText)
   ) {
     const removePosition = claimText.search(/removes?\s+the\s+old\s+listener/i);
     const replacePosition = claimText.search(/replaces?\s+the\s+scroll\s+container/i);
@@ -7053,6 +7063,18 @@ function supportsStickyBreakpointFlowClaim(
     const disconnectThenNull =
       /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
     return disconnectThenNull.test(methodBody) && hasEvidence(disconnectThenNull);
+  }
+  if (
+    /resets?\s+the\s+intersectionobserver/i.test(claimText) &&
+    /disconnect(?:ing)?(?:\s+the\s+existing)?\s+(?:it|observer|intersectionobserver)?/i.test(claimText) &&
+    /assign(?:ing)?\s+(?:the\s+property\s+to\s+)?null/i.test(claimText)
+  ) {
+    const claimDisconnectPosition = claimText.search(/disconnect(?:ing)?(?:\s+the\s+existing)?\s+(?:it|observer|intersectionobserver)?/i);
+    const claimNullPosition = claimText.search(/assign(?:ing)?\s+(?:the\s+property\s+to\s+)?null/i);
+    const disconnectThenNull =
+      /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
+    return claimDisconnectPosition >= 0 && claimDisconnectPosition < claimNullPosition &&
+      disconnectThenNull.test(methodBody) && hasEvidence(disconnectThenNull);
   }
   if (
     /resets?\s+the\s+intersectionobserver\s+by\s+calling\s+disconnect/i.test(claimText) &&
