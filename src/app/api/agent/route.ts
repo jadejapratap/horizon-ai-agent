@@ -21,6 +21,7 @@
 // v69: accepts runtime claim wording for stickyMode missing, if-scrollContainer, order-of-operations, and Observer disconnect/assign-null while preserving action order.
 // v70: accepts old/new scroll-event-listener wording and rejects alternate target APIs while retaining remove -> replace -> add source order.
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
+// v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -7095,6 +7096,26 @@ function supportsStickyBreakpointFlowClaim(
     const disconnectBeforeNull =
       /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
     return disconnectBeforeNull.test(methodBody) && hasEvidence(disconnectBeforeNull);
+  }
+
+  if (
+    /resets?\s+(?:the\s+)?intersectionobserver/i.test(claimText) &&
+    /disconnect(?:ing)?\s+(?:it|the\s+(?:existing\s+)?(?:observer|intersectionobserver))/i.test(claimText) &&
+    /setting\s+(?:it|its\s+property|the\s+property)\s+to\s+null/i.test(claimText) &&
+    !/\b(?:not|never|without|rather\s+than|instead\s+of)\b/i.test(claimText)
+  ) {
+    const claimDisconnectPosition = claimText.search(
+      /disconnect(?:ing)?\s+(?:it|the\s+(?:existing\s+)?(?:observer|intersectionobserver))/i
+    );
+    const claimNullPosition = claimText.search(
+      /setting\s+(?:it|its\s+property|the\s+property)\s+to\s+null/i
+    );
+    const disconnectThenNull =
+      /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
+    return claimDisconnectPosition >= 0 &&
+      claimDisconnectPosition < claimNullPosition &&
+      disconnectThenNull.test(methodBody) &&
+      hasEvidence(disconnectThenNull);
   }
 
   if (/resets?\s+the\s+intersectionobserver/i.test(claimText) &&
