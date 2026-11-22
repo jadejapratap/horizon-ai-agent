@@ -6702,7 +6702,7 @@ function supportsStickyBreakpointObserverResetClaim(
   actualSource: string
 ): boolean {
   if (!/#handleBreakpointChange/i.test(claim) ||
-      !/intersection observer/i.test(claim) ||
+      !/intersection\s*observer/i.test(claim) ||
       !/disconnect/i.test(claim) ||
       !/(?:recreat|reset|reinitializ|call(?:s|ed)? again)/i.test(claim)) return false;
 
