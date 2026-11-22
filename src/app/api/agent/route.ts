@@ -7012,6 +7012,207 @@ function supportsStickyOffscreenAssignmentClaim(
   ) && pairedBranch.test(methodBody);
 }
 
+function supportsStickyUpdateScrollDirectionBranchClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const targetMatch =
+    /this\.dataset\.scrollDirection\s*(?:is\s*)?(?:assigned|set|changed\s+to)?\s*['"]?(none|up|down)['"]?/i.exec(claim);
+  if (!targetMatch || !/scrollDirection/i.test(claim)) return false;
+
+  const value = targetMatch[1].toLowerCase();
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "updateScrollState");
+  if (!methodBody) return false;
+
+  const methodSignature = /#updateScrollState\s*=\s*\(\)\s*=>\s*\{/i;
+  const assignment = new RegExp(
+    "this\\\\.dataset\\\\.scrollDirection\\\\s*=\\\\s*['\\"]" + value + "['\\"]\\\\s*;",
+    "i"
+  );
+
+  const matchingBrace = (source: string, openIndex: number): number => {
+    let depth = 0;
+    let quote: "'" | '"' | "\`" | null = null;
+    let lineComment = false;
+    let blockComment = false;
+
+    for (let index = openIndex; index < source.length; index++) {
+      const current = source[index];
+      const next = source[index + 1];
+
+      if (lineComment) {
+        if (current === "\n") lineComment = false;
+        continue;
+      }
+      if (blockComment) {
+        if (current === "*" && next === "/") {
+          blockComment = false;
+          index++;
+        }
+        continue;
+      }
+      if (quote) {
+        if (current === "\\") {
+          index++;
+          continue;
+        }
+        if (current === quote) quote = null;
+        continue;
+      }
+      if (current === "/" && next === "/") {
+        lineComment = true;
+        index++;
+        continue;
+      }
+      if (current === "/" && next === "*") {
+        blockComment = true;
+        index++;
+        continue;
+      }
+      if (current === "'" || current === '"' || current === "\`") {
+        quote = current;
+        continue;
+      }
+      if (current === "{") depth++;
+      if (current === "}") {
+        depth--;
+        if (depth === 0) return index;
+      }
+    }
+    return -1;
+  };
+
+  const readBlock = (
+    source: string,
+    match: RegExpExecArray | null
+  ): { body: string; end: number } | null => {
+    if (!match) return null;
+    const openIndex = match.index + match[0].lastIndexOf("{");
+    const closeIndex = matchingBrace(source, openIndex);
+    if (closeIndex < 0) return null;
+    return { body: source.slice(openIndex + 1, closeIndex), end: closeIndex + 1 };
+  };
+
+  const alwaysMatch =
+    /if\s*\(\s*stickyMode\s*===\s*['"]always['"]\s*\)\s*\{/i.exec(methodBody);
+  const alwaysBlock = readBlock(methodBody, alwaysMatch);
+  if (!alwaysBlock) return false;
+
+  const outerElseMatch =
+    /^\s*else\s*\{/i.exec(methodBody.slice(alwaysBlock.end));
+  if (!outerElseMatch) return false;
+  const outerElseAbsoluteIndex = alwaysBlock.end + outerElseMatch.index;
+  const nonAlwaysBlock = readBlock(methodBody, {
+    ...outerElseMatch,
+    index: outerElseAbsoluteIndex,
+  } as RegExpExecArray);
+  if (!nonAlwaysBlock) return false;
+
+  const topIfMatch = /if\s*\(\s*isAtTop\s*\)\s*\{/i.exec(alwaysBlock.body);
+  const topIfBlock = readBlock(alwaysBlock.body, topIfMatch);
+
+  const alwaysUpAndDown =
+    /if\s*\(\s*isAtTop\s*\)\s*\{[\s\S]*?\}\s*else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;[\s\S]*?\}\s*else\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;/i.test(alwaysBlock.body);
+
+  const scrollingUpMatch =
+    /if\s*\(\s*isScrollingUp\s*\)\s*\{/i.exec(nonAlwaysBlock.body);
+  const scrollingUpBlock = readBlock(nonAlwaysBlock.body, scrollingUpMatch);
+  if (!scrollingUpBlock) return false;
+
+  const nonAlwaysTopMatch =
+    /if\s*\(\s*isAtTop\s*\)\s*\{/i.exec(scrollingUpBlock.body);
+  const nonAlwaysTopBlock = readBlock(scrollingUpBlock.body, nonAlwaysTopMatch);
+
+  const scrollingUpElseMatch =
+    /^\s*else\s*\{/i.exec(scrollingUpBlock.body.slice(scrollingUpBlock.end));
+  const scrollingUpElseBlock = scrollingUpElseMatch
+    ? readBlock(scrollingUpBlock.body, {
+        ...scrollingUpElseMatch,
+        index: scrollingUpBlock.end + scrollingUpElseMatch.index,
+      } as RegExpExecArray)
+    : null;
+
+  const afterScrollingUp = nonAlwaysBlock.body.slice(scrollingUpBlock.end);
+  const activeElseIfMatch =
+    /^\s*else\s+if\s*\(\s*this\.dataset\.stickyState\s*===\s*['"]active['"]\s*\)\s*\{/i.exec(afterScrollingUp);
+  const activeElseIfIndex = activeElseIfMatch
+    ? scrollingUpBlock.end + activeElseIfMatch.index
+    : -1;
+  const activeElseIfBlock = activeElseIfMatch
+    ? readBlock(nonAlwaysBlock.body, {
+        ...activeElseIfMatch,
+        index: activeElseIfIndex,
+      } as RegExpExecArray)
+    : null;
+  const afterActiveElseIf = activeElseIfBlock
+    ? nonAlwaysBlock.body.slice(activeElseIfBlock.end)
+    : "";
+  const finalElseMatch = /^\s*else\s*\{/i.exec(afterActiveElseIf);
+  const finalElseBlock = finalElseMatch
+    ? readBlock(afterActiveElseIf, finalElseMatch)
+    : null;
+
+  const claimText = claim.toLowerCase();
+  const saysAlways = /stickyMode\s+is\s+['"]always['"]/.test(claimText);
+  const saysNotAlways = /stickyMode\s+is\s+not\s+['"]always['"]/.test(claimText);
+
+  let branchIsVerified = false;
+  if (saysAlways && value === "none" && /\bisAtTop\s+is\s+true\b/.test(claimText)) {
+    branchIsVerified = Boolean(topIfBlock && assignment.test(topIfBlock.body));
+  } else if (
+    saysAlways && value === "up" &&
+    /\bisAtTop\s+is\s+false\b/.test(claimText) &&
+    /\bisScrollingUp\s+is\s+true\b/.test(claimText)
+  ) {
+    branchIsVerified = alwaysUpAndDown &&
+      /else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]up['"]\s*;/i.test(alwaysBlock.body);
+  } else if (
+    saysAlways && value === "down" &&
+    /(?:not\s+scrolling\s+up|isScrollingUp\s+is\s+false)/i.test(claimText)
+  ) {
+    branchIsVerified = alwaysUpAndDown &&
+      /else\s+if\s*\(\s*isScrollingUp\s*\)\s*\{[\s\S]*?\}\s*else\s*\{[\s\S]*?this\.dataset\.scrollDirection\s*=\s*['"]down['"]\s*;/i.test(alwaysBlock.body);
+  } else if (
+    saysNotAlways && value === "none" &&
+    /\bisScrollingUp\s+is\s+true\b/.test(claimText) &&
+    /\bisAtTop\s+is\s+true\b/.test(claimText)
+  ) {
+    branchIsVerified = Boolean(nonAlwaysTopBlock && assignment.test(nonAlwaysTopBlock.body));
+  } else if (
+    saysNotAlways && value === "up" &&
+    /\bisScrollingUp\s+is\s+true\b/.test(claimText) &&
+    /\bisAtTop\s+is\s+false\b/.test(claimText)
+  ) {
+    branchIsVerified = Boolean(scrollingUpElseBlock && assignment.test(scrollingUpElseBlock.body));
+  } else if (
+    saysNotAlways && value === "none" &&
+    /\bisScrollingUp\s+is\s+false\b/.test(claimText) &&
+    /stickyState\s+is\s+equal\s+to\s+['"]active['"]/.test(claimText)
+  ) {
+    branchIsVerified = Boolean(activeElseIfBlock && assignment.test(activeElseIfBlock.body));
+  } else if (
+    saysNotAlways && value === "none" &&
+    /\bisScrollingUp\s+is\s+false\b/.test(claimText) &&
+    /stickyState\s+is\s+not\s+equal\s+to\s+['"]active['"]/.test(claimText)
+  ) {
+    branchIsVerified = Boolean(finalElseBlock && assignment.test(finalElseBlock.body));
+  }
+
+  if (!branchIsVerified) return false;
+
+  return evidenceItems.some((evidence) =>
+    assignment.test(evidence) &&
+    evidenceMatchesSource(evidence, methodBody) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      methodSignature.test(segment) &&
+      evidenceMatchesSource(evidence, segment)
+    )
+  );
+}
+
 function supportsStickyScrollDirectionAssignmentClaim(claim: string, evidenceItems: string[]): boolean {
   const text = claim.toLowerCase();
   if (!/#updateScrollState/i.test(claim) || !/dataset\.scrolldirection/.test(text) ||
@@ -7755,6 +7956,7 @@ async function verifyAnswerClaim(
           supportsStickyBreakpointRebindClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyDisconnectedCleanupClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollDirectionAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyUpdateScrollDirectionBranchClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsComparePriceFlagClaim(claim.claim, evidenceItems, sourceSegments);
         const claimIsAtomic = isAtomicAnswerClaim(claim.claim) || verifiedAtomicPattern;
@@ -7789,6 +7991,7 @@ async function verifyAnswerClaim(
           (/#observeStickyPosition/i.test(claimTextLower) && /stickyMode\s*===\s*['"]always['"]/i.test(claimTextLower)) ||
           (/#observestickyposition/i.test(claimTextLower) && /\bintersectionobserver\b/.test(claimTextLower)) ||
           (/#updatescrollstate/i.test(claimTextLower) && /\b(?:sticky|state|scroll|direction|dataset)\b/.test(claimTextLower)) ||
+          (/dataset\.scrolldirection/i.test(claimTextLower) && /stickyMode/i.test(claimTextLower) && /\b(?:always|none|up|down)\b/.test(claimTextLower)) ||
           (/#scrollRafId/i.test(claimTextLower) && /(?:not\s+null|!==\s*null)/i.test(claimTextLower) && /return(?:s)?\s+(?:early|immediately)/i.test(claimTextLower)) ||
           (/\botherwise\b/i.test(claimTextLower) && /requestAnimationFrame/i.test(claimTextLower) && /#scrollRafId/i.test(claimTextLower)) ||
           (/#scrollRafId/i.test(claimTextLower) && /\bnull\b/.test(claimTextLower) && /callback/i.test(claimTextLower)) ||
@@ -7857,6 +8060,7 @@ async function verifyAnswerClaim(
           supportsStickyBreakpointRebindClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyDisconnectedCleanupClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyScrollDirectionAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyUpdateScrollDirectionBranchClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsUseCurrencySettingAssignmentClaim(claim.claim, evidenceItems) ||
           supportsProductPageQuantityBreakBranchClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsModuleScriptLoadingClaim(claim.claim, evidenceItems) ||
