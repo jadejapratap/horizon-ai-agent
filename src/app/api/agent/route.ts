@@ -6870,8 +6870,8 @@ function supportsStickyBreakpointFlowClaim(
 
   const stickyAttributeRead =
     /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
-  const stickyAttributeReadWithMethod =
-    /#handleBreakpointChange\s*=\s*\(\)\s*=>\s*\{\s*const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;/i;
+  const falsyStickyGuard =
+    /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;\s*if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i;
   if (/reads?\s+(?:the\s+)?sticky\s+attribute/i.test(claimText) &&
       /getAttribute\s*\(\s*['"]sticky['"]\s*\)/i.test(claimText)) {
     return stickyAttributeRead.test(methodBody) && hasEvidence(stickyAttributeRead);
@@ -6889,8 +6889,6 @@ function supportsStickyBreakpointFlowClaim(
       hasCompleteMethodEvidence();
   }
 
-  const falsyStickyGuard =
-    /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*['"]sticky['"]\s*\)\s*;\s*if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i;
   if (/returns?\s+immediately\s+when\s+stickyMode\s+is\s+falsy/i.test(claimText)) {
     return falsyStickyGuard.test(methodBody) &&
       hasEvidence(/if\s*\(\s*!stickyMode\s*\)\s*return\s*;/i);
