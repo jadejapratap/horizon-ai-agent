@@ -3,6 +3,7 @@
 // v51: verifies ten #updateScrollState order and nested-branch claims against exact contiguous method evidence.
 // v52: accepts the exact always-branch assignment excerpt and the source's intervening explanatory comment.
 // v53: matches branch-local scrollDirection evidence and terminal method-closure evidence for #updateScrollState.
+// v54: validates C10's method-closing evidence against the complete source while separately proving terminal assignment placement.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -7258,12 +7259,17 @@ function supportsStickyUpdateScrollFlowClaim(
     const finalAssignment = methodBody.lastIndexOf(assignment);
     const terminalEvidence =
       /this\.dataset\.stickyState\s*=\s*['"]idle['"]\s*;\s*\}\s*this\.#lastScrollTop\s*=\s*scrollTop\s*;\s*(?:\}\s*;)?\s*$/i;
+    const terminalEvidenceIsPresent = evidenceItems.some((evidence) =>
+      terminalEvidence.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
     return assignmentCount === 2 &&
       firstAssignment >= 0 &&
       finalAssignment > firstAssignment &&
       methodBody.trimEnd().endsWith(assignment) &&
       nonScrollingUpBranches.test(methodBody) &&
-      hasEvidence(terminalEvidence);
+      terminalEvidenceIsPresent;
   }
 
   return false;
