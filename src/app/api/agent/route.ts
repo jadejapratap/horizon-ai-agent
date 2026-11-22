@@ -7,6 +7,7 @@
 // v55: verifies #handleBreakpointChange guard, scroll-listener rebinding, and IntersectionObserver reset from exact method evidence.
 // v56: anchors sticky attribute evidence to the method signature and enforces the claimed observer reset order.
 // v57: verifies exact positive/negative breakpoint assertions, requiring complete-method evidence for absence claims.
+// v58: prevents generic token-overlap from verifying unsupported data-sticky attribute-read claims.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -8454,6 +8455,8 @@ async function verifyAnswerClaim(
           );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
+          (/data-sticky/i.test(claimTextLower) &&
+            /\b(?:read|reads|reading|getAttribute)\b/i.test(claimTextLower)) ||
           ((/handlebreakpointchange|stickymode|#scrollcontainer|#intersectionobserver|data-sticky/i.test(claimTextLower)) &&
             /\b(?:does\s+not|doesn't|never)\b/i.test(claimTextLower)) ||
           (/\bdrawer_menu\b/.test(claimTextLower) && /\bmobile\b/.test(claimTextLower)) ||
