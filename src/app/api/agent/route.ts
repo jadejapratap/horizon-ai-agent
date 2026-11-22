@@ -23,6 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
+// v74: accepts under-condition scroll-container, call-disconnect-set-null, and as-argument wording with exact source checks.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -7007,6 +7008,13 @@ function supportsStickyBreakpointFlowClaim(
       hasEvidence(completeScrollRebindBlock);
   }
 
+  if (
+    /rebinds?\s+the\s+scroll\s+event\s+listener\s+under\s+the\s+condition\s+that\s+(?:this\.)?#scrollContainer\s+exists/i.test(claimText)
+  ) {
+    return completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
+
   const orderedScrollRebindOperations =
     /this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
 
@@ -7083,6 +7091,21 @@ function supportsStickyBreakpointFlowClaim(
   }
   if (
     /resets?\s+the\s+intersectionobserver\s+by\s+calling\s+disconnect/i.test(claimText) &&
+    /setting\s+it\s+to\s+null/i.test(claimText) &&
+    !/\b(?:not|never|without|rather\s+than|instead\s+of)\b/i.test(claimText)
+  ) {
+    const claimDisconnectPosition = claimText.search(/calling\s+disconnect/i);
+    const claimNullPosition = claimText.search(/setting\s+it\s+to\s+null/i);
+    const disconnectThenNull =
+      /this\.#intersectionObserver\?\.\s*disconnect\s*\(\s*\)\s*;\s*this\.#intersectionObserver\s*=\s*null\s*;/i;
+    return claimDisconnectPosition >= 0 &&
+      claimDisconnectPosition < claimNullPosition &&
+      disconnectThenNull.test(methodBody) &&
+      hasEvidence(disconnectThenNull);
+  }
+
+  if (
+    /resets?\s+the\s+intersectionobserver\s+by\s+calling\s+disconnect/i.test(claimText) &&
     /setting\s+the\s+property\s+to\s+null/i.test(claimText)
   ) {
     const disconnectThenNull =
@@ -7143,7 +7166,7 @@ function supportsStickyBreakpointFlowClaim(
   }
 
   if (
-    /passes?\s+stickyMode\s*===\s*['"]always['"]\s+to\s+#observeStickyPosition/i.test(claimText)
+    /passes?\s+stickyMode\s*===\s*['"]always['"](?:\s+as\s+an\s+argument)?\s+to\s+#observeStickyPosition/i.test(claimText)
   ) {
     return observeStickyCall.test(methodBody) && hasEvidence(observeStickyCall);
   }
