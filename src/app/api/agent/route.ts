@@ -6442,17 +6442,32 @@ function supportsStickyIntersectionObserverDatasetUpdateClaim(
 
 function supportsStickyHeaderLiquidSettingAssignmentClaim(
   claim: string,
-  evidenceItems: string[]
+  evidenceItems: string[],
+  sourceSegments: string[]
 ): boolean {
   const text = claim.toLowerCase();
-  if (!/enable_sticky_header/.test(text) || !/\bsticky\b/.test(text) ||
-      !/\balways\b/.test(text) || !/scroll-up/.test(text)) return false;
-  return evidenceItems.some((evidence) =>
-    /if\s+section\.settings\.enable_sticky_header\s*==\s*['"]always['"]/i.test(evidence) &&
-    /assign\s+sticky\s*=\s*['"]always['"]/i.test(evidence) &&
-    /elsif\s+section\.settings\.enable_sticky_header\s*==\s*['"]scroll-up['"]/i.test(evidence) &&
-    /assign\s+sticky\s*=\s*['"]scroll-up['"]/i.test(evidence)
-  );
+  if (!/enable_sticky_header/.test(text) || !/\bsticky\b/.test(text)) return false;
+
+  // Verify one atomic setting branch at a time. Shopify's {% liquid %} tag
+  // contains plain "if"/"elsif" statements; do not require invented wrappers.
+  const mode = /\bscroll-up\b/.test(text)
+    ? "scroll-up"
+    : /\balways\b/.test(text)
+      ? "always"
+      : null;
+  if (!mode) return false;
+
+  const branchPattern = mode === "always"
+    ? /(?:\{%-?\s*)?if\s+section\.settings\.enable_sticky_header\s*==\s*['"]always['"]/i
+    : /(?:\{%-?\s*)?elsif\s+section\.settings\.enable_sticky_header\s*==\s*['"]scroll-up['"]/i;
+  const assignmentPattern = mode === "always"
+    ? /assign\s+sticky\s*=\s*['"]always['"]/i
+    : /assign\s+sticky\s*=\s*['"]scroll-up['"]/i;
+  const provesBranch = (value: string) =>
+    branchPattern.test(value) && assignmentPattern.test(value);
+
+  return evidenceItems.some(provesBranch) &&
+    sourceSegments.some(provesBranch);
 }
 
 function supportsStickyHeaderAttributeOutputClaim(
@@ -7229,7 +7244,7 @@ async function verifyAnswerClaim(
           supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionObserverDatasetUpdateClaim(claim.claim, evidenceItems, sourceSegments) ||
-          supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderAttributeOutputClaim(claim.claim, evidenceItems) ||
           supportsStickyIntersectionObserverFieldClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionObserverBehaviorClaim(claim.claim, evidenceItems) ||
@@ -7303,7 +7318,7 @@ async function verifyAnswerClaim(
           supportsStickyRafDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyDesktopCssDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionObserverDatasetUpdateClaim(claim.claim, evidenceItems, sourceSegments) ||
-          supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems) ||
+          supportsStickyHeaderLiquidSettingAssignmentClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderAttributeOutputClaim(claim.claim, evidenceItems) ||
           supportsStickyIntersectionObserverFieldClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyIntersectionObserverBehaviorClaim(claim.claim, evidenceItems) ||
@@ -10147,9 +10162,11 @@ RULES:
    support the single behavior asserted by that claim.
 10. If a claim cannot be supported by source code, do not include it as a verified claim.
 10A. STICKY HEADER SOURCE EVIDENCE: When analyzing \`enable_sticky_header\`, quote the complete setting object as one evidence item, including its opening and closing braces. Do not split the object into isolated property lines. Identify the literal option values exactly as written (for example, \`scroll-up\`); do not substitute an option's translation label (for example, \`t:options.on_scroll_up\`) for its value. Each setting-field claim must identify \`enable_sticky_header\` and state only the fields actually quoted.
-10B. STICKY LIQUID BRANCHES: For claims about \`sticky\`, quote the complete \`if/elsif/endif\` block, not an isolated assignment fragment. Create separate atomic claims for \`always\` and \`scroll-up\`. Do not claim what \`never\` does merely because no matching branch appears in a partial excerpt.
+10B. STICKY LIQUID BRANCHES: Quote the exact source syntax. If code is inside Shopify's `{% liquid %}` block, inner `if`, `elsif`, `assign`, and `endif` statements are plain lines; do NOT wrap them in invented `{% if %}` or `{% elsif %}` tags. Copy source lines verbatim. Create separate atomic claims for the `always` and `scroll-up` assignments, with each exact condition and matching assignment in the same evidence excerpt. Do not infer what `never` does from a missing branch.
+10B-1. LIQUID EVIDENCE SYNTAX: Never repair, normalize, or convert Liquid syntax in evidence. A `{% liquid %}` block, a normal `{% if ... %}` tag, and plain Liquid statements are different source forms. Preserve the form actually present in the supplied source.
 10C. STICKY CSS: For each CSS claim, quote the exact selector and its complete relevant declaration block from the same contiguous excerpt. State \`position\`, \`top\`, or \`z-index\` only when that declaration is present in the quoted rule. Do not infer that a selector belongs to the sticky header from its name alone. Keep \`.sticky-content\` and \`.sticky-content--desktop\` as separate atomic claims; when mentioning a top offset, preserve that detail in the matching answer sentence.
 10D. STICKY JAVASCRIPT: Treat \`#observeStickyPosition\` and \`#handleWindowScroll\` as method names only. Claim an IntersectionObserver only when evidence includes the actual \`new IntersectionObserver\` construction; claim a scroll listener only when evidence includes the actual listener registration (such as \`addEventListener('scroll', ...)\`) and its relevant state update. Keep observer and scroll-listener claims separate.
+10D-1. STICKY METHOD SCOPE: For callback, lifecycle, breakpoint-handler, or observer-branch claims, quote enough exact contiguous source to include the method name/opening, relevant condition, and described operation. If relevant lines are separated by an unretrieved source gap, request the missing range; never combine non-contiguous ranges into one evidence excerpt.
 10E. STICKY SCROLL LISTENER CONDITION: If the listener is registered only inside a condition such as \`stickyMode === 'scroll-up' || stickyMode === 'always'\`, include both literal mode values and that exact OR condition in the claim and in the same contiguous evidence excerpt as \`addEventListener('scroll', ...)\`. Use wording such as "when stickyMode is 'scroll-up' or 'always'." Never summarize this as merely "when stickyMode is set" or "when stickyMode is present".
 10E-1. STICKY CALLBACK INITIALIZATION: When explaining \`connectedCallback\`, keep the \`getAttribute('sticky')\` read and the \`#observeStickyPosition(stickyMode === 'always')\` call in one exact evidence excerpt. State both operations in the claim.
 10E-2. STICKY OBSERVER THRESHOLD: When describing the observer threshold, quote the exact \`threshold: alwaysSticky ? 1 : 0\` config and the observer construction/use from \`#observeStickyPosition\`. Keep threshold claims separate from callback-state assignment claims.
