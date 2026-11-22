@@ -6645,7 +6645,7 @@ function supportsStickyBreakpointObserverResetClaim(
   if (!/#handleBreakpointChange/i.test(claim) ||
       !/intersection observer/i.test(claim) ||
       !/disconnect/i.test(claim) ||
-      !/recreat/i.test(claim)) return false;
+      !/(?:recreat|reset|reinitializ)/i.test(claim)) return false;
 
   const methodBody = extractPrivateArrowMethodBody(actualSource, "handleBreakpointChange");
   if (!methodBody) return false;
@@ -6729,10 +6729,7 @@ function supportsStickyOffscreenAssignmentClaim(
   actualSource: string
 ): boolean {
   const text = claim.toLowerCase();
-  if (!(/intersection\s*observer callback/.test(text) ||
-        /intersection.?observer/.test(text) ||
-        /#observeStickyPosition/i.test(claim)) ||
-      !/#offscreen/.test(claim) ||
+  if (!/#offscreen/.test(claim) ||
       !/alwayssticky/.test(text) ||
       !/false/.test(text)) return false;
 
