@@ -10,6 +10,7 @@
 // v58: prevents generic token-overlap from verifying unsupported data-sticky attribute-read claims.
 // v59: routes all scroll-container order assertions through the exact breakpoint flow verifier.
 // v60: routes stickyMode truthy-return assertions through complete-method control-flow evidence.
+// v61: routes IntersectionObserver ordering assertions through exact reset-sequence verification.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
@@ -8459,6 +8460,9 @@ async function verifyAnswerClaim(
         const requiresSpecializedEvidence =
           (/data-sticky/i.test(claimTextLower) &&
             /\b(?:read|reads|reading|getAttribute)\b/i.test(claimTextLower)) ||
+          (/intersectionobserver/i.test(claimTextLower) &&
+            /\b(?:before|after|prior to|following|then)\b/i.test(claimTextLower) &&
+            /\b(?:disconnect|disconnecting|null|assign|assigning|reset|resets|reinitialize|reinitializing|call|calling)\b/i.test(claimTextLower)) ||
           (/stickymode/i.test(claimTextLower) &&
             /\breturn\w*\b/i.test(claimTextLower) &&
             /\btruthy\b/i.test(claimTextLower)) ||
