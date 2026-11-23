@@ -6757,13 +6757,14 @@ function supportsStickyConnectedCallbackStickyObserverInitClaim(
     bodyStart + callbackEnd.index + closingBraceOffset + 1
   );
 
-  const exactFlow = (value: string): boolean =>
-    /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*["']sticky["']\s*\)\s*;/i.test(value) &&
-    /if\s*\(\s*stickyMode\s*\)\s*\{[\s\S]*?this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*["']always["']\s*\)\s*;/i.test(value);
+  const attributeRead = /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*["']sticky["']\s*\)\s*;/i;
+  const exactOuterBlock =
+    /if\s*\(\s*stickyMode\s*\)\s*\{\s*this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*["']always["']\s*\)\s*;\s*if\s*\(\s*stickyMode\s*===\s*["']scroll-up["']\s*\|\|\s*stickyMode\s*===\s*["']always["']\s*\)\s*\{\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*["']scroll["']\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*\}\s*scrollContainerMediaQuery\.addEventListener\s*\(\s*["']change["']\s*,\s*this\.#handleBreakpointChange\s*\)\s*;\s*\}/i;
 
-  return exactFlow(callbackBody) &&
+  return attributeRead.test(callbackBody) &&
+    exactOuterBlock.test(callbackBody) &&
     evidenceItems.some((evidence) =>
-      exactFlow(evidence) &&
+      exactOuterBlock.test(evidence) &&
       evidenceMatchesSource(evidence, callbackSource) &&
       sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
     );
