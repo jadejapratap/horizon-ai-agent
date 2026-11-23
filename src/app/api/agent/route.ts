@@ -7290,6 +7290,71 @@ function supportsRegisteredAddToCartCustomElementClaim(
     );
 }
 
+function getAddToCartConnectedCallbackSource(source: string): string | null {
+  const classPattern =
+    /export\s+class\s+AddToCartComponent\s+extends\s+Component\s*\{/;
+  const classMatch = classPattern.exec(source);
+  if (!classMatch) return null;
+
+  const classTail = source.slice(classMatch.index + classMatch[0].length);
+  // AddToCartComponent is a top-level exported class. Its closing brace is
+  // at column zero; method and nested block braces are indented.
+  const classEnd = /\n\}/.exec(classTail);
+  if (!classEnd) return null;
+
+  const classBody = classTail.slice(0, classEnd.index);
+  const callbackPattern =
+    /(^|\n)([ \t]{2})connectedCallback\s*\(\s*\)\s*\{[\s\S]*?\n\2\}/m;
+  const callbackMatch = callbackPattern.exec(classBody);
+  if (!callbackMatch) return null;
+
+  return callbackMatch[0].replace(/^\n/, "");
+}
+
+function supportsAddToCartPointerenterListenerClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/product-form.js" ||
+    !/\baddtocartcomponent\b/.test(text) ||
+    !/\bconnectedcallback\b/.test(text) ||
+    !/\bpointerenter\b/.test(text) ||
+    !/\blistener\b/.test(text) ||
+    !/\b(?:registers?|adds?|attaches?|installs?)\b/.test(text)
+  ) {
+    return false;
+  }
+
+  const listenerPattern =
+    /this\.addEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage\s*\)\s*;/i;
+  const actualCallback = getAddToCartConnectedCallbackSource(actualSource);
+  if (!actualCallback || !listenerPattern.test(actualCallback)) return false;
+
+  return evidenceItems.some((evidence) => {
+    if (
+      !/\bconnectedCallback\s*\(\s*\)\s*\{/i.test(evidence) ||
+      !listenerPattern.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualCallback)
+    ) {
+      return false;
+    }
+
+    return sourceSegments.some((segment) => {
+      const suppliedCallback = getAddToCartConnectedCallbackSource(segment);
+      return Boolean(
+        suppliedCallback &&
+        listenerPattern.test(suppliedCallback) &&
+        evidenceMatchesSource(evidence, suppliedCallback)
+      );
+    });
+  });
+}
+
 function supportsAccountDialogTargetGuardClaim(
   claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
 ): boolean {
@@ -9670,6 +9735,10 @@ async function verifyAnswerClaim(
           supportsQrErrorCorrectionLevelsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAddToCartCustomElement =
           supportsRegisteredAddToCartCustomElementClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAddToCartPointerenterListener =
+          supportsAddToCartPointerenterListenerClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAccountDialogTargetGuard =
           supportsAccountDialogTargetGuardClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAccountDialogBottomCalculation =
@@ -9684,6 +9753,7 @@ async function verifyAnswerClaim(
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
+          verifiedAddToCartPointerenterListener ||
           verifiedAccountDialogTargetGuard ||
           verifiedAccountDialogBottomCalculation ||
           verifiedAccountDialogTopAssignment ||
@@ -9877,6 +9947,7 @@ async function verifyAnswerClaim(
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
+          verifiedAddToCartPointerenterListener ||
           verifiedAccountDialogTargetGuard ||
           verifiedAccountDialogBottomCalculation ||
           verifiedAccountDialogTopAssignment ||
@@ -10010,6 +10081,60 @@ async function verifyAnswerClaim(
               documentAlias:
                 /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*document\b(?!\s*\.)/i.test(actualSource),
             },
+          });
+        }
+
+        const isAddToCartPointerenterListenerCandidate =
+          /AddToCartComponent/i.test(claim.claim) &&
+          /connectedCallback/i.test(claim.claim) &&
+          /pointerenter/i.test(claim.claim) &&
+          /\blistener\b/i.test(claim.claim);
+
+        if (isAddToCartPointerenterListenerCandidate) {
+          const actualAddToCartCallback =
+            getAddToCartConnectedCallbackSource(actualSource);
+          const pointerenterRegistrationPattern =
+            /this\.addEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage\s*\)\s*;/i;
+          console.log("ADD TO CART POINTERENTER LISTENER VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            file,
+            actualClassCallbackFound: Boolean(actualAddToCartCallback),
+            actualPointerenterRegistrationFound: Boolean(
+              actualAddToCartCallback &&
+              pointerenterRegistrationPattern.test(actualAddToCartCallback)
+            ),
+            evidenceMatches: evidenceItems.map((evidence) => ({
+              hasConnectedCallbackSignature:
+                /\bconnectedCallback\s*\(\s*\)\s*\{/i.test(evidence),
+              hasPointerenterRegistration:
+                pointerenterRegistrationPattern.test(evidence),
+              matchesActualCallback: Boolean(
+                actualAddToCartCallback &&
+                evidenceMatchesSource(evidence, actualAddToCartCallback)
+              ),
+              matchesSuppliedClassCallback: sourceSegments.some((segment) => {
+                const suppliedCallback =
+                  getAddToCartConnectedCallbackSource(segment);
+                return Boolean(
+                  suppliedCallback &&
+                  evidenceMatchesSource(evidence, suppliedCallback)
+                );
+              }),
+            })),
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            existsInSentContext,
+            existsInActualSource,
+            genericTokenOverlap,
+            verifiedAddToCartPointerenterListener,
+            evidenceSupportsClaim,
+            directSourceGatePassed:
+              claimSubjectMatchesSourceFile &&
+              claimIsAtomic &&
+              !hasUnsupportedControlFlow &&
+              existsInSentContext &&
+              existsInActualSource &&
+              evidenceSupportsClaim,
           });
         }
 
