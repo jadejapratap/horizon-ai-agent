@@ -7227,13 +7227,13 @@ function supportsBodyColorBackgroundVariablesClaim(
   // The actual file must contain a complete body rule. Gemini evidence may be
   // a faithful excerpt ending before the rule's closing brace, so the excerpt
   // is accepted only when both exact declarations occur after its body opener.
-  const provesBodyRule = (value: string, requireClosingBrace: boolean) => {
-    const match = /\bbody\s*\{([^{}]*)(\})?/i.exec(value);
-    if (!match || (requireClosingBrace && !match[2])) return false;
-    const body = match[1];
-    return /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(body) &&
-      /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(body);
-  };
+  const provesBodyRule = (value: string, requireClosingBrace: boolean) =>
+    [...value.matchAll(/\bbody\s*\{([^{}]*)(\})?/gi)].some((match) => {
+      if (requireClosingBrace && !match[2]) return false;
+      const body = match[1];
+      return /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(body) &&
+        /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(body);
+    });
 
   return provesBodyRule(actualSource, true) && evidenceItems.some((evidence) =>
     provesBodyRule(evidence, false) && evidenceMatchesSource(evidence, actualSource) &&
