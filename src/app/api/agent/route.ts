@@ -1538,7 +1538,7 @@ function getBehavioralCodeRelevance(
 
   // Find the shared declarative event dispatcher without relying on its filename.
   if (
-    /document\.addEventListener\s*\(/.test(source) &&
+    /document\.addeventlistener\s*\(/.test(source) &&
     /callback\.call\s*\(/.test(source) &&
     /on:\$\{eventname\}/.test(source) &&
     /["']click["']/.test(source) &&
