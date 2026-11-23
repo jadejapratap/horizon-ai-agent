@@ -23,6 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
+// v82: aligns guarded scroll-RAF early-return paraphrases and verifies complete handler summaries only with full method evidence.
 // v81: verifies individual #handleWindowScroll requestAnimationFrame steps with strict contiguous evidence.
 // v80: recognizes wrapped-inside-if-guard skipped-listener wording only with the complete contiguous guarded rebind block.
 import { NextRequest, NextResponse } from "next/server";
@@ -4896,6 +4897,22 @@ function isStickyBreakpointFlowStatementAligned(claim: string, statement: string
   return missingStickyModeReturn || scrollContainerRebind || orderedListenerOperations || observerDisconnectAndNull || observerBooleanArgument;
 }
 
+function isStickyRafEarlyReturnStatementAligned(claim: string, statement: string): boolean {
+  const claimDescribesGuardedReturn =
+    /#handleWindowScroll/i.test(claim) &&
+    /#scrollRafId/i.test(claim) &&
+    /(?:not\s+null|!==\s*null)/i.test(claim) &&
+    /\breturns?\s+(?:early|immediately)\b/i.test(claim);
+  const statementDescribesSameGuardedReturn =
+    /#handleWindowScroll/i.test(statement) &&
+    /#scrollRafId/i.test(statement) &&
+    /(?:not\s+null|!==\s*null)/i.test(statement) &&
+    /\b(?:returns?\s+(?:early|immediately)|(?:early|immediately)\s+returns?)\b/i.test(statement) &&
+    /\bwithout\s+scheduling\b/i.test(statement) &&
+    /\b(?:animation\s+)?frame\b/i.test(statement);
+  return claimDescribesGuardedReturn && statementDescribesSameGuardedReturn;
+}
+
 function isStickyScrollRafStatementAligned(claim: string, statement: string): boolean {
   const claimHasRafScrollHandler =
     /(?:#handleWindowScroll|scroll\s+handling|scroll\s+handler)/i.test(claim) &&
@@ -6533,8 +6550,8 @@ function supportsStickyRafExecutionStepClaim(
     /#handleWindowScroll/i.test(claim) &&
     /\bcomplete\b/i.test(claim) &&
     /requestAnimationFrame/i.test(claim) &&
-    /\bcallback\b/i.test(claim) &&
-    /\b(?:guard|initial|from|through|sequence)\b/i.test(claim);
+    /#updateScrollState/i.test(claim) &&
+    /\b(?:callback|guard|initial|from|through|sequence|defines?|uses?|summarizes?|describes?|contains?|executes?|flow)\b/i.test(claim);
   if (describesCompleteMethod) {
     return completeMethod.test(actualSource) &&
       evidenceItems.some((evidence) =>
@@ -9030,7 +9047,8 @@ async function verifyAnswerClaim(
             /\b(?:passed|argument)\b/i.test(claimTextLower)) ||
           (/#handleWindowScroll/i.test(claimTextLower) &&
             /\bcomplete\b/i.test(claimTextLower) &&
-            /\bcallback\b/i.test(claimTextLower)) ||
+            /requestAnimationFrame/i.test(claimTextLower) &&
+            /#updateScrollState/i.test(claimTextLower)) ||
           (/data-sticky/i.test(claimTextLower) &&
             /\b(?:read|reads|reading|getAttribute)\b/i.test(claimTextLower)) ||
           (/intersectionobserver/i.test(claimTextLower) &&
@@ -9653,6 +9671,10 @@ function enforceAnswerClaimReferences(
             getClaimEvidenceTokens(claim.claim)
               .filter((token) => token !== "else")
               .every((token) => getClaimEvidenceTokens(statementText).includes(token));
+          const stickyRafEarlyReturnAlignment = isStickyRafEarlyReturnStatementAligned(
+            claim.claim,
+            statementText
+          );
           const stickyScrollRafAlignment = isStickyScrollRafStatementAligned(
             claim.claim,
             statementText
@@ -9700,6 +9722,7 @@ function enforceAnswerClaimReferences(
           if (
             directTokenAlignment ||
             useCurrencyElseAlignment ||
+            stickyRafEarlyReturnAlignment ||
             stickyScrollRafAlignment ||
             stickyBreakpointFlowAlignment ||
             stickyHeaderSettingAlignment ||
