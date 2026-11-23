@@ -13347,6 +13347,21 @@ Return ONLY valid JSON in this exact structure:
 
 RULES:
 
+0. BACKEND-OWNED SOURCE COVERAGE METADATA (MANDATORY):
+   The "SOURCE COVERAGE STATUS" manifest is calculated by the backend.
+   You may report its percentages, character counts, completeness, and supplied
+   ranges in the answer when requested, but NEVER create claims-array entries
+   for those metadata facts. Do not assign C IDs to coverage percentages,
+   file completeness, retrieved ranges, or character counts. C IDs are reserved
+   for source-code claims and explicitly requested verification claims.
+   When the user supplies named claims such as C1-C6, preserve those exact IDs
+   and create exactly one claims-array entry for every requested claim.
+   If an explicitly requested claim concerns an unseen or unretrieved source
+   remainder and cannot be verified, still include that claim with its exact
+   requested wording, its correct file path, and evidence: [] so the backend
+   can mark it UNVERIFIED. Never omit an explicitly requested negative
+   verification test merely because the source evidence is unavailable.
+
 1. Use only source code provided in the context.
 2. Never invent file paths, settings, variables or relationships.
 3. EVERY factual statement about theme source code in the answer must have a matching
