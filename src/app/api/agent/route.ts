@@ -6766,14 +6766,21 @@ function supportsStickyObserveStickyEarlyReturnClaim(
 
   const guard = /if\s*\(\s*this\.#intersectionObserver\s*\)\s*return\s*;/i;
   const methodBody = extractPrivateArrowMethodBody(actualSource, "observeStickyPosition");
+  const methodSignature =
+    /#observeStickyPosition\s*=\s*\([^)]*\)\s*=>\s*\{/i;
+
   return !!methodBody &&
+    guard.test(methodBody) &&
     evidenceItems.some((evidence) =>
+      methodSignature.test(evidence) &&
       guard.test(evidence) &&
-      /#observeStickyPosition\s*=\s*\([^)]*\)\s*=>\s*\{/i.test(evidence) &&
-      evidenceMatchesSource(evidence, methodBody) &&
-      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
-    ) &&
-    guard.test(methodBody);
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) =>
+        methodSignature.test(segment) &&
+        guard.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    );
 }
 
 function supportsStickyObserveStickyRootAssignmentClaim(
