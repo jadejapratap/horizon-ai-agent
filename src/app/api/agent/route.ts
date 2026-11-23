@@ -6731,25 +6731,42 @@ function supportsStickyDesktopCssDescriptionClaim(
 
 // Verify connectedCallback's sticky-attribute-to-observer initialization flow.
 // The exact quote and its placement inside the lifecycle callback are required.
+// Verify connectedCallback's sticky-attribute-to-observer initialization flow.
 function supportsStickyConnectedCallbackStickyObserverInitClaim(
   claim: string,
   evidenceItems: string[],
-  sourceSegments: string[]
+  sourceSegments: string[],
+  actualSource: string
 ): boolean {
   if (!/connectedCallback/i.test(claim) || !/sticky/i.test(claim) ||
       !/#observeStickyPosition/i.test(claim)) return false;
 
-  const exactFlow = (value: string) =>
-    /const\s+stickyMode\s*=\s*this\.getAttribute\(\s*["']sticky["']\s*\)/i.test(value) &&
-    /if\s*\(\s*stickyMode\s*\)\s*\{[\s\S]*?#observeStickyPosition\s*\(\s*stickyMode\s*===\s*["']always["']\s*\)/i.test(value);
+  const callbackMatch = /(^|\n)[ \t]*connectedCallback\s*\(\s*\)\s*\{/.exec(actualSource);
+  if (!callbackMatch) return false;
 
-  if (!evidenceItems.some(exactFlow)) return false;
-  return sourceSegments.some((segment) => {
-    const callback = /\bconnectedCallback\b\s*(?:=\s*)?(?:async\s*)?\([^)]*\)\s*(?:=>\s*)?\{/i.exec(segment);
-    if (!callback) return false;
-    const bodyStart = callback.index + callback[0].length;
-    return exactFlow(segment.slice(bodyStart, bodyStart + 12000));
-  });
+  const signatureStart = callbackMatch.index + callbackMatch[1].length;
+  const bodyStart = callbackMatch.index + callbackMatch[0].length;
+  const callbackTail = actualSource.slice(bodyStart);
+  const callbackEnd = /\n[ \t]{2}\}\s*\n[ \t]*disconnectedCallback\s*\(/.exec(callbackTail);
+  if (!callbackEnd) return false;
+
+  const callbackBody = callbackTail.slice(0, callbackEnd.index);
+  const closingBraceOffset = callbackEnd[0].indexOf("}");
+  const callbackSource = actualSource.slice(
+    signatureStart,
+    bodyStart + callbackEnd.index + closingBraceOffset + 1
+  );
+
+  const exactFlow = (value: string): boolean =>
+    /const\s+stickyMode\s*=\s*this\.getAttribute\s*\(\s*["']sticky["']\s*\)\s*;/i.test(value) &&
+    /if\s*\(\s*stickyMode\s*\)\s*\{[\s\S]*?this\.#observeStickyPosition\s*\(\s*stickyMode\s*===\s*["']always["']\s*\)\s*;/i.test(value);
+
+  return exactFlow(callbackBody) &&
+    evidenceItems.some((evidence) =>
+      exactFlow(evidence) &&
+      evidenceMatchesSource(evidence, callbackSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
 }
 
 // Verify the first operations of connectedCallback using their exact callback-local order.
@@ -9186,7 +9203,7 @@ async function verifyAnswerClaim(
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
-          supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserverThresholdClaim(claim.claim, evidenceItems, sourceSegments) ||
@@ -9235,7 +9252,11 @@ async function verifyAnswerClaim(
           ) || supportsStickyRafOtherwiseCallbackClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
-        const hasUnsupportedControlFlow = !verifiedRafOtherwiseFlow &&
+        const verifiedStickyConnectedCallbackLifecycleFlow =
+          supportsStickyConnectedCallbackLifecycleClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
+        const hasUnsupportedControlFlow = !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
           !verifiedStickyUpdateScrollCoreOperation &&
           !verifiedStickyUpdateScrollFlow &&
@@ -9353,7 +9374,7 @@ async function verifyAnswerClaim(
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
-          supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserverThresholdClaim(claim.claim, evidenceItems, sourceSegments) ||
