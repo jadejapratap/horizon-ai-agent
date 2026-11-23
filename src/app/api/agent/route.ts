@@ -9960,6 +9960,59 @@ async function verifyAnswerClaim(
           supportsVolumePricingDetectionClaim(claim.claim, evidenceItems, sourceSegments)
           );
 
+        const isDocumentCloseListenerAbsenceCandidate =
+          /\b(?:does\s+not|doesn't|never|no)\b[\s\S]{0,100}\b(?:register|add|attach|install)\w*\b/i.test(claimTextLower) &&
+          /\bdocument(?:[-\s]+level)?\b/.test(claimTextLower) &&
+          /\bclose\b/.test(claimTextLower) &&
+          /\bevent\b/.test(claimTextLower) &&
+          /\blistener\b/.test(claimTextLower);
+
+        // Diagnostic only: this records each gate for the narrowly targeted
+        // document-level "close" listener absence claim without changing
+        // verification behavior.
+        if (isDocumentCloseListenerAbsenceCandidate) {
+          console.log("DOCUMENT CLOSE LISTENER ABSENCE VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            file,
+            claimSubjectMatchesSourceFile,
+            sourceSegmentCount: sourceSegments.length,
+            sentSourceCharacters: sentSource.length,
+            actualSourceCharacters: actualSource.length,
+            sentSourceExactlyMatchesActualSource: sentSource === actualSource,
+            completeSingleSourceSegment:
+              sourceSegments.length === 1 && sentSource === actualSource,
+            evidenceItemCount: evidenceItems.length,
+            evidenceEventNames: evidenceItems.map((item) =>
+              item.match(/document\s*\.\s*addEventListener\s*\(\s*(['"])(.*?)\1/i)?.[2] ?? null
+            ),
+            existsInSentContext,
+            existsInActualSource,
+            verifiedDocumentCloseListenerAbsence,
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            evidenceSupportsClaim,
+            directSourceGatePassed:
+              claimSubjectMatchesSourceFile &&
+              claimIsAtomic &&
+              !hasUnsupportedControlFlow &&
+              existsInSentContext &&
+              existsInActualSource &&
+              evidenceSupportsClaim,
+            actualSourcePatterns: {
+              literalDocumentCloseListener:
+                /\bdocument\s*\.\s*addEventListener\s*\(\s*(['"])close\1\s*,/i.test(actualSource),
+              computedAddEventListener:
+                /\bdocument\s*\[\s*['"]addEventListener['"]\s*\]/i.test(actualSource),
+              dynamicAddEventListenerArgument:
+                /\bdocument\s*\.\s*addEventListener\s*\((?!\s*['"])\s*/i.test(actualSource),
+              destructuredAddEventListener:
+                /\b(?:const|let|var)\s*\{[^}]*\baddEventListener\b[^}]*\}\s*=\s*document\b/i.test(actualSource),
+              documentAlias:
+                /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*document\b(?!\s*\.)/i.test(actualSource),
+            },
+          });
+        }
+
         if (
           claimSubjectMatchesSourceFile &&
           claimIsAtomic &&
