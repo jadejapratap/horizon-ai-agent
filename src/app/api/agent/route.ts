@@ -13777,7 +13777,6 @@ If no source evidence is available, return an empty claims array.
                 typeof item.evidence === "string" ||
                 (
                   Array.isArray(item.evidence) &&
-                  item.evidence.length > 0 &&
                   item.evidence.every((entry) => typeof entry === "string")
                 )
               ) ||
