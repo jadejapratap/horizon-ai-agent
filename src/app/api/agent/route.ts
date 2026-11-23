@@ -1171,9 +1171,12 @@ async function getThemeFiles(
   directory = THEME_DIR,
   prefix = ""
 ): Promise<string[]> {
-  const entries = await readdir(directory, {
-    withFileTypes: true,
-  });
+  const entries = await readdir(
+    /* turbopackIgnore: true */ directory,
+    {
+      withFileTypes: true,
+    }
+  );
 
   const files: string[] = [];
 
@@ -1194,7 +1197,7 @@ async function getThemeFiles(
       : entry.name;
 
     const fullPath = path.join(
-      directory,
+      /* turbopackIgnore: true */ directory,
       entry.name
     );
 
