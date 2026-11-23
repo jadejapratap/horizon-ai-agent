@@ -7544,8 +7544,11 @@ function supportsAddToCartPointerenterRemovalClaim(
   if (!actualCallback || !removalPattern.test(actualCallback)) return false;
 
   return evidenceItems.some((evidence) => {
+    // The model may quote only the exact removeEventListener line rather
+    // than the full method. That is safe only because the method is extracted
+    // independently from both the actual source and a contiguous source segment
+    // sent to Gemini, and the quoted line must occur inside both methods.
     if (
-      !/\bdisconnectedCallback\s*\(\s*\)\s*\{/i.test(evidence) ||
       !removalPattern.test(evidence) ||
       !evidenceMatchesSource(evidence, actualCallback)
     ) {
