@@ -7344,7 +7344,7 @@ function supportsAbsentDocumentCloseEventListenerClaim(
   // computed APIs, dynamic event arguments, destructuring, or a document alias.
   if (
     /\bdocument\s*\[\s*['"]addEventListener['"]\s*\]/i.test(actualSource) ||
-    /\bdocument\s*\.\s*addEventListener\s*\(\s*(?!['"])/i.test(actualSource) ||
+    /\bdocument\s*\.\s*addEventListener\s*\((?!\s*['"])\s*/i.test(actualSource) ||
     /\b(?:const|let|var)\s*\{[^}]*\baddEventListener\b[^}]*\}\s*=\s*document\b/i.test(actualSource) ||
     /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*document\b(?!\s*\.)/i.test(actualSource)
   ) return false;
