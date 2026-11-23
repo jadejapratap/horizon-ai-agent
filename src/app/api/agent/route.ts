@@ -1370,6 +1370,37 @@ function getSearchTerms(prompt: string): string[] {
       "cart-drawer",
       "cart-items",
       "cart-total",
+      "add-to-cart",
+      "add_to_cart",
+      "addtocart",
+      "cart_add_url",
+    ],
+
+    add: [
+      "add-to-cart",
+      "add_to_cart",
+      "addtocart",
+      "cart_add_url",
+    ],
+
+    validation: [
+      "validation",
+      "checkValidity",
+      "reportValidity",
+      "canAddToCart",
+    ],
+
+    submit: [
+      "submit",
+      "handleSubmit",
+      "preventDefault",
+      "on:submit",
+    ],
+
+    click: [
+      "click",
+      "handleClick",
+      "on:click",
     ],
 
     menu: [
@@ -1453,6 +1484,113 @@ function getArchitectureRootFiles(prompt: string): string[] {
 // SEARCH THEME
 // --------------------------------------------------
 
+function getBehavioralCodeRelevance(
+  prompt: string,
+  content: string
+): number {
+  const promptText = prompt.toLowerCase();
+  const addToCartIntent =
+    /\badd[\s_-]*to[\s_-]*cart\b|\baddtocart\b|\bcart_add_url\b/i.test(
+      promptText
+    );
+
+  if (!addToCartIntent) return 0;
+
+  const source = content.toLowerCase();
+  let score = 0;
+
+  const hasAddToCartContext =
+    /add[\s_-]*to[\s_-]*cart|addtocart|cart_add_url/.test(source);
+
+  // Prefer the code that actually sends the cart request.
+  if (
+    /cart_add_url/.test(source) &&
+    /\bfetch\s*\(/.test(source)
+  ) {
+    score += 220;
+  }
+
+  // Find the form lifecycle handler and its handoff to cart processing.
+  if (
+    /\bhandlesubmit\s*\(/.test(source) &&
+    /preventdefault\s*\(/.test(source) &&
+    /processaddtocart/.test(source)
+  ) {
+    score += 190;
+  }
+
+  // Find markup that binds the form submit event to a named handler.
+  if (
+    /on:submit\s*=\s*["'][^"']*handlesubmit/i.test(source) &&
+    /<form\b|\{%[-]?\s*form\s+["']product["']/i.test(source)
+  ) {
+    score += 180;
+  }
+
+  // Find a submit button whose click is delegated to a component method.
+  if (
+    /on:click\s*=\s*["'][^"']*handleclick/i.test(source) &&
+    /type\s*=\s*["']submit["']/i.test(source) &&
+    /add-to-cart-component/.test(source)
+  ) {
+    score += 165;
+  }
+
+  // Find the shared declarative event dispatcher without relying on its filename.
+  if (
+    /document\.addeventlistener\s*\(/.test(source) &&
+    /callback\.call\s*\(/.test(source) &&
+    /on:\$\{eventname\}/.test(source) &&
+    /["']click["']/.test(source) &&
+    /["']submit["']/.test(source)
+  ) {
+    score += 150;
+  }
+
+  // Sticky add-to-cart controls may proxy their click to the real form button.
+  if (
+    /targetaddtocartbutton\.click\s*\(/.test(source) &&
+    /dataset\.puppet/.test(source)
+  ) {
+    score += 130;
+  }
+
+  // Validation checks are relevant only when tied to add-to-cart behavior.
+  if (
+    hasAddToCartContext &&
+    /canaddtocart|checkvalidity|reportvalidity/.test(source)
+  ) {
+    score += 100;
+  }
+
+  if (
+    /handleaddtocartclick/.test(source) &&
+    /on:click|\.click\s*\(/.test(source)
+  ) {
+    score += 85;
+  }
+
+  // Include a module map when it connects the discovered behavior to loaded JS.
+  if (
+    /<script[^>]*importmap/i.test(source) &&
+    /product-form\.js/.test(source) &&
+    /@theme\/component/.test(source)
+  ) {
+    score += 55;
+  }
+
+  // Rendering a button snippet is supporting markup, not the submit implementation.
+  if (
+    /content_for\s+["']block["']/.test(source) &&
+    /add-to-cart/.test(source) &&
+    /render\s+["'][^"']+["']/.test(source)
+  ) {
+    score += 45;
+  }
+
+  return score;
+}
+
 async function searchTheme(
   prompt: string
 ): Promise<ThemeFile[]> {
@@ -1518,6 +1656,8 @@ async function searchTheme(
 
         score += Math.min(matches.length, 10);
       }
+
+      score += getBehavioralCodeRelevance(prompt, content);
 
       if (isProductCardIntent) {
         if (
