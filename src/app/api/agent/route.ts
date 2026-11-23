@@ -23,6 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
+// v81: verifies individual #handleWindowScroll requestAnimationFrame steps with strict contiguous evidence.
 // v80: recognizes wrapped-inside-if-guard skipped-listener wording only with the complete contiguous guarded rebind block.
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
@@ -6431,6 +6432,120 @@ function supportsStickyRafCallbackUpdateClaim(
     );
 }
 
+// Strict, step-specific verification for the complete #handleWindowScroll RAF flow.
+// Claims are accepted only when exact contiguous evidence demonstrates the
+// relevant operation inside this method; generic keyword overlap is insufficient.
+function supportsStickyRafExecutionStepClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "handleWindowScroll");
+  if (!methodBody) return false;
+
+  const methodSignature = /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{/i;
+  const guard = /if\s*\(\s*this\.#scrollRafId\s*!==\s*null\s*\)\s*return\s*;/i;
+  const rafAssignment = /this\.#scrollRafId\s*=\s*requestAnimationFrame\s*\(/i;
+  const callbackStart = /requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{/i;
+  const resetFirst = /requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{\s*this\.#scrollRafId\s*=\s*null\s*;/i;
+  const resetThenUpdate = /this\.#scrollRafId\s*=\s*null\s*;\s*this\.#updateScrollState\s*\(\s*\)\s*;/i;
+  const completeMethod =
+    /#handleWindowScroll\s*=\s*\(\)\s*=>\s*\{\s*if\s*\(\s*this\.#scrollRafId\s*!==\s*null\s*\)\s*return\s*;\s*this\.#scrollRafId\s*=\s*requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{\s*this\.#scrollRafId\s*=\s*null\s*;\s*this\.#updateScrollState\s*\(\s*\)\s*;\s*\}\s*\)\s*;\s*\};/i;
+
+  const evidenceIsExactAndInSentContext = (evidence: string) =>
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment));
+
+  // After the exact !== null guard, continuation to RAF means the identifier is null.
+  const describesNullPath =
+    /#handleWindowScroll/i.test(claim) &&
+    /#scrollRafId/i.test(claim) &&
+    /\bnull\b/i.test(claim) &&
+    /\b(?:when|if|while)\b/i.test(claim) &&
+    /requestAnimationFrame/i.test(claim) &&
+    /\b(?:call|calls|invoke|invokes|schedule|schedules)\b/i.test(claim);
+  if (describesNullPath) {
+    const guardIndex = methodBody.search(guard);
+    const rafIndex = methodBody.search(rafAssignment);
+    return guardIndex >= 0 && rafIndex > guardIndex &&
+      evidenceItems.some((evidence) =>
+        methodSignature.test(evidence) &&
+        guard.test(evidence) &&
+        rafAssignment.test(evidence) &&
+        evidenceIsExactAndInSentContext(evidence)
+      );
+  }
+
+  // Verify that the argument is an actual arrow callback passed to RAF.
+  const describesPassedCallback =
+    /\bcallback\b/i.test(claim) &&
+    /\b(?:passed|argument)\b/i.test(claim) &&
+    /requestAnimationFrame/i.test(claim);
+  if (describesPassedCallback) {
+    const completeCallbackArgument =
+      /this\.#scrollRafId\s*=\s*requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{[\s\S]*?this\.#scrollRafId\s*=\s*null\s*;[\s\S]*?this\.#updateScrollState\s*\(\s*\)\s*;[\s\S]*?\}\s*\)\s*;/i;
+    return completeCallbackArgument.test(methodBody) &&
+      evidenceItems.some((evidence) =>
+        completeCallbackArgument.test(evidence) &&
+        evidenceIsExactAndInSentContext(evidence)
+      );
+  }
+
+  // "First" means the reset is the first statement inside the actual callback.
+  const describesFirstReset =
+    /\bcallback\b/i.test(claim) &&
+    /#scrollRafId/i.test(claim) &&
+    /\bnull\b/i.test(claim) &&
+    /\b(?:first|initial|at the start)\b/i.test(claim) &&
+    /\b(?:set|sets|reset|resets|assign|assigns)\b/i.test(claim);
+  if (describesFirstReset) {
+    return resetFirst.test(methodBody) &&
+      evidenceItems.some((evidence) =>
+        resetFirst.test(evidence) &&
+        evidenceIsExactAndInSentContext(evidence)
+      );
+  }
+
+  // The reset and update must be adjacent, ordered statements inside the RAF callback.
+  // The claim need not repeat the reset value; the exact source evidence establishes it.
+  const describesResetThenUpdate =
+    /\bcallback\b/i.test(claim) &&
+    /#scrollRafId/i.test(claim) &&
+    /#updateScrollState/i.test(claim) &&
+    /\b(?:after|then|following|reset|resets|resetting)\b/i.test(claim) &&
+    /\b(?:call|calls|invoke|invokes)\b/i.test(claim);
+  if (describesResetThenUpdate) {
+    const callbackContainsOrderedPair =
+      callbackStart.test(methodBody) &&
+      resetThenUpdate.test(methodBody) &&
+      /requestAnimationFrame\s*\(\s*\(\)\s*=>\s*\{[\s\S]*?this\.#scrollRafId\s*=\s*null\s*;\s*this\.#updateScrollState\s*\(\s*\)\s*;\s*\}\s*\)/i.test(methodBody);
+    return callbackContainsOrderedPair &&
+      evidenceItems.some((evidence) =>
+        resetThenUpdate.test(evidence) &&
+        evidenceIsExactAndInSentContext(evidence)
+      );
+  }
+
+  // Complete-method evidence must include the signature, guard, callback, reset,
+  // update, and the method's closing delimiter as one contiguous source excerpt.
+  const describesCompleteMethod =
+    /#handleWindowScroll/i.test(claim) &&
+    /\bcomplete\b/i.test(claim) &&
+    /requestAnimationFrame/i.test(claim) &&
+    /\bcallback\b/i.test(claim) &&
+    /\b(?:guard|initial|from|through|sequence)\b/i.test(claim);
+  if (describesCompleteMethod) {
+    return completeMethod.test(actualSource) &&
+      evidenceItems.some((evidence) =>
+        completeMethod.test(evidence) &&
+        evidenceIsExactAndInSentContext(evidence)
+      );
+  }
+
+  return false;
+}
+
 function supportsStickyRafDescriptionClaim(
   claim: string,
   evidenceItems: string[],
@@ -8823,10 +8938,15 @@ async function verifyAnswerClaim(
           supportsStickyBreakpointFlowClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedStickyRafExecutionStepFlow =
+          supportsStickyRafExecutionStepClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAtomicPattern =
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollFlow ||
           verifiedStickyBreakpointFlow ||
+          verifiedStickyRafExecutionStepFlow ||
           supportsStickyUpdateScrollEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
@@ -8894,6 +9014,7 @@ async function verifyAnswerClaim(
           !verifiedStickyUpdateScrollCoreOperation &&
           !verifiedStickyUpdateScrollFlow &&
           !verifiedStickyBreakpointFlow &&
+          !verifiedStickyRafExecutionStepFlow &&
           claimAddsUnsupportedControlFlow(
             claim.claim,
             evidenceItems,
@@ -8902,6 +9023,14 @@ async function verifyAnswerClaim(
           );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
+          (/#scrollRafId/i.test(claimTextLower) &&
+            /requestAnimationFrame/i.test(claimTextLower)) ||
+          (/requestAnimationFrame/i.test(claimTextLower) &&
+            /\bcallback\b/i.test(claimTextLower) &&
+            /\b(?:passed|argument)\b/i.test(claimTextLower)) ||
+          (/#handleWindowScroll/i.test(claimTextLower) &&
+            /\bcomplete\b/i.test(claimTextLower) &&
+            /\bcallback\b/i.test(claimTextLower)) ||
           (/data-sticky/i.test(claimTextLower) &&
             /\b(?:read|reads|reading|getAttribute)\b/i.test(claimTextLower)) ||
           (/intersectionobserver/i.test(claimTextLower) &&
@@ -8977,6 +9106,7 @@ async function verifyAnswerClaim(
           verifiedStickyUpdateScrollEarlyReturnFlow ||
           verifiedStickyUpdateScrollFlow ||
           verifiedStickyBreakpointFlow ||
+          verifiedStickyRafExecutionStepFlow ||
           genericTokenOverlap ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
