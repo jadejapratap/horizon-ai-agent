@@ -7149,10 +7149,10 @@ function recoverExactStickyLiquidBranchEvidence(
 }
 
 
-// Recover the exact event name only when Gemini has cited the start of the
-// document.addEventListener call but omitted its immediately following
-// event argument. The expanded excerpt is copied verbatim from one contiguous
-// source segment already sent to Gemini and must also match the actual file.
+// Recover the exact event registration when Gemini cites this listener
+// either with literal code wording or a precise natural-language description.
+// The expanded excerpt is copied verbatim from one contiguous source segment
+// already sent to Gemini and must also match the actual file.
 function recoverExactDocumentOpenEventEvidence(
   claim: string,
   evidenceItems: string[],
@@ -7160,11 +7160,17 @@ function recoverExactDocumentOpenEventEvidence(
   actualSource: string
 ): string | null {
   const claimText = claim.toLowerCase();
-  if (
-    !/document\.addEventListener/.test(claimText) ||
-    !/\bevent\b/.test(claimText) ||
-    !/['"]open['"]/.test(claimText)
-  ) {
+  const hasExactCodeWording =
+    /document\.addEventListener/.test(claimText) &&
+    /\bevent\b/.test(claimText) &&
+    /['"]open['"]/.test(claimText);
+  const hasNaturalLanguageWording =
+    /\bdocument(?:[-\s]+level)?\b/.test(claimText) &&
+    /\bopen\b/.test(claimText) &&
+    /\bevent\b/.test(claimText) &&
+    /\b(?:listener|registration|registers?|registered|registering)\b/.test(claimText);
+
+  if (!hasExactCodeWording && !hasNaturalLanguageWording) {
     return null;
   }
 
@@ -9628,6 +9634,7 @@ async function verifyAnswerClaim(
           verifiedStickyBreakpointFlow ||
           verifiedStickyRafExecutionStepFlow ||
           genericTokenOverlap ||
+          Boolean(recoveredDocumentOpenEventEvidence) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
           supportsHeaderDrawerMenuCaptureClaim(claim.claim, evidenceItems) ||
           supportsTransparentNotStickyTransitionClaim(claim.claim, evidenceItems) ||
