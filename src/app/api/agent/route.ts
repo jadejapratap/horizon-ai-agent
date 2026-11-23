@@ -9703,7 +9703,8 @@ async function verifyAnswerClaim(
   filesIncludedInContext: Set<string>,
   includedSourceContent: Map<string, string>,
   verifiedDependencies: VerifiedDependency[] = [],
-  explicitFileAllowlist?: Set<string> | null
+  explicitFileAllowlist?: Set<string> | null,
+  sourceCoverage: SourceCoverageEntry[] = []
 ): Promise<VerifiedAnswerClaim> {
   const file = normalizePath(claim.file || "");
   const knownThemePaths = new Set<string>([
@@ -9721,18 +9722,48 @@ async function verifyAnswerClaim(
     .map((item) => item.trim())
     .filter(Boolean);
   const combinedEvidence = evidenceItems.join("\n");
+  const sourceCoverageEntry = sourceCoverage.find(
+    (entry) => normalizePath(entry.file) === file
+  );
+  const isUnseenRemainderAbsenceClaim =
+    /\b(?:remainder|remaining|rest|unseen|unretrieved)\b/i.test(claim.claim || "") &&
+    /\b(?:no|not|never|without|absent|additional|other|further)\b/i.test(claim.claim || "");
 
   let verified = false;
   let verificationReason = "";
   let verificationMode: VerifiedAnswerClaim["verificationMode"] = "unverified";
 
-  if (
-    !claim.claim?.trim() ||
-    !file ||
-    evidenceItems.length === 0
+  if (!claim.claim?.trim() || !file) {
+    verificationReason = "Missing claim or file path.";
+  } else if (
+    evidenceItems.length === 0 &&
+    isUnseenRemainderAbsenceClaim &&
+    sourceCoverageEntry &&
+    !sourceCoverageEntry.complete
   ) {
+    const suppliedRanges = sourceCoverageEntry.retrievedRanges
+      .map((range) => String(range.startOffset) + "-" + String(range.endOffset))
+      .join(", ");
     verificationReason =
-      "Missing claim, file path, or evidence.";
+      "Unverified: " + file + " is only " + sourceCoverageEntry.coveragePercent + "% supplied (" +
+      sourceCoverageEntry.includedCharacters + "/" + sourceCoverageEntry.totalLength +
+      " characters; supplied ranges: " + (suppliedRanges || "not available") +
+      "). The claim concerns the unseen remainder, so the unavailable source cannot establish " +
+      "that no additional declarations exist.";
+    console.log("INCOMPLETE SOURCE ABSENCE CLAIM DIAGNOSTIC:", {
+      claimId: claim.id ?? null,
+      file,
+      coveragePercent: sourceCoverageEntry.coveragePercent,
+      includedCharacters: sourceCoverageEntry.includedCharacters,
+      totalLength: sourceCoverageEntry.totalLength,
+      retrievedRanges: sourceCoverageEntry.retrievedRanges,
+      complete: sourceCoverageEntry.complete,
+      evidenceItemCount: evidenceItems.length,
+      verified: false,
+      verificationReason,
+    });
+  } else if (evidenceItems.length === 0) {
+    verificationReason = "Missing source evidence; the claim remains unverified.";
   } else if (explicitFileAllowlist && !isPathAllowedByScope(file, explicitFileAllowlist)) {
     verificationReason =
       "Claim source file is outside the user's explicit file-only scope.";
@@ -13835,7 +13866,8 @@ If no source evidence is available, return an empty claims array.
         includedFilesSet,
         includedSourceContent,
         verifiedDependencies,
-        explicitFileAllowlist
+        explicitFileAllowlist,
+        sourceCoverageManifest
       );
 
       verifiedAnswerClaims.push(verification);
