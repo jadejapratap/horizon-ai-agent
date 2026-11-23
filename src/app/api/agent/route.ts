@@ -7290,6 +7290,99 @@ function supportsRegisteredAddToCartCustomElementClaim(
     );
 }
 
+function supportsAutoCloseDetailsDocumentClickListenerClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/auto-close-details.js" ||
+    !/auto-close-details\.js/i.test(claim) ||
+    !/\bdocument\s*\.\s*addEventListener\b/i.test(claim) ||
+    !/\bclick\b/.test(text) ||
+    !/\bevent(?:\s+type)?\b/.test(text) ||
+    !/\b(?:calls?|invokes?)\b/.test(text) ||
+    /\b(?:does\s+not|doesn't|never|not)\b/.test(text)
+  ) {
+    return false;
+  }
+
+  const clickListenerPattern =
+    /document\s*\.\s*addEventListener\s*\(\s*(['"])click\1\s*,/i;
+
+  return clickListenerPattern.test(actualSource) &&
+    evidenceItems.some((evidence) =>
+      clickListenerPattern.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) =>
+        clickListenerPattern.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    );
+}
+
+function getVolumePricingToggleExpandedMethodSource(source: string): string | null {
+  const classPattern =
+    /class\s+VolumePricingComponent\s+extends\s+Component\s*\{/;
+  const classMatch = classPattern.exec(source);
+  if (!classMatch) return null;
+
+  const classTail = source.slice(classMatch.index + classMatch[0].length);
+  const classEnd = /\n\}/.exec(classTail);
+  if (!classEnd) return null;
+
+  const classBody = classTail.slice(0, classEnd.index);
+  const methodPattern =
+    /(^|\n)([ \t]{2})toggleExpanded\s*\(\s*\)\s*\{[\s\S]*?\n\2\}/m;
+  const methodMatch = methodPattern.exec(classBody);
+  if (!methodMatch) return null;
+
+  return methodMatch[0].replace(/^\n/, "");
+}
+
+function supportsVolumePricingToggleExpandedClassToggleClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/volume-pricing.js" ||
+    !/\bvolumepricingcomponent\b/i.test(claim) ||
+    !/\btoggleExpanded\b/i.test(claim) ||
+    !/this\s*\.\s*classList\s*\.\s*toggle/i.test(claim) ||
+    !/volume-pricing--expanded/i.test(claim) ||
+    !/\b(?:calls?|invokes?|uses?)\b/.test(text) ||
+    /\b(?:does\s+not|doesn't|never|not)\b/.test(text)
+  ) {
+    return false;
+  }
+
+  const classTogglePattern =
+    /this\.classList\.toggle\s*\(\s*(['"])volume-pricing--expanded\1\s*\)\s*;/i;
+  const actualMethod = getVolumePricingToggleExpandedMethodSource(actualSource);
+  if (!actualMethod || !classTogglePattern.test(actualMethod)) return false;
+
+  return evidenceItems.some((evidence) =>
+    /\btoggleExpanded\s*\(\s*\)\s*\{/i.test(evidence) &&
+    classTogglePattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualMethod) &&
+    sourceSegments.some((segment) => {
+      const suppliedMethod = getVolumePricingToggleExpandedMethodSource(segment);
+      return Boolean(
+        suppliedMethod &&
+        classTogglePattern.test(suppliedMethod) &&
+        evidenceMatchesSource(evidence, suppliedMethod)
+      );
+    })
+  );
+}
+
 function getAddToCartConnectedCallbackSource(source: string): string | null {
   const classPattern =
     /export\s+class\s+AddToCartComponent\s+extends\s+Component\s*\{/;
@@ -9807,6 +9900,14 @@ async function verifyAnswerClaim(
           supportsAddToCartPointerenterRemovalClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedAutoCloseDetailsDocumentClickListener =
+          supportsAutoCloseDetailsDocumentClickListenerClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
+        const verifiedVolumePricingToggleExpandedClassToggle =
+          supportsVolumePricingToggleExpandedClassToggleClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAccountDialogTargetGuard =
           supportsAccountDialogTargetGuardClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAccountDialogBottomCalculation =
@@ -9823,6 +9924,8 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterRemoval ||
+          verifiedAutoCloseDetailsDocumentClickListener ||
+          verifiedVolumePricingToggleExpandedClassToggle ||
           verifiedAccountDialogTargetGuard ||
           verifiedAccountDialogBottomCalculation ||
           verifiedAccountDialogTopAssignment ||
@@ -9951,6 +10054,14 @@ async function verifyAnswerClaim(
             /(?:connected|disconnected)callback/i.test(claimTextLower) &&
             /pointerenter/i.test(claimTextLower) &&
             /\blistener\b/i.test(claimTextLower)) ||
+          ((/auto-close-details\.js/i.test(claimTextLower)) &&
+            /document\s*\.\s*addEventListener/i.test(claimTextLower) &&
+            /\bclick\b/.test(claimTextLower) &&
+            /\bevent\b/.test(claimTextLower)) ||
+          ((/volumepricingcomponent/i.test(claimTextLower)) &&
+            /toggleExpanded/i.test(claimTextLower) &&
+            /classList\s*\.\s*toggle/i.test(claimTextLower) &&
+            /volume-pricing--expanded/i.test(claimTextLower)) ||
           /\bvolume\s+pricing\b/.test(claimTextLower) ||
           /\bhas_volume_pricing\b/.test(claimTextLower) ||
           (/\bnavigation_bar\b/.test(claimTextLower) && /\b(?:case|branch)\b/.test(claimTextLower)) ||
@@ -10022,6 +10133,8 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterRemoval ||
+          verifiedAutoCloseDetailsDocumentClickListener ||
+          verifiedVolumePricingToggleExpandedClassToggle ||
           verifiedAccountDialogTargetGuard ||
           verifiedAccountDialogBottomCalculation ||
           verifiedAccountDialogTopAssignment ||
@@ -10201,6 +10314,84 @@ async function verifyAnswerClaim(
             existsInActualSource,
             genericTokenOverlap,
             verifiedAddToCartPointerenterListener,
+            evidenceSupportsClaim,
+            directSourceGatePassed:
+              claimSubjectMatchesSourceFile &&
+              claimIsAtomic &&
+              !hasUnsupportedControlFlow &&
+              existsInSentContext &&
+              existsInActualSource &&
+              evidenceSupportsClaim,
+          });
+        }
+
+        const isAutoCloseDetailsClickListenerCandidate =
+          /auto-close-details\.js/i.test(claim.claim) &&
+          /document\s*\.\s*addEventListener/i.test(claim.claim) &&
+          /\bclick\b/i.test(claim.claim);
+
+        if (isAutoCloseDetailsClickListenerCandidate) {
+          const pattern = /document\s*\.\s*addEventListener\s*\(\s*(['"])click\1\s*,/i;
+          console.log("AUTO CLOSE DETAILS CLICK LISTENER VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            file,
+            claimSubjectMatchesSourceFile,
+            actualClickListenerFound: pattern.test(actualSource),
+            evidenceMatches: evidenceItems.map((evidence) => ({
+              hasExactClickListener: pattern.test(evidence),
+              matchesActualSource: evidenceMatchesSource(evidence, actualSource),
+              matchesSentSource: sourceSegments.some((segment) =>
+                evidenceMatchesSource(evidence, segment)
+              ),
+            })),
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            existsInSentContext,
+            existsInActualSource,
+            genericTokenOverlap,
+            verifiedAutoCloseDetailsDocumentClickListener,
+            evidenceSupportsClaim,
+            directSourceGatePassed:
+              claimSubjectMatchesSourceFile &&
+              claimIsAtomic &&
+              !hasUnsupportedControlFlow &&
+              existsInSentContext &&
+              existsInActualSource &&
+              evidenceSupportsClaim,
+          });
+        }
+
+        const isVolumePricingToggleExpandedCandidate =
+          /VolumePricingComponent/i.test(claim.claim) &&
+          /toggleExpanded/i.test(claim.claim) &&
+          /classList\s*\.\s*toggle/i.test(claim.claim);
+
+        if (isVolumePricingToggleExpandedCandidate) {
+          const actualMethod =
+            getVolumePricingToggleExpandedMethodSource(actualSource);
+          const pattern =
+            /this\.classList\.toggle\s*\(\s*(['"])volume-pricing--expanded\1\s*\)\s*;/i;
+          console.log("VOLUME PRICING TOGGLE VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            file,
+            claimSubjectMatchesSourceFile,
+            actualClassMethodFound: Boolean(actualMethod),
+            actualClassToggleFound: Boolean(actualMethod && pattern.test(actualMethod)),
+            evidenceMatches: evidenceItems.map((evidence) => ({
+              hasMethodSignature: /toggleExpanded\s*\(\s*\)\s*\{/i.test(evidence),
+              hasExactClassToggle: pattern.test(evidence),
+              matchesActualMethod: Boolean(actualMethod && evidenceMatchesSource(evidence, actualMethod)),
+              matchesSentMethod: sourceSegments.some((segment) => {
+                const method = getVolumePricingToggleExpandedMethodSource(segment);
+                return Boolean(method && evidenceMatchesSource(evidence, method));
+              }),
+            })),
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            existsInSentContext,
+            existsInActualSource,
+            genericTokenOverlap,
+            verifiedVolumePricingToggleExpandedClassToggle,
             evidenceSupportsClaim,
             directSourceGatePassed:
               claimSubjectMatchesSourceFile &&
