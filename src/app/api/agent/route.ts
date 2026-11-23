@@ -8644,7 +8644,14 @@ function supportsStickyMenuVisibilityClaim(
   ) {
     const truthyBranch =
       /if\s*\(\s*hideMenu\s*\)\s*\{\s*this\.#menuDrawerHiddenWidth\s*=\s*window\.innerWidth\s*;\s*\}/i;
-    return truthyBranch.test(methodBody) && hasEvidence(truthyBranch);
+    const truthyBranchEvidence =
+      /if\s*\(\s*hideMenu\s*\)\s*\{\s*this\.#menuDrawerHiddenWidth\s*=\s*window\.innerWidth\s*;/i;
+    return truthyBranch.test(methodBody) &&
+      evidenceItems.some((evidence) =>
+        truthyBranchEvidence.test(evidence) &&
+        evidenceMatchesSource(evidence, methodSource) &&
+        sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+      );
   }
 
   if (
