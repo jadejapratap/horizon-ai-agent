@@ -7205,6 +7205,153 @@ function supportsDocumentOpenCaptureArgumentClaim(
   );
 }
 
+function supportsGlobalBoxSizingClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/base.css" || !/\bbox-sizing\b/.test(text) || !/\b(?:global|all|every|universal)\b/.test(text)) return false;
+  const pattern = /\*\s*\{\s*box-sizing\s*:\s*border-box\s*;/i;
+  return pattern.test(actualSource) && evidenceItems.some((evidence) =>
+    pattern.test(evidence) && evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => pattern.test(segment) && evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsBodyColorBackgroundVariablesClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/base.css" || !/\bbody\b/.test(text) || !/\bcolor\b/.test(text) ||
+      !/\bbackground\b/.test(text) || !/\b(?:custom\s+properties|css\s+variables)\b/.test(text)) return false;
+  const provesBodyRule = (value: string) =>
+    (value.match(/\bbody\s*\{[^{}]*\}/gi) ?? []).some((rule) =>
+      /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(rule) &&
+      /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(rule)
+    );
+  return provesBodyRule(actualSource) && evidenceItems.some((evidence) =>
+    provesBodyRule(evidence) && evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => provesBodyRule(segment) && evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsQrModeConstantsClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/qr-code-generator.js" || !/QRMode/i.test(claim) ||
+      !/\bnumber\b/.test(text) || !/alpha[\s-]*numeric/.test(text) ||
+      !/8[\s-]*bit/.test(text) || !/\bbyte\b/.test(text) || !/\bkanji\b/.test(text)) return false;
+  const provesQrMode = (value: string) => {
+    const match = value.match(/const\s+QRMode\s*=\s*\{([\s\S]*?)\}\s*;/i);
+    if (!match) return false;
+    const body = match[1];
+    return /MODE_NUMBER\s*:\s*1\s*<<\s*0/i.test(body) &&
+      /MODE_ALPHA_NUM\s*:\s*1\s*<<\s*1/i.test(body) &&
+      /MODE_8BIT_BYTE\s*:\s*1\s*<<\s*2/i.test(body) &&
+      /MODE_KANJI\s*:\s*1\s*<<\s*3/i.test(body);
+  };
+  return provesQrMode(actualSource) && evidenceItems.some((evidence) =>
+    provesQrMode(evidence) && evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => provesQrMode(segment) && evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsQrErrorCorrectionLevelsClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/qr-code-generator.js" || !/QRErrorCorrectLevel/i.test(claim) ||
+      !/\berror\s+correction\b/.test(text) || !/\blevels?\b/.test(text)) return false;
+  const provesLevels = (value: string) => {
+    const match = value.match(/const\s+QRErrorCorrectLevel\s*=\s*\{([\s\S]*?)\}\s*;/i);
+    if (!match) return false;
+    const body = match[1];
+    return /\bL\s*:\s*1\s*,/i.test(body) && /\bM\s*:\s*0\s*,/i.test(body) &&
+      /\bQ\s*:\s*3\s*,/i.test(body) && /\bH\s*:\s*2\s*,?/i.test(body);
+  };
+  return provesLevels(actualSource) && evidenceItems.some((evidence) =>
+    provesLevels(evidence) && evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => provesLevels(segment) && evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsRegisteredAddToCartCustomElementClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  if (file !== "assets/product-form.js" || !/AddToCartComponent/.test(claim) ||
+      !/\bcustom\s+element\b/i.test(claim) || !/extends\s+Component/i.test(claim)) return false;
+  const classPattern = /export\s+class\s+AddToCartComponent\s+extends\s+Component\s*\{/;
+  const registrationPattern = /customElements\.define\(\s*(['"])add-to-cart-component\1\s*,\s*AddToCartComponent\s*\)/;
+  return classPattern.test(actualSource) && registrationPattern.test(actualSource) &&
+    evidenceItems.some((evidence) => classPattern.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) => classPattern.test(segment) &&
+        registrationPattern.test(segment) && evidenceMatchesSource(evidence, segment))
+    );
+}
+
+function supportsAccountDialogTargetGuardClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/header.js" || !/\btarget\b/.test(text) || !/HTMLElement/.test(claim) ||
+      !/shopify-account/.test(claim) || !/\b(?:returns?\s+early|early\s+return|returns?\s+if)\b/i.test(claim)) return false;
+  const pattern = /const\s*\{\s*target\s*\}\s*=\s*event\s*;\s*if\s*\(\s*!\(\s*target\s+instanceof\s+HTMLElement\s*\)\s*\|\|\s*!target\.matches\(\s*(['"])shopify-account\1\s*\)\s*\)\s*return\s*;/i;
+  return pattern.test(actualSource) && evidenceItems.some((evidence) => pattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => pattern.test(segment) && evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsAccountDialogBottomCalculationClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/header.js" || !/\bbottom\b/.test(text) || !/getBoundingClientRect/i.test(claim) ||
+      !/\bround(?:ed|s|ing)?\b/.test(text) || !/\b(?:maximum|max|zero)\b/.test(text)) return false;
+  const pattern = /const\s+bottom\s*=\s*Math\.max\(\s*0\s*,\s*Math\.round\(\s*target\.getBoundingClientRect\(\)\.bottom\s*\)\s*\)\s*;/i;
+  return pattern.test(actualSource) && evidenceItems.some((evidence) => pattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => pattern.test(segment) && evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsAccountDialogTopPropertyAssignmentClaim(
+  claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/header.js" || !/--account-dialog-top/.test(claim) ||
+      !/\btarget\b/.test(text) || !/\bbottom\b/.test(text) || !/\bpixels?\b/.test(text)) return false;
+  const pattern = /target\.style\.setProperty\(\s*(['"])--account-dialog-top\1\s*,\s*['"\x60]\$\{bottom\}px['"\x60]\s*\)/i;
+  return pattern.test(actualSource) && evidenceItems.some((evidence) => pattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => pattern.test(segment) && evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsAbsentDocumentCloseEventListenerClaim(
+  claim: string, file: string, sourceSegments: string[], actualSource: string, sentSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  const negativeClaim =
+    /\b(?:does\s+not|doesn't|never|no)\b[\s\S]{0,100}\b(?:register|add|attach|install)\w*\b/i.test(text) &&
+    /\bdocument(?:[-\s]+level)?\b/.test(text) && /['"]close['"]/.test(text) &&
+    /\bevent\b/.test(text) && /\blistener\b/.test(text);
+  if (file !== "assets/header.js" || !negativeClaim || sourceSegments.length !== 1 ||
+      sentSource !== actualSource) return false;
+
+  // Do not certify absence where document listeners can be registered through
+  // computed APIs, dynamic event arguments, destructuring, or a document alias.
+  if (
+    /\bdocument\s*\[\s*['"]addEventListener['"]\s*\]/i.test(actualSource) ||
+    /\bdocument\s*\.\s*addEventListener\s*\(\s*(?!['"])/i.test(actualSource) ||
+    /\b(?:const|let|var)\s*\{[^}]*\baddEventListener\b[^}]*\}\s*=\s*document\b/i.test(actualSource) ||
+    /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*document\b(?!\s*\.)/i.test(actualSource)
+  ) return false;
+
+  return !/\bdocument\s*\.\s*addEventListener\s*\(\s*(['"])close\1\s*,/i.test(actualSource);
+}
+
 function recoverExactDocumentOpenEventEvidence(
   claim: string,
   evidenceItems: string[],
@@ -9509,8 +9656,37 @@ async function verifyAnswerClaim(
           supportsDocumentOpenCaptureArgumentClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedDocumentCloseListenerAbsence =
+          supportsAbsentDocumentCloseEventListenerClaim(
+            claim.claim, file, sourceSegments, actualSource, sentSource
+          );
+        const verifiedGlobalBoxSizing =
+          supportsGlobalBoxSizingClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedBodyColorBackgroundVariables =
+          supportsBodyColorBackgroundVariablesClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedQrModeConstants =
+          supportsQrModeConstantsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedQrErrorCorrectionLevels =
+          supportsQrErrorCorrectionLevelsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAddToCartCustomElement =
+          supportsRegisteredAddToCartCustomElementClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAccountDialogTargetGuard =
+          supportsAccountDialogTargetGuardClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAccountDialogBottomCalculation =
+          supportsAccountDialogBottomCalculationClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAccountDialogTopAssignment =
+          supportsAccountDialogTopPropertyAssignmentClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAtomicPattern =
           verifiedDocumentOpenCaptureArgument ||
+          verifiedDocumentCloseListenerAbsence ||
+          verifiedGlobalBoxSizing ||
+          verifiedBodyColorBackgroundVariables ||
+          verifiedQrModeConstants ||
+          verifiedQrErrorCorrectionLevels ||
+          verifiedAddToCartCustomElement ||
+          verifiedAccountDialogTargetGuard ||
+          verifiedAccountDialogBottomCalculation ||
+          verifiedAccountDialogTopAssignment ||
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollFlow ||
           verifiedStickyBreakpointFlow ||
@@ -9695,6 +9871,15 @@ async function verifyAnswerClaim(
           verifiedStickyBreakpointFlow ||
           verifiedStickyRafExecutionStepFlow ||
           verifiedDocumentOpenCaptureArgument ||
+          verifiedDocumentCloseListenerAbsence ||
+          verifiedGlobalBoxSizing ||
+          verifiedBodyColorBackgroundVariables ||
+          verifiedQrModeConstants ||
+          verifiedQrErrorCorrectionLevels ||
+          verifiedAddToCartCustomElement ||
+          verifiedAccountDialogTargetGuard ||
+          verifiedAccountDialogBottomCalculation ||
+          verifiedAccountDialogTopAssignment ||
           genericTokenOverlap ||
           Boolean(recoveredDocumentOpenEventEvidence) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
@@ -10627,7 +10812,16 @@ function buildSourceCoverageMarkdown(
       ? ["", "**Complete source files:**", ...formatFiles(completeFiles)]
       : []),
     ...(partialFiles.length > 0
-      ? ["", "**Partial source files:**", ...formatFiles(partialFiles)]
+      ? [
+          "",
+          "**Partial source files:**",
+          ...formatFiles(partialFiles),
+          "",
+          "**Limitations for partial files:**",
+          ...partialFiles.map((entry) =>
+            "- Only " + entry.coveragePercent + "% of `" + entry.file + "` was supplied. The remaining source ranges were not available in this request, so the file's full implementation cannot be determined and absence claims about unseen portions are not supported."
+          ),
+        ]
       : []),
   ].join("\n");
 }
@@ -12459,6 +12653,7 @@ even if that file appears in the dependency graph or recursive-loading list.
 STRICT COVERAGE RULES:
 - A file is COMPLETE only when its complete flag is true above.
 - If complete is false, describe it only as partial/incomplete and state the supplied ranges when relevant.
+- For every partial file discussed, explicitly state that its full implementation cannot be determined from the supplied ranges; do not imply an exhaustive summary or infer that behavior is absent from unseen ranges.
 - Never say that full/complete source was available or fully analyzed unless complete is true.
 - A file absent from this coverage list was not supplied to you as source content.
 - Do not infer completeness from a file path appearing in a dependency graph, manifest, or search result.
