@@ -7145,6 +7145,49 @@ function recoverExactStickyLiquidBranchEvidence(
   return null;
 }
 
+
+// Recover the exact event name only when Gemini has cited the start of the
+// document.addEventListener call but omitted its immediately following
+// event argument. The expanded excerpt is copied verbatim from one contiguous
+// source segment already sent to Gemini and must also match the actual file.
+function recoverExactDocumentOpenEventEvidence(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): string | null {
+  const claimText = claim.toLowerCase();
+  if (
+    !/document\.addEventListener/.test(claimText) ||
+    !/\bevent\b/.test(claimText) ||
+    !/['"]open['"]/.test(claimText)
+  ) {
+    return null;
+  }
+
+  const hasAnchoredCallEvidence = evidenceItems.some((evidence) =>
+    /^\s*document\.addEventListener\s*\(/i.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+  );
+  if (!hasAnchoredCallEvidence) return null;
+
+  const exactOpenRegistration =
+    /document\.addEventListener\(\s*(['"])open\1\s*,/i;
+
+  for (const segment of sourceSegments) {
+    const match = exactOpenRegistration.exec(segment);
+    if (!match) continue;
+
+    const exactEvidence = match[0];
+    if (evidenceMatchesSource(exactEvidence, actualSource)) {
+      return exactEvidence;
+    }
+  }
+
+  return null;
+}
+
 function supportsStickyHeaderLiquidSettingAssignmentClaim(
   claim: string,
   evidenceItems: string[],
@@ -9295,6 +9338,31 @@ async function verifyAnswerClaim(
               evidence: recoveredStickyEvidence,
             });
           }
+        }
+
+        // Gemini may quote only the opening line of this particular listener
+        // call. Expand it only when that exact prefix is cited and the same
+        // contiguous source range proves the immediately following 'open'
+        // event argument in both sent context and the actual theme file.
+        const recoveredDocumentOpenEventEvidence =
+          recoverExactDocumentOpenEventEvidence(
+            claim.claim,
+            evidenceItems,
+            sourceSegments,
+            actualSource
+          );
+        if (recoveredDocumentOpenEventEvidence) {
+          evidenceItems.splice(
+            0,
+            evidenceItems.length,
+            recoveredDocumentOpenEventEvidence
+          );
+          claim.evidence = recoveredDocumentOpenEventEvidence;
+          console.log("RECOVERED EXACT DOCUMENT OPEN EVENT EVIDENCE:", {
+            claimId: claim.id,
+            file,
+            evidence: recoveredDocumentOpenEventEvidence,
+          });
         }
 
         // ------------------------------------------
