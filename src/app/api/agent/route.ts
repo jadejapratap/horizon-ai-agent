@@ -6752,6 +6752,67 @@ function supportsStickyConnectedCallbackStickyObserverInitClaim(
   });
 }
 
+// Verify the first operations of connectedCallback using their exact callback-local order.
+function supportsStickyConnectedCallbackLifecycleClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const callbackMatch = /(^|\n)[ \t]*connectedCallback\s*\(\s*\)\s*\{/.exec(actualSource);
+  if (!callbackMatch) return false;
+
+  const signatureStart = callbackMatch.index + callbackMatch[1].length;
+  const bodyStart = callbackMatch.index + callbackMatch[0].length;
+  const callbackTail = actualSource.slice(bodyStart);
+  const callbackEnd = /\n[ \t]{2}\}\s*\n[ \t]*disconnectedCallback\s*\(/.exec(callbackTail);
+  if (!callbackEnd) return false;
+
+  const callbackBody = callbackTail.slice(0, callbackEnd.index);
+  const closingBraceOffset = callbackEnd[0].indexOf("}");
+  const callbackSource = actualSource.slice(
+    signatureStart,
+    bodyStart + callbackEnd.index + closingBraceOffset + 1
+  );
+
+  const hasEvidence = (pattern: RegExp): boolean =>
+    evidenceItems.some((evidence) =>
+      pattern.test(evidence) &&
+      evidenceMatchesSource(evidence, callbackSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+
+  if (
+    /connectedCallback\s+calls\s+super\.connectedCallback\s*\(\s*\)\s+first/i.test(claim)
+  ) {
+    const firstOperation = /^\s*super\.connectedCallback\s*\(\s*\)\s*;/i;
+    const signatureAndSuperCall =
+      /connectedCallback\s*\(\s*\)\s*\{\s*super\.connectedCallback\s*\(\s*\)\s*;/i;
+    return firstOperation.test(callbackBody) && hasEvidence(signatureAndSuperCall);
+  }
+
+  if (
+    /after\s+the\s+superclass\s+call/i.test(claim) &&
+    /connectedCallback/i.test(claim) &&
+    /#resizeObserver\.observe\s*\(\s*this\s*\)/i.test(claim)
+  ) {
+    const adjacentOperations =
+      /super\.connectedCallback\s*\(\s*\)\s*;\s*this\.#resizeObserver\.observe\s*\(\s*this\s*\)\s*;/i;
+    return adjacentOperations.test(callbackBody) && hasEvidence(adjacentOperations);
+  }
+
+  if (
+    /connectedCallback\s+adds?\s+the\s+overflowMinimum\s+event\s+listener/i.test(claim) &&
+    /using\s+this\.#handleOverflowMinimum/i.test(claim)
+  ) {
+    const exactListener =
+      /this\.addEventListener\s*\(\s*['"]overflowMinimum['"]\s*,\s*this\.#handleOverflowMinimum\s*\)\s*;/i;
+    return exactListener.test(callbackBody) && hasEvidence(exactListener);
+  }
+
+  return false;
+}
+
 // Verify the threshold ternary only when it belongs to the actual observer
 // initialization inside #observeStickyPosition.
 function supportsStickyObserveStickyEarlyReturnClaim(
@@ -9123,7 +9184,8 @@ async function verifyAnswerClaim(
           supportsStickyHeaderObserverClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderScrollStateClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
-          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments)
+          supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) || ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
@@ -9289,7 +9351,8 @@ async function verifyAnswerClaim(
           supportsStickyHeaderObserverClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderScrollStateClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
-          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments)
+          supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) || ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
