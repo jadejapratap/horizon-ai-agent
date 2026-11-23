@@ -23,6 +23,7 @@
 // v71: recognizes old/new scroll-listener paraphrases while preserving exact remove -> replace -> add verification.
 // v72: verifies disconnecting-it and setting-it-to-null IntersectionObserver wording, while rejecting negation and reverse order.
 // v73: matches signature-prefixed sticky-attribute evidence against the complete breakpoint method.
+// v83: aligns #updateScrollState paraphrases only when exact source operands and operations match.
 // v82: aligns guarded scroll-RAF early-return paraphrases and verifies complete handler summaries only with full method evidence.
 // v81: verifies individual #handleWindowScroll requestAnimationFrame steps with strict contiguous evidence.
 // v80: recognizes wrapped-inside-if-guard skipped-listener wording only with the complete contiguous guarded rebind block.
@@ -4897,6 +4898,63 @@ function isStickyBreakpointFlowStatementAligned(claim: string, statement: string
   return missingStickyModeReturn || scrollContainerRebind || orderedListenerOperations || observerDisconnectAndNull || observerBooleanArgument;
 }
 
+// Align narrowly scoped #updateScrollState paraphrases by their exact
+// variable identifiers and operation. The method name may be omitted from
+// the sentence, but the source-specific operands and operation must remain.
+function isStickyUpdateScrollStatementAligned(claim: string, statement: string): boolean {
+  const claimText = claim.toLowerCase();
+  const statementText = statement.toLowerCase();
+  if (!/#updatescrollstate\b/i.test(claimText)) return false;
+
+  const scrollTopRead =
+    /\bscrolltop\b/i.test(claimText) &&
+    /\bgetscrolltop\s*\(\s*\)/i.test(claimText) &&
+    /\b(?:obtain|obtains|get|gets)\b/i.test(claimText) &&
+    /\bby\s+calling\b/i.test(claimText) &&
+    /\bscrolltop\b/i.test(statementText) &&
+    /\bgetscrolltop\s*\(\s*\)/i.test(statementText) &&
+    /\b(?:obtain|obtains|get|gets)\b/i.test(statementText) &&
+    /\bby\s+calling\b/i.test(statementText);
+
+  const headerTopRead =
+    /\bheadertop\b/i.test(claimText) &&
+    /getboundingclientrect\s*\(\s*\)\s*\.\s*top/i.test(claimText) &&
+    /\b(?:obtain|obtains|get|gets)\b/i.test(claimText) &&
+    /\bfrom\b/i.test(claimText) &&
+    /\bheadertop\b/i.test(statementText) &&
+    /getboundingclientrect\s*\(\s*\)\s*\.\s*top/i.test(statementText) &&
+    /\b(?:obtain|obtains|get|gets)\b/i.test(statementText) &&
+    /\bfrom\b/i.test(statementText);
+
+  const isScrollingUpComparison =
+    /\bisScrollingUp\b/i.test(claimText) &&
+    /\bscrollTop\b/i.test(claimText) &&
+    /this\.#lastScrollTop/i.test(claimText) &&
+    /\bcalculat(?:e|es|ing)\b/i.test(claimText) &&
+    /\bcompar(?:e|es|ing)\b/i.test(claimText) &&
+    /scrollTop\s*<\s*this\.#lastScrollTop/i.test(claimText) &&
+    /\bisScrollingUp\b/i.test(statementText) &&
+    /\bscrollTop\b/i.test(statementText) &&
+    /this\.#lastScrollTop/i.test(statementText) &&
+    /\bcalculat(?:e|es|ing)\b/i.test(statementText) &&
+    /\bcompar(?:e|es|ing)\b/i.test(statementText) &&
+    /scrollTop\s*<\s*this\.#lastScrollTop/i.test(statementText);
+
+  const isAtTopComparison =
+    /\bisAtTop\b/i.test(claimText) &&
+    /\bheaderTop\b/i.test(claimText) &&
+    /\bcalculat(?:e|es|ing)\b/i.test(claimText) &&
+    /\b(?:check|checks|checking)\b/i.test(claimText) &&
+    /headerTop\s*>=\s*0/i.test(claimText) &&
+    /\bisAtTop\b/i.test(statementText) &&
+    /\bheaderTop\b/i.test(statementText) &&
+    /\bcalculat(?:e|es|ing)\b/i.test(statementText) &&
+    /\b(?:check|checks|checking)\b/i.test(statementText) &&
+    /headerTop\s*>=\s*0/i.test(statementText);
+
+  return scrollTopRead || headerTopRead || isScrollingUpComparison || isAtTopComparison;
+}
+
 function isStickyRafEarlyReturnStatementAligned(claim: string, statement: string): boolean {
   const claimDescribesGuardedReturn =
     /#handleWindowScroll/i.test(claim) &&
@@ -9671,6 +9729,10 @@ function enforceAnswerClaimReferences(
             getClaimEvidenceTokens(claim.claim)
               .filter((token) => token !== "else")
               .every((token) => getClaimEvidenceTokens(statementText).includes(token));
+          const stickyUpdateScrollAlignment = isStickyUpdateScrollStatementAligned(
+            claim.claim,
+            statementText
+          );
           const stickyRafEarlyReturnAlignment = isStickyRafEarlyReturnStatementAligned(
             claim.claim,
             statementText
@@ -9722,6 +9784,7 @@ function enforceAnswerClaimReferences(
           if (
             directTokenAlignment ||
             useCurrencyElseAlignment ||
+            stickyUpdateScrollAlignment ||
             stickyRafEarlyReturnAlignment ||
             stickyScrollRafAlignment ||
             stickyBreakpointFlowAlignment ||
