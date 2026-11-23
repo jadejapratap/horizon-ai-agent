@@ -7153,12 +7153,58 @@ function recoverExactStickyLiquidBranchEvidence(
 // either with literal code wording or a precise natural-language description.
 // The expanded excerpt is copied verbatim from one contiguous source segment
 // already sent to Gemini and must also match the actual file.
+function isDocumentOpenCaptureArgumentClaim(claim: string): boolean {
+  const text = claim.toLowerCase();
+  const identifiesCaptureArgument =
+    /\b(?:third|3rd)\s+(?:argument|parameter)\b/.test(text) ||
+    /\b(?:usecapture|use\s*capture)\b/.test(text) ||
+    /\bcapture\b.{0,30}\b(?:argument|parameter|option|flag)\b/.test(text);
+
+  return (
+    /document\.addeventlistener/.test(text) &&
+    /['"]open['"]/.test(text) &&
+    /\btrue\b/.test(text) &&
+    identifiesCaptureArgument
+  );
+}
+
+function supportsDocumentOpenCaptureArgumentClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!isDocumentOpenCaptureArgumentClaim(claim)) return false;
+
+  // Require the exact document 'open' registration to close its callback
+  // immediately before the literal third argument true. The evidence itself
+  // must be one contiguous excerpt present in both sent context and source.
+  const exactCaptureRegistration =
+    /document\.addEventListener\(\s*(['"])open\1\s*,[\s\S]*?\r?\n\s*\},\s*true\s*\)\s*;/i;
+
+  return (
+    exactCaptureRegistration.test(actualSource) &&
+    evidenceItems.some((evidence) =>
+      exactCaptureRegistration.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) =>
+        exactCaptureRegistration.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    )
+  );
+}
+
 function recoverExactDocumentOpenEventEvidence(
   claim: string,
   evidenceItems: string[],
   sourceSegments: string[],
   actualSource: string
 ): string | null {
+  // Do not reduce a capture-argument claim to the shorter event-name prefix;
+  // its full call evidence is required to verify the third argument.
+  if (isDocumentOpenCaptureArgumentClaim(claim)) return null;
+
   const claimText = claim.toLowerCase();
   const hasExactCodeWording =
     /document\.addEventListener/.test(claimText) &&
@@ -9449,7 +9495,12 @@ async function verifyAnswerClaim(
           supportsStickyRafExecutionStepClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedDocumentOpenCaptureArgument =
+          supportsDocumentOpenCaptureArgumentClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAtomicPattern =
+          verifiedDocumentOpenCaptureArgument ||
           verifiedStickyUpdateScrollCoreOperation ||
           verifiedStickyUpdateScrollFlow ||
           verifiedStickyBreakpointFlow ||
@@ -9633,6 +9684,7 @@ async function verifyAnswerClaim(
           verifiedStickyUpdateScrollFlow ||
           verifiedStickyBreakpointFlow ||
           verifiedStickyRafExecutionStepFlow ||
+          verifiedDocumentOpenCaptureArgument ||
           genericTokenOverlap ||
           Boolean(recoveredDocumentOpenEventEvidence) ||
           supportsTransparentHeaderTemplateRuleClaim(claim.claim, evidenceItems) ||
