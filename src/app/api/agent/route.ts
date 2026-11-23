@@ -6754,6 +6754,51 @@ function supportsStickyConnectedCallbackStickyObserverInitClaim(
 
 // Verify the threshold ternary only when it belongs to the actual observer
 // initialization inside #observeStickyPosition.
+function supportsStickyObserveStickyEarlyReturnClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#observeStickyPosition/i.test(claim) ||
+      !/returns? early/i.test(claim) ||
+      !/this\.#intersectionObserver/i.test(claim)) return false;
+
+  const guard = /if\s*\(\s*this\.#intersectionObserver\s*\)\s*return\s*;/i;
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "observeStickyPosition");
+  return !!methodBody &&
+    evidenceItems.some((evidence) =>
+      guard.test(evidence) &&
+      /#observeStickyPosition\s*=\s*\([^)]*\)\s*=>\s*\{/i.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    ) &&
+    guard.test(methodBody);
+}
+
+function supportsStickyObserveStickyRootAssignmentClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#observeStickyPosition/i.test(claim) ||
+      !/IntersectionObserver/i.test(claim) ||
+      !/root/i.test(claim) ||
+      !/getIntersectionRoot\s*\(\s*\)/i.test(claim)) return false;
+
+  const assignment = /root\s*:\s*getIntersectionRoot\s*\(\s*\)\s*,?/i;
+  const methodBody = extractPrivateArrowMethodBody(actualSource, "observeStickyPosition");
+  return !!methodBody &&
+    evidenceItems.some((evidence) =>
+      assignment.test(evidence) &&
+      /const\s+config\s*=\s*\{/.test(evidence) &&
+      evidenceMatchesSource(evidence, methodBody) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    ) &&
+    assignment.test(methodBody);
+}
+
 function supportsStickyObserverThresholdClaim(
   claim: string,
   evidenceItems: string[],
@@ -9038,6 +9083,8 @@ async function verifyAnswerClaim(
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserverThresholdClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyAttributeBooleanObserverCallClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserverBooleanCallDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
