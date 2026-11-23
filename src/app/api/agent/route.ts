@@ -7413,6 +7413,48 @@ function getAddToCartConnectedCallbackSource(source: string): string | null {
   return callbackMatch[0].replace(/^\n/, "");
 }
 
+function supportsAddToCartSuperConnectedCallbackClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/product-form.js" ||
+    !/\baddtocartcomponent\b/.test(text) ||
+    !/\bconnectedcallback\b/.test(text) ||
+    !/\bsuper\.connectedcallback\s*\(\s*\)/i.test(text) ||
+    !/\b(?:calls?|invokes?)\b/.test(text)
+  ) {
+    return false;
+  }
+
+  const superCallbackPattern = /super\.connectedCallback\s*\(\s*\)\s*;/i;
+  const actualCallback = getAddToCartConnectedCallbackSource(actualSource);
+  if (!actualCallback || !superCallbackPattern.test(actualCallback)) return false;
+
+  return evidenceItems.some((evidence) => {
+    if (
+      !/\bconnectedCallback\s*\(\s*\)\s*\{/i.test(evidence) ||
+      !superCallbackPattern.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualCallback)
+    ) {
+      return false;
+    }
+
+    return sourceSegments.some((segment) => {
+      const suppliedCallback = getAddToCartConnectedCallbackSource(segment);
+      return Boolean(
+        suppliedCallback &&
+        superCallbackPattern.test(suppliedCallback) &&
+        evidenceMatchesSource(evidence, suppliedCallback)
+      );
+    });
+  });
+}
+
 function supportsAddToCartPointerenterListenerClaim(
   claim: string,
   file: string,
@@ -9932,6 +9974,10 @@ async function verifyAnswerClaim(
           supportsQrErrorCorrectionLevelsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAddToCartCustomElement =
           supportsRegisteredAddToCartCustomElementClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAddToCartSuperConnectedCallback =
+          supportsAddToCartSuperConnectedCallbackClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAddToCartPointerenterListener =
           supportsAddToCartPointerenterListenerClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -9962,6 +10008,7 @@ async function verifyAnswerClaim(
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
+          verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterRemoval ||
           verifiedAutoCloseDetailsDocumentClickListener ||
@@ -10094,6 +10141,10 @@ async function verifyAnswerClaim(
             /(?:connected|disconnected)callback/i.test(claimTextLower) &&
             /pointerenter/i.test(claimTextLower) &&
             /\blistener\b/i.test(claimTextLower)) ||
+          ((/addtocartcomponent/i.test(claimTextLower)) &&
+            /connectedcallback/i.test(claimTextLower) &&
+            /super\.connectedcallback/i.test(claimTextLower) &&
+            /\b(?:calls?|invokes?)\b/i.test(claimTextLower)) ||
           ((/auto-close-details\.js/i.test(claimTextLower)) &&
             /document\s*\.\s*addEventListener/i.test(claimTextLower) &&
             /\bclick\b/.test(claimTextLower) &&
@@ -10171,6 +10222,7 @@ async function verifyAnswerClaim(
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
+          verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterRemoval ||
           verifiedAutoCloseDetailsDocumentClickListener ||
