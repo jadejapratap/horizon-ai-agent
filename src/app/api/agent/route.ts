@@ -8605,8 +8605,6 @@ function supportsStickyMenuVisibilityClaim(
   sourceSegments: string[],
   actualSource: string
 ): boolean {
-  if (!/#updateMenuVisibility/i.test(claim)) return false;
-
   const methodMatch =
     /(^|\n)[ \t]*#updateMenuVisibility\s*\(\s*hideMenu\s*\)\s*\{/.exec(actualSource);
   if (!methodMatch) return false;
