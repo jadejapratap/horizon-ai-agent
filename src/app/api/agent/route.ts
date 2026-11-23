@@ -7242,6 +7242,41 @@ function supportsStickyBreakpointFlowClaim(
   const completeScrollRebindBlock =
     /if\s*\(\s*this\.#scrollContainer\s*\)\s*\{\s*this\.#scrollContainer\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*this\.#scrollContainer\s*=\s*getScrollEventTarget\s*\(\s*\)\s*;\s*this\.#scrollContainer\.addEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;\s*\}/i;
 
+  // These three claims describe individual steps of the same guarded scroll
+  // listener rebind. Require the complete contiguous block in the quote and
+  // actual method so a single operation cannot imply the whole conditional flow.
+  if (
+    /#handleBreakpointChange/i.test(claimText) &&
+    /when\s+this\.#scrollContainer\s+is\s+truthy/i.test(claimText) &&
+    /removes?\s+the\s+existing\s+scroll\s+event\s+listener/i.test(claimText) &&
+    /using\s+this\.#handleWindowScroll/i.test(claimText) &&
+    !/\b(?:not|never|without|skips?)\b/i.test(claimText)
+  ) {
+    return completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
+
+  if (
+    /#handleBreakpointChange/i.test(claimText) &&
+    /when\s+this\.#scrollContainer\s+is\s+truthy/i.test(claimText) &&
+    /replaces?\s+it\s+with\s+the\s+result\s+of\s+getScrollEventTarget\s*\(\s*\)/i.test(claimText) &&
+    !/\b(?:not|never|without|does\s+not)\b/i.test(claimText)
+  ) {
+    return completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
+
+  if (
+    /#handleBreakpointChange/i.test(claimText) &&
+    /after\s+replacing\s+the\s+scroll\s+container/i.test(claimText) &&
+    /adds?\s+the\s+scroll\s+event\s+listener/i.test(claimText) &&
+    /using\s+this\.#handleWindowScroll/i.test(claimText) &&
+    !/\b(?:not|never|without|does\s+not)\b/i.test(claimText)
+  ) {
+    return completeScrollRebindBlock.test(methodBody) &&
+      hasEvidence(completeScrollRebindBlock);
+  }
+
   if (
     /when\s+stickyMode\s+is\s+truthy\s+and\s+this\.#scrollContainer\s+is\s+null\s+or\s+falsy/i.test(claimText) &&
     /removeEventListener\s+is\s+skipped/i.test(claimText) &&
