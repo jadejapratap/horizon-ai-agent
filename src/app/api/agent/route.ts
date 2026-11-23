@@ -8631,6 +8631,24 @@ function supportsStickyMenuVisibilityClaim(
       sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
     );
 
+  console.log("[MENU_VISIBILITY_DIAGNOSTIC]", {
+    claim,
+    actualSourceLength: actualSource.length,
+    methodSourceLength: methodSource.length,
+    sourceSegmentCount: sourceSegments.length,
+    methodEndFound: true,
+    evidence: evidenceItems.map((evidence, index) => ({
+      index: index + 1,
+      length: evidence.length,
+      matchesMethod: evidenceMatchesSource(evidence, methodSource),
+      matchingSourceSegments: sourceSegments
+        .map((segment, segmentIndex) =>
+          evidenceMatchesSource(evidence, segment) ? segmentIndex : -1
+        )
+        .filter((segmentIndex) => segmentIndex >= 0),
+    })),
+  });
+
   if (/accepts\s+hideMenu\s+as\s+its\s+parameter/i.test(claim)) {
     const signature =
       /#updateMenuVisibility\s*\(\s*hideMenu\s*\)\s*\{/i;
