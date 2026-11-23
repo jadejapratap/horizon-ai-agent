@@ -9184,8 +9184,8 @@ async function verifyAnswerClaim(
           supportsStickyHeaderObserverClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderScrollStateClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
-          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments)
-          supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) || ||
+          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
@@ -9351,8 +9351,8 @@ async function verifyAnswerClaim(
           supportsStickyHeaderObserverClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderScrollStateClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
-          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments)
-          supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) || ||
+          supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
