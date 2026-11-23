@@ -7474,6 +7474,26 @@ function supportsAddToCartPointerenterListenerClaim(
     return false;
   }
 
+  // Bind the specialized verifier to the exact private callback and reject
+  // claims that add listener options absent from the complete source call.
+  const claimsPrivateCallback =
+    /this\s*\.\s*#preloadimage\b/i.test(text);
+  const claimsPublicCallback =
+    /this\s*\.\s*preloadimage\b/i.test(text);
+  const claimsSpecificOption = /\b(?:once|capture|passive)\b/i.test(text);
+  const mentionsOptions = /\boptions?\b/i.test(text);
+  const explicitlyClaimsNoOptions =
+    /\b(?:no|without|zero)\s+(?:(?:any|additional|extra|optional)\s+)?(?:listener\s+)?options?\b/i.test(text);
+
+  if (
+    !claimsPrivateCallback ||
+    claimsPublicCallback ||
+    claimsSpecificOption ||
+    (mentionsOptions && !explicitlyClaimsNoOptions)
+  ) {
+    return false;
+  }
+
   const listenerPattern =
     /this\.addEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage\s*\)\s*;/i;
   const actualCallback = getAddToCartConnectedCallbackSource(actualSource);
