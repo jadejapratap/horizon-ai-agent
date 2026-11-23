@@ -7355,6 +7355,70 @@ function supportsAddToCartPointerenterListenerClaim(
   });
 }
 
+function getAddToCartDisconnectedCallbackSource(source: string): string | null {
+  const classPattern =
+    /export\s+class\s+AddToCartComponent\s+extends\s+Component\s*\{/;
+  const classMatch = classPattern.exec(source);
+  if (!classMatch) return null;
+
+  const classTail = source.slice(classMatch.index + classMatch[0].length);
+  // Match the top-level exported class closing brace, not nested method blocks.
+  const classEnd = /\n\}/.exec(classTail);
+  if (!classEnd) return null;
+
+  const classBody = classTail.slice(0, classEnd.index);
+  const callbackPattern =
+    /(^|\n)([ \t]{2})disconnectedCallback\s*\(\s*\)\s*\{[\s\S]*?\n\2\}/m;
+  const callbackMatch = callbackPattern.exec(classBody);
+  if (!callbackMatch) return null;
+
+  return callbackMatch[0].replace(/^\n/, "");
+}
+
+function supportsAddToCartPointerenterRemovalClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/product-form.js" ||
+    !/\baddtocartcomponent\b/.test(text) ||
+    !/\bdisconnectedcallback\b/.test(text) ||
+    !/\bpointerenter\b/.test(text) ||
+    !/\blistener\b/.test(text) ||
+    !/\b(?:remove|removes|removing|detach|detaches|detaching|unregister|unregisters|unregistering)\b/.test(text)
+  ) {
+    return false;
+  }
+
+  const removalPattern =
+    /this\.removeEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage\s*\)\s*;/i;
+  const actualCallback = getAddToCartDisconnectedCallbackSource(actualSource);
+  if (!actualCallback || !removalPattern.test(actualCallback)) return false;
+
+  return evidenceItems.some((evidence) => {
+    if (
+      !/\bdisconnectedCallback\s*\(\s*\)\s*\{/i.test(evidence) ||
+      !removalPattern.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualCallback)
+    ) {
+      return false;
+    }
+
+    return sourceSegments.some((segment) => {
+      const suppliedCallback = getAddToCartDisconnectedCallbackSource(segment);
+      return Boolean(
+        suppliedCallback &&
+        removalPattern.test(suppliedCallback) &&
+        evidenceMatchesSource(evidence, suppliedCallback)
+      );
+    });
+  });
+}
+
 function supportsAccountDialogTargetGuardClaim(
   claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
 ): boolean {
@@ -9739,6 +9803,10 @@ async function verifyAnswerClaim(
           supportsAddToCartPointerenterListenerClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedAddToCartPointerenterRemoval =
+          supportsAddToCartPointerenterRemovalClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAccountDialogTargetGuard =
           supportsAccountDialogTargetGuardClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAccountDialogBottomCalculation =
@@ -9754,6 +9822,7 @@ async function verifyAnswerClaim(
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
           verifiedAddToCartPointerenterListener ||
+          verifiedAddToCartPointerenterRemoval ||
           verifiedAccountDialogTargetGuard ||
           verifiedAccountDialogBottomCalculation ||
           verifiedAccountDialogTopAssignment ||
@@ -9878,6 +9947,10 @@ async function verifyAnswerClaim(
           ((/handlebreakpointchange|stickymode|#scrollcontainer|#intersectionobserver|data-sticky/i.test(claimTextLower)) &&
             /\b(?:does\s+not|doesn't|never)\b/i.test(claimTextLower)) ||
           (/\bdrawer_menu\b/.test(claimTextLower) && /\bmobile\b/.test(claimTextLower)) ||
+          ((/addtocartcomponent/i.test(claimTextLower)) &&
+            /(?:connected|disconnected)callback/i.test(claimTextLower) &&
+            /pointerenter/i.test(claimTextLower) &&
+            /\blistener\b/i.test(claimTextLower)) ||
           /\bvolume\s+pricing\b/.test(claimTextLower) ||
           /\bhas_volume_pricing\b/.test(claimTextLower) ||
           (/\bnavigation_bar\b/.test(claimTextLower) && /\b(?:case|branch)\b/.test(claimTextLower)) ||
@@ -9948,6 +10021,7 @@ async function verifyAnswerClaim(
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
           verifiedAddToCartPointerenterListener ||
+          verifiedAddToCartPointerenterRemoval ||
           verifiedAccountDialogTargetGuard ||
           verifiedAccountDialogBottomCalculation ||
           verifiedAccountDialogTopAssignment ||
@@ -10127,6 +10201,60 @@ async function verifyAnswerClaim(
             existsInActualSource,
             genericTokenOverlap,
             verifiedAddToCartPointerenterListener,
+            evidenceSupportsClaim,
+            directSourceGatePassed:
+              claimSubjectMatchesSourceFile &&
+              claimIsAtomic &&
+              !hasUnsupportedControlFlow &&
+              existsInSentContext &&
+              existsInActualSource &&
+              evidenceSupportsClaim,
+          });
+        }
+
+        const isAddToCartPointerenterRemovalCandidate =
+          /AddToCartComponent/i.test(claim.claim) &&
+          /disconnectedCallback/i.test(claim.claim) &&
+          /pointerenter/i.test(claim.claim) &&
+          /\blistener\b/i.test(claim.claim);
+
+        if (isAddToCartPointerenterRemovalCandidate) {
+          const actualAddToCartDisconnectedCallback =
+            getAddToCartDisconnectedCallbackSource(actualSource);
+          const pointerenterRemovalPattern =
+            /this\.removeEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage\s*\)\s*;/i;
+          console.log("ADD TO CART POINTERENTER LISTENER REMOVAL VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            file,
+            actualClassCallbackFound: Boolean(actualAddToCartDisconnectedCallback),
+            actualPointerenterRemovalFound: Boolean(
+              actualAddToCartDisconnectedCallback &&
+              pointerenterRemovalPattern.test(actualAddToCartDisconnectedCallback)
+            ),
+            evidenceMatches: evidenceItems.map((evidence) => ({
+              hasDisconnectedCallbackSignature:
+                /\bdisconnectedCallback\s*\(\s*\)\s*\{/i.test(evidence),
+              hasPointerenterRemoval:
+                pointerenterRemovalPattern.test(evidence),
+              matchesActualCallback: Boolean(
+                actualAddToCartDisconnectedCallback &&
+                evidenceMatchesSource(evidence, actualAddToCartDisconnectedCallback)
+              ),
+              matchesSuppliedClassCallback: sourceSegments.some((segment) => {
+                const suppliedCallback =
+                  getAddToCartDisconnectedCallbackSource(segment);
+                return Boolean(
+                  suppliedCallback &&
+                  evidenceMatchesSource(evidence, suppliedCallback)
+                );
+              }),
+            })),
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            existsInSentContext,
+            existsInActualSource,
+            genericTokenOverlap,
+            verifiedAddToCartPointerenterRemoval,
             evidenceSupportsClaim,
             directSourceGatePassed:
               claimSubjectMatchesSourceFile &&
