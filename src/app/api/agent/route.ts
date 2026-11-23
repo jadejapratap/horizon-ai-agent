@@ -9249,6 +9249,8 @@ async function verifyAnswerClaim(
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments) ||
+          supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserverThresholdClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyAttributeBooleanObserverCallClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyObserverBooleanCallDescriptionClaim(claim.claim, evidenceItems, sourceSegments) ||
