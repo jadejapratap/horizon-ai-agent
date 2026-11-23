@@ -7665,6 +7665,190 @@ function supportsAddToCartPointerenterMultiplicityClaim(
   });
 }
 
+function getAddToCartResetTimeoutsConditionalBlock(
+  callbackSource: string
+): string | null {
+  const blockPattern =
+    /\bif\s*\(\s*this\.#resetTimeouts\s*\)\s*\{[\s\S]*?\n[ \t]*\}/i;
+  return blockPattern.exec(callbackSource)?.[0] ?? null;
+}
+
+function supportsAddToCartLifecycleOrderAndScopeClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/product-form.js" ||
+    !/\baddtocartcomponent\b/.test(text)
+  ) {
+    return false;
+  }
+
+  const connectedCallbackClaim = /\bconnectedcallback\b/.test(text);
+  const disconnectedCallbackClaim = /\bdisconnectedcallback\b/.test(text);
+  if (connectedCallbackClaim === disconnectedCallbackClaim) return false;
+
+  const claimsRemovalOperation =
+    /removeEventListener|\bremov(?:e|es|ing|al)\b/i.test(claim);
+
+  const connectedOrderCandidate =
+    connectedCallbackClaim &&
+    /super\.connectedcallback\s*\(\s*\)/i.test(text) &&
+    /\bpointerenter\b/.test(text) &&
+    /\blistener\b/.test(text) &&
+    /\bbefore\b/.test(text);
+
+  const disconnectedOrderCandidate =
+    disconnectedCallbackClaim &&
+    /cleartimeout\s*\(\s*timeoutid\s*\)/i.test(text) &&
+    claimsRemovalOperation &&
+    /\bpointerenter\b/.test(text) &&
+    /\bbefore\b/.test(text);
+
+  const resetTimeoutScopeCandidate =
+    disconnectedCallbackClaim &&
+    /#resettimeouts/i.test(text) &&
+    /\b(?:inside|within)\b/.test(text) &&
+    (/\bcleartimeout\b/i.test(text) || claimsRemovalOperation);
+
+  if (
+    !connectedOrderCandidate &&
+    !disconnectedOrderCandidate &&
+    !resetTimeoutScopeCandidate
+  ) {
+    return false;
+  }
+
+  const actualCallback = connectedCallbackClaim
+    ? getAddToCartConnectedCallbackSource(actualSource)
+    : getAddToCartDisconnectedCallbackSource(actualSource);
+  if (!actualCallback) return false;
+
+  const connectedSuperPattern =
+    /super\.connectedCallback\s*\(\s*\)\s*;/i;
+  const registrationPattern =
+    /this\.addEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage\s*\)\s*;/i;
+  const removalPattern =
+    /this\.removeEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage\s*\)\s*;/i;
+  const cleanupPattern =
+    /clearTimeout\s*\(\s*timeoutId\s*\)/i;
+
+  let expectedEvidencePattern: RegExp | null = null;
+  let actualClaimSupported = false;
+
+  if (connectedOrderCandidate) {
+    const superIndex = actualCallback.search(connectedSuperPattern);
+    const registrationIndex = actualCallback.search(registrationPattern);
+    const claimsSuperBeforeRegistration =
+      /super\.connectedcallback\s*\(\s*\)[\s\S]*?\bbefore\b[\s\S]*?\bregister(?:ing)?\b[\s\S]*?\bpointerenter\b/i.test(text);
+
+    actualClaimSupported =
+      claimsSuperBeforeRegistration &&
+      superIndex >= 0 &&
+      registrationIndex >= 0 &&
+      superIndex < registrationIndex;
+    expectedEvidencePattern = new RegExp(
+      "(?=[\\s\\S]*" + connectedSuperPattern.source + ")(?=[\\s\\S]*" +
+      registrationPattern.source + ")[\\s\\S]*",
+      "i"
+    );
+  } else if (disconnectedOrderCandidate) {
+    const cleanupIndex = actualCallback.search(cleanupPattern);
+    const removalIndex = actualCallback.search(removalPattern);
+    const claimsCleanupBeforeRemoval =
+      /cleartimeout\s*\(\s*timeoutid\s*\)[\s\S]*?\bbefore\b[\s\S]*?\bremov(?:ing|e|es)\b[\s\S]*?\bpointerenter\b/i.test(text);
+
+    actualClaimSupported =
+      claimsCleanupBeforeRemoval &&
+      cleanupIndex >= 0 &&
+      removalIndex >= 0 &&
+      cleanupIndex < removalIndex;
+    expectedEvidencePattern = new RegExp(
+      "(?=[\\s\\S]*" + cleanupPattern.source + ")(?=[\\s\\S]*" +
+      removalPattern.source + ")[\\s\\S]*",
+      "i"
+    );
+  } else {
+    const resetBlock = getAddToCartResetTimeoutsConditionalBlock(actualCallback);
+    if (!resetBlock) return false;
+
+    const claimsCleanupInside =
+      /\bcleartimeout\s*\(\s*timeoutid\s*\)[\s\S]*?\binside\b[\s\S]*?#resettimeouts/i.test(text);
+    const claimsRemovalInside =
+      /(?:removeEventListener|\bremov(?:e|es|ing|al)\b)[\s\S]*?\bpointerenter\b[\s\S]*?\binside\b[\s\S]*?#resettimeouts/i.test(text);
+
+    const cleanupIsInside = cleanupPattern.test(resetBlock);
+    const removalIsInside = removalPattern.test(resetBlock);
+
+    actualClaimSupported =
+      (claimsCleanupInside && cleanupIsInside) ||
+      (claimsRemovalInside && removalIsInside);
+    expectedEvidencePattern = claimsCleanupInside
+      ? cleanupPattern
+      : removalPattern;
+  }
+
+  if (!actualClaimSupported || !expectedEvidencePattern) return false;
+
+  return evidenceItems.some((evidence) => {
+    if (
+      !expectedEvidencePattern!.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualCallback)
+    ) {
+      return false;
+    }
+
+    return sourceSegments.some((segment) => {
+      const suppliedCallback = connectedCallbackClaim
+        ? getAddToCartConnectedCallbackSource(segment)
+        : getAddToCartDisconnectedCallbackSource(segment);
+      if (!suppliedCallback || !evidenceMatchesSource(evidence, suppliedCallback)) {
+        return false;
+      }
+
+      if (connectedOrderCandidate) {
+        const suppliedSuperIndex = suppliedCallback.search(connectedSuperPattern);
+        const suppliedRegistrationIndex = suppliedCallback.search(registrationPattern);
+        return (
+          suppliedSuperIndex >= 0 &&
+          suppliedRegistrationIndex >= 0 &&
+          suppliedSuperIndex < suppliedRegistrationIndex
+        );
+      }
+
+      if (disconnectedOrderCandidate) {
+        const suppliedCleanupIndex = suppliedCallback.search(cleanupPattern);
+        const suppliedRemovalIndex = suppliedCallback.search(removalPattern);
+        return (
+          suppliedCleanupIndex >= 0 &&
+          suppliedRemovalIndex >= 0 &&
+          suppliedCleanupIndex < suppliedRemovalIndex
+        );
+      }
+
+      const suppliedResetBlock =
+        getAddToCartResetTimeoutsConditionalBlock(suppliedCallback);
+      if (!suppliedResetBlock) return false;
+
+      const evidenceIsInsideSuppliedBlock =
+        evidenceMatchesSource(evidence, suppliedResetBlock);
+      const claimRequiresCleanup =
+        /\bcleartimeout\s*\(\s*timeoutid\s*\)/i.test(text);
+      const claimRequiresRemoval = claimsRemovalOperation;
+
+      return (
+        evidenceIsInsideSuppliedBlock &&
+        (!claimRequiresCleanup || cleanupPattern.test(suppliedResetBlock)) &&
+        (!claimRequiresRemoval || removalPattern.test(suppliedResetBlock))
+      );
+    });
+  });
+}
+
 function supportsAddToCartPointerenterRemovalClaim(
   claim: string,
   file: string,
@@ -10153,6 +10337,10 @@ async function verifyAnswerClaim(
           supportsAccountDialogBottomCalculationClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAccountDialogTopAssignment =
           supportsAccountDialogTopPropertyAssignmentClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAddToCartLifecycleOrderAndScope =
+          supportsAddToCartLifecycleOrderAndScopeClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAtomicPattern =
           verifiedDocumentOpenCaptureArgument ||
           verifiedDocumentCloseListenerAbsence ||
@@ -10166,6 +10354,7 @@ async function verifyAnswerClaim(
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterMultiplicity ||
           verifiedAddToCartPointerenterRemoval ||
+          verifiedAddToCartLifecycleOrderAndScope ||
           verifiedAutoCloseDetailsDocumentClickListener ||
           verifiedVolumePricingToggleExpandedClassToggle ||
           verifiedAccountDialogTargetGuard ||
@@ -10254,7 +10443,7 @@ async function verifyAnswerClaim(
           supportsStickyMenuVisibilityClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
-        const hasUnsupportedControlFlow = !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedStickyMenuVisibilityFlow && !verifiedStickyDisconnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
+        const hasUnsupportedControlFlow = !verifiedAddToCartLifecycleOrderAndScope && !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedStickyMenuVisibilityFlow && !verifiedStickyDisconnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
           !verifiedStickyUpdateScrollCoreOperation &&
           !verifiedStickyUpdateScrollFlow &&
@@ -10268,6 +10457,11 @@ async function verifyAnswerClaim(
           );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
+          ((/addtocartcomponent/i.test(claimTextLower)) &&
+            /(?:connected|disconnected)callback/i.test(claimTextLower) &&
+            /(?:before|inside|within|conditional)/i.test(claimTextLower) &&
+            /(?:pointerenter|super\.connectedcallback|cleartimeout|#resettimeouts)/i.test(claimTextLower)) ||
+
           /#updateMenuVisibility/i.test(claimTextLower) ||
           (/#scrollRafId/i.test(claimTextLower) &&
             /requestAnimationFrame/i.test(claimTextLower)) ||
@@ -10382,6 +10576,7 @@ async function verifyAnswerClaim(
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterMultiplicity ||
           verifiedAddToCartPointerenterRemoval ||
+          verifiedAddToCartLifecycleOrderAndScope ||
           verifiedAutoCloseDetailsDocumentClickListener ||
           verifiedVolumePricingToggleExpandedClassToggle ||
           verifiedAccountDialogTargetGuard ||
