@@ -7223,14 +7223,23 @@ function supportsBodyColorBackgroundVariablesClaim(
   const text = claim.toLowerCase();
   if (file !== "assets/base.css" || !/\bbody\b/.test(text) || !/\bcolor\b/.test(text) ||
       !/\bbackground\b/.test(text) || !/\b(?:custom\s+properties|css\s+variables)\b/.test(text)) return false;
-  const provesBodyRule = (value: string) =>
-    (value.match(/\bbody\s*\{[^{}]*\}/gi) ?? []).some((rule) =>
-      /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(rule) &&
-      /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(rule)
-    );
-  return provesBodyRule(actualSource) && evidenceItems.some((evidence) =>
-    provesBodyRule(evidence) && evidenceMatchesSource(evidence, actualSource) &&
-    sourceSegments.some((segment) => provesBodyRule(segment) && evidenceMatchesSource(evidence, segment))
+
+  // The actual file must contain a complete body rule. Gemini evidence may be
+  // a faithful excerpt ending before the rule's closing brace, so the excerpt
+  // is accepted only when both exact declarations occur after its body opener.
+  const provesBodyRule = (value: string, requireClosingBrace: boolean) =>
+    [...value.matchAll(/\bbody\s*\{([^{}]*)(\})?/gi)].some((match) => {
+      if (requireClosingBrace && !match[2]) return false;
+      const body = match[1];
+      return /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(body) &&
+        /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(body);
+    });
+
+  return provesBodyRule(actualSource, true) && evidenceItems.some((evidence) =>
+    provesBodyRule(evidence, false) && evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      provesBodyRule(segment, false) && evidenceMatchesSource(evidence, segment)
+    )
   );
 }
 
@@ -9886,6 +9895,52 @@ async function verifyAnswerClaim(
           supportsGlobalBoxSizingClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedBodyColorBackgroundVariables =
           supportsBodyColorBackgroundVariablesClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const isBodyColorBackgroundVariablesCandidate =
+          file === "assets/base.css" &&
+          /\bbody\b/i.test(claim.claim) &&
+          /\bcolor\b/i.test(claim.claim) &&
+          /\bbackground\b/i.test(claim.claim) &&
+          /\b(?:custom\s+properties|css\s+variables)\b/i.test(claim.claim);
+
+        if (isBodyColorBackgroundVariablesCandidate) {
+          console.log("BODY COLOR BACKGROUND VARIABLES VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            file,
+            actualCompleteBodyRuleFound:
+              /\bbody\s*\{[^{}]*\}/i.test(actualSource) &&
+              /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(actualSource) &&
+              /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(actualSource),
+            evidenceMatches: evidenceItems.map((evidence) => ({
+              hasBodyRuleOpener: /\bbody\s*\{/i.test(evidence),
+              hasForegroundVariable:
+                /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(evidence),
+              hasBackgroundVariable:
+                /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(evidence),
+              matchesActualSource: evidenceMatchesSource(evidence, actualSource),
+              matchesSuppliedSource: sourceSegments.some((segment) =>
+                evidenceMatchesSource(evidence, segment)
+              ),
+              passesTargetedVerifier:
+                supportsBodyColorBackgroundVariablesClaim(
+                  claim.claim, file, [evidence], sourceSegments, actualSource
+                ),
+            })),
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            existsInSentContext,
+            existsInActualSource,
+            genericTokenOverlap,
+            verifiedBodyColorBackgroundVariables,
+            evidenceSupportsClaim,
+            directSourceGatePassed:
+              claimSubjectMatchesSourceFile &&
+              claimIsAtomic &&
+              !hasUnsupportedControlFlow &&
+              existsInSentContext &&
+              existsInActualSource &&
+              evidenceSupportsClaim,
+          });
+        }
         const verifiedQrModeConstants =
           supportsQrModeConstantsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedQrErrorCorrectionLevels =
