@@ -7541,6 +7541,130 @@ function getAddToCartDisconnectedCallbackSource(source: string): string | null {
   return callbackMatch[0].replace(/^\n/, "");
 }
 
+function countAddToCartPointerenterCalls(
+  callbackSource: string,
+  operation: "add" | "remove"
+): number {
+  const callPattern =
+    operation === "add"
+      ? /this\.addEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage(?:\s*,\s*[^;\n]+)?\)\s*;/gi
+      : /this\.removeEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage(?:\s*,\s*[^;\n]+)?\)\s*;/gi;
+
+  return callbackSource.match(callPattern)?.length ?? 0;
+}
+
+function supportsAddToCartPointerenterMultiplicityClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/product-form.js" ||
+    !/\baddtocartcomponent\b/.test(text) ||
+    !/\bpointerenter\b/.test(text)
+  ) {
+    return false;
+  }
+
+  const claimsConnectedCallback = /\bconnectedcallback\b/.test(text);
+  const claimsDisconnectedCallback = /\bdisconnectedcallback\b/.test(text);
+  if (claimsConnectedCallback === claimsDisconnectedCallback) return false;
+
+  const claimsRegistration =
+    /\baddEventListener\b/i.test(claim) &&
+    /\bregistration\b/i.test(text);
+  const claimsRemoval =
+    /\bremoveEventListener\b/i.test(claim) &&
+    /\bcall\b/i.test(text);
+  if (claimsRegistration === claimsRemoval) return false;
+  if (claimsRegistration !== claimsConnectedCallback) return false;
+
+  const claimsPrivateCallback = /this\s*\.\s*#preloadimage\b/i.test(text);
+  const claimsPublicCallback = /this\s*\.\s*preloadimage\b/i.test(text);
+  if (!claimsPrivateCallback || claimsPublicCallback) return false;
+
+  // This targeted verifier handles positive numeric/multiplicity assertions
+  // only. Negated claims must be established through a separate absence check.
+  if (/\b(?:does\s+not|doesn't|never|without|not)\b/i.test(text)) {
+    return false;
+  }
+
+  const exactCountMatch =
+    /\bexactly\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b/i.exec(text);
+  const claimsMultiple =
+    /\bmultiple(?:\s+times)?\b|\bmore\s+than\s+one\b/i.test(text);
+  if (Boolean(exactCountMatch) === claimsMultiple) return false;
+
+  const numberWords: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+  const expectedCount = exactCountMatch
+    ? (numberWords[exactCountMatch[1].toLowerCase()] ??
+      Number(exactCountMatch[1]))
+    : null;
+
+  const operation = claimsRegistration ? "add" : "remove";
+  const actualCallback = claimsConnectedCallback
+    ? getAddToCartConnectedCallbackSource(actualSource)
+    : getAddToCartDisconnectedCallbackSource(actualSource);
+  if (!actualCallback) return false;
+
+  const actualCount = countAddToCartPointerenterCalls(actualCallback, operation);
+  const actualCountMatches =
+    expectedCount === null ? actualCount > 1 : actualCount === expectedCount;
+  if (!actualCountMatches) return false;
+
+  const evidencePattern =
+    operation === "add"
+      ? /this\.addEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage(?:\s*,\s*[^;\n]+)?\)\s*;/i
+      : /this\.removeEventListener\s*\(\s*(['"])pointerenter\1\s*,\s*this\.#preloadImage(?:\s*,\s*[^;\n]+)?\)\s*;/i;
+
+  return evidenceItems.some((evidence) => {
+    // A quoted call is accepted only when it belongs to the exact lifecycle
+    // callback in both current theme source and a contiguous segment sent to Gemini.
+    if (
+      !evidencePattern.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualCallback)
+    ) {
+      return false;
+    }
+
+    return sourceSegments.some((segment) => {
+      const suppliedCallback = claimsConnectedCallback
+        ? getAddToCartConnectedCallbackSource(segment)
+        : getAddToCartDisconnectedCallbackSource(segment);
+      if (!suppliedCallback) return false;
+
+      const suppliedCount = countAddToCartPointerenterCalls(
+        suppliedCallback,
+        operation
+      );
+      const suppliedCountMatches =
+        expectedCount === null
+          ? suppliedCount > 1
+          : suppliedCount === expectedCount;
+
+      return (
+        suppliedCountMatches &&
+        suppliedCount === actualCount &&
+        evidenceMatchesSource(evidence, suppliedCallback)
+      );
+    });
+  });
+}
+
 function supportsAddToCartPointerenterRemovalClaim(
   claim: string,
   file: string,
@@ -10007,6 +10131,10 @@ async function verifyAnswerClaim(
           supportsAddToCartPointerenterListenerClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedAddToCartPointerenterMultiplicity =
+          supportsAddToCartPointerenterMultiplicityClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAddToCartPointerenterRemoval =
           supportsAddToCartPointerenterRemovalClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -10035,6 +10163,8 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
+          verifiedAddToCartPointerenterListener ||
+          verifiedAddToCartPointerenterMultiplicity ||
           verifiedAddToCartPointerenterRemoval ||
           verifiedAutoCloseDetailsDocumentClickListener ||
           verifiedVolumePricingToggleExpandedClassToggle ||
@@ -10249,6 +10379,8 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
+          verifiedAddToCartPointerenterListener ||
+          verifiedAddToCartPointerenterMultiplicity ||
           verifiedAddToCartPointerenterRemoval ||
           verifiedAutoCloseDetailsDocumentClickListener ||
           verifiedVolumePricingToggleExpandedClassToggle ||
