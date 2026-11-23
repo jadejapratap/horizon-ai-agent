@@ -7335,7 +7335,7 @@ function supportsAbsentDocumentCloseEventListenerClaim(
   const text = claim.toLowerCase();
   const negativeClaim =
     /\b(?:does\s+not|doesn't|never|no)\b[\s\S]{0,100}\b(?:register|add|attach|install)\w*\b/i.test(text) &&
-    /\bdocument(?:[-\s]+level)?\b/.test(text) && /['"]close['"]/.test(text) &&
+    /\bdocument(?:[-\s]+level)?\b/.test(text) && /\bclose\b/.test(text) &&
     /\bevent\b/.test(text) && /\blistener\b/.test(text);
   if (file !== "assets/header.js" || !negativeClaim || sourceSegments.length !== 1 ||
       sentSource !== actualSource) return false;
