@@ -6871,7 +6871,7 @@ function supportsStickyDisconnectedCallbackLifecycleClaim(
   if (
     /after\s+the\s+superclass\s+call/i.test(claim) &&
     /disconnectedCallback/i.test(claim) &&
-    /#resizeObserver\.disconnect\s*\(\s*\)/i.test(claim)
+    /disconnects\s+this\.#resizeObserver\b/i.test(claim)
   ) {
     const adjacentOperations =
       /super\.disconnectedCallback\s*\(\s*\)\s*;\s*this\.#resizeObserver\.disconnect\s*\(\s*\)\s*;/i;
