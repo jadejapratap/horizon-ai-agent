@@ -6831,6 +6831,95 @@ function supportsStickyConnectedCallbackLifecycleClaim(
   return false;
 }
 
+
+function supportsStickyDisconnectedCallbackLifecycleClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const callbackMatch = /(^|\n)[ \t]*disconnectedCallback\s*\(\s*\)\s*\{/.exec(actualSource);
+  if (!callbackMatch) return false;
+
+  const signatureStart = callbackMatch.index + callbackMatch[1].length;
+  const bodyStart = callbackMatch.index + callbackMatch[0].length;
+  const callbackTail = actualSource.slice(bodyStart);
+  const callbackEnd = /\n[ \t]{2}\}\s*(?=\n[ \t]*\})/.exec(callbackTail);
+  if (!callbackEnd) return false;
+
+  const callbackBody = callbackTail.slice(0, callbackEnd.index);
+  const closingBraceOffset = callbackEnd[0].indexOf("}");
+  const callbackSource = actualSource.slice(
+    signatureStart,
+    bodyStart + callbackEnd.index + closingBraceOffset + 1
+  );
+
+  const hasEvidence = (pattern: RegExp): boolean =>
+    evidenceItems.some((evidence) =>
+      pattern.test(evidence) &&
+      evidenceMatchesSource(evidence, callbackSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+
+  if (/disconnectedCallback\s+calls\s+super\.disconnectedCallback\s*\(\s*\)\s+first/i.test(claim)) {
+    const firstOperation = /^\s*super\.disconnectedCallback\s*\(\s*\)\s*;/i;
+    const signatureAndSuperCall =
+      /disconnectedCallback\s*\(\s*\)\s*\{\s*super\.disconnectedCallback\s*\(\s*\)\s*;/i;
+    return firstOperation.test(callbackBody) && hasEvidence(signatureAndSuperCall);
+  }
+
+  if (
+    /after\s+the\s+superclass\s+call/i.test(claim) &&
+    /disconnectedCallback/i.test(claim) &&
+    /#resizeObserver\.disconnect\s*\(\s*\)/i.test(claim)
+  ) {
+    const adjacentOperations =
+      /super\.disconnectedCallback\s*\(\s*\)\s*;\s*this\.#resizeObserver\.disconnect\s*\(\s*\)\s*;/i;
+    return adjacentOperations.test(callbackBody) && hasEvidence(adjacentOperations);
+  }
+
+  if (
+    /disconnectedCallback/i.test(claim) &&
+    /#intersectionObserver/i.test(claim) &&
+    /optional chaining/i.test(claim)
+  ) {
+    const exactOperation = /this\.#intersectionObserver\?\.disconnect\s*\(\s*\)\s*;/i;
+    return exactOperation.test(callbackBody) && hasEvidence(exactOperation);
+  }
+
+  if (
+    /disconnectedCallback/i.test(claim) &&
+    /removes the overflowMinimum event listener/i.test(claim) &&
+    /this\.#handleOverflowMinimum/i.test(claim)
+  ) {
+    const exactOperation =
+      /this\.removeEventListener\s*\(\s*['"]overflowMinimum['"]\s*,\s*this\.#handleOverflowMinimum\s*\)\s*;/i;
+    return exactOperation.test(callbackBody) && hasEvidence(exactOperation);
+  }
+
+  if (
+    /disconnectedCallback/i.test(claim) &&
+    /removes the change event listener from scrollContainerMediaQuery/i.test(claim) &&
+    /this\.#handleBreakpointChange/i.test(claim)
+  ) {
+    const exactOperation =
+      /scrollContainerMediaQuery\.removeEventListener\s*\(\s*['"]change['"]\s*,\s*this\.#handleBreakpointChange\s*\)\s*;/i;
+    return exactOperation.test(callbackBody) && hasEvidence(exactOperation);
+  }
+
+  if (
+    /disconnectedCallback/i.test(claim) &&
+    /conditionally removes the scroll event listener from this\.#scrollContainer/i.test(claim) &&
+    /this\.#handleWindowScroll/i.test(claim)
+  ) {
+    const exactOperation =
+      /this\.#scrollContainer\?\.removeEventListener\s*\(\s*['"]scroll['"]\s*,\s*this\.#handleWindowScroll\s*\)\s*;/i;
+    return exactOperation.test(callbackBody) && hasEvidence(exactOperation);
+  }
+
+  return false;
+}
+
 // Verify the threshold ternary only when it belongs to the actual observer
 // initialization inside #observeStickyPosition.
 function supportsStickyObserveStickyEarlyReturnClaim(
@@ -9204,6 +9293,7 @@ async function verifyAnswerClaim(
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyDisconnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
@@ -9257,7 +9347,11 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackLifecycleClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
-        const hasUnsupportedControlFlow = !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
+        const verifiedStickyDisconnectedCallbackLifecycleFlow =
+          supportsStickyDisconnectedCallbackLifecycleClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
+        const hasUnsupportedControlFlow = !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedStickyDisconnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
           !verifiedStickyUpdateScrollCoreOperation &&
           !verifiedStickyUpdateScrollFlow &&
@@ -9375,6 +9469,7 @@ async function verifyAnswerClaim(
           supportsStickyHeaderSettingEvaluationClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyDisconnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
