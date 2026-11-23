@@ -7160,11 +7160,21 @@ function isDocumentOpenCaptureArgumentClaim(claim: string): boolean {
     /\b(?:usecapture|use\s*capture)\b/.test(text) ||
     /\bcapture\b.{0,30}\b(?:argument|parameter|option|flag)\b/.test(text);
 
+  // Gemini may shorten the claim to "the third argument passed to this call".
+  // In that case, the exact evidence must independently identify the document
+  // 'open' registration and prove the literal third argument below.
+  const identifiesDocumentOpenCall =
+    (
+      /\bdocument\.addeventlistener\b/.test(text) &&
+      /['"]open['"]/.test(text)
+    ) ||
+    /\bthis\s+call\b/.test(text) ||
+    /\b(?:open|document)\s+(?:event\s+)?listener\b/.test(text);
+
   return (
-    /document\.addeventlistener/.test(text) &&
-    /['"]open['"]/.test(text) &&
     /\btrue\b/.test(text) &&
-    identifiesCaptureArgument
+    identifiesCaptureArgument &&
+    identifiesDocumentOpenCall
   );
 }
 
