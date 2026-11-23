@@ -8599,6 +8599,99 @@ function supportsStickyBreakpointRebindClaim(
     );
 }
 
+function supportsStickyMenuVisibilityClaim(
+  claim: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  if (!/#updateMenuVisibility/i.test(claim)) return false;
+
+  const methodMatch =
+    /(^|\n)[ \t]*#updateMenuVisibility\s*\(\s*hideMenu\s*\)\s*\{/.exec(actualSource);
+  if (!methodMatch) return false;
+
+  const signatureStart = methodMatch.index + methodMatch[1].length;
+  const bodyStart = methodMatch.index + methodMatch[0].length;
+  const methodTail = actualSource.slice(bodyStart);
+  const methodEnd = /\n[ \t]{2}\}\s*(?=\n[ \t]{2}\/\*\*)/.exec(methodTail);
+  if (!methodEnd) return false;
+
+  const methodBody = methodTail.slice(0, methodEnd.index);
+  const closingBraceOffset = methodEnd[0].indexOf("}");
+  const methodSource = actualSource.slice(
+    signatureStart,
+    bodyStart + methodEnd.index + closingBraceOffset + 1
+  );
+
+  const hasEvidence = (pattern: RegExp): boolean =>
+    evidenceItems.some((evidence) =>
+      pattern.test(evidence) &&
+      evidenceMatchesSource(evidence, methodSource) &&
+      sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+    );
+
+  if (/accepts\s+hideMenu\s+as\s+its\s+parameter/i.test(claim)) {
+    const signature =
+      /#updateMenuVisibility\s*\(\s*hideMenu\s*\)\s*\{/i;
+    return signature.test(methodSource) && hasEvidence(signature);
+  }
+
+  if (
+    /when\s+hideMenu\s+is\s+truthy/i.test(claim) &&
+    /window\.innerWidth/i.test(claim) &&
+    /#menuDrawerHiddenWidth/i.test(claim)
+  ) {
+    const truthyBranch =
+      /if\s*\(\s*hideMenu\s*\)\s*\{\s*this\.#menuDrawerHiddenWidth\s*=\s*window\.innerWidth\s*;\s*\}/i;
+    return truthyBranch.test(methodBody) && hasEvidence(truthyBranch);
+  }
+
+  if (
+    /when\s+hideMenu\s+is\s+falsy/i.test(claim) &&
+    /#menuDrawerHiddenWidth/i.test(claim) &&
+    /\bnull\b/i.test(claim)
+  ) {
+    const falsyBranch =
+      /\}\s*else\s*\{\s*this\.#menuDrawerHiddenWidth\s*=\s*null\s*;/i;
+    return falsyBranch.test(methodBody) && hasEvidence(falsyBranch);
+  }
+
+  if (
+    /in\s+the\s+else\s+branch/i.test(claim) &&
+    /queries\s+overflow-list/i.test(claim) &&
+    /this\.querySelector/i.test(claim)
+  ) {
+    const elseBranchQuery =
+      /\}\s*else\s*\{[\s\S]*?const\s+overflowList\s*=\s*this\.querySelector\s*\(\s*['"]overflow-list['"]\s*\)\s*;/i;
+    return elseBranchQuery.test(methodBody) && hasEvidence(elseBranchQuery);
+  }
+
+  if (
+    /if\s+overflowList\s+exists/i.test(claim) &&
+    /removes?\s+the\s+minimum-reached\s+attribute/i.test(claim)
+  ) {
+    const guardedRemoval =
+      /if\s*\(\s*overflowList\s*\)\s*overflowList\.removeAttribute\s*\(\s*['"]minimum-reached['"]\s*\)\s*;/i;
+    return guardedRemoval.test(methodBody) && hasEvidence(guardedRemoval);
+  }
+
+  if (
+    /calls\s+setHeaderMenuStyle\s*\(\s*\)\s+after\s+the\s+if\/else\s+block/i.test(claim)
+  ) {
+    const afterIfElse =
+      /\}\s*setHeaderMenuStyle\s*\(\s*\)\s*;/i;
+    const completeMethodFlow =
+      /if\s*\(\s*hideMenu\s*\)\s*\{[\s\S]*?\}\s*else\s*\{[\s\S]*?\}\s*setHeaderMenuStyle\s*\(\s*\)\s*;/i;
+    return completeMethodFlow.test(methodBody) &&
+      afterIfElse.test(methodBody) &&
+      hasEvidence(afterIfElse);
+  }
+
+  return false;
+}
+
+
 function supportsStickyDisconnectedCleanupClaim(
   claim: string,
   evidenceItems: string[],
@@ -9294,6 +9387,7 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyDisconnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyMenuVisibilityClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
@@ -9351,7 +9445,11 @@ async function verifyAnswerClaim(
           supportsStickyDisconnectedCallbackLifecycleClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
-        const hasUnsupportedControlFlow = !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedStickyDisconnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
+        const verifiedStickyMenuVisibilityFlow =
+          supportsStickyMenuVisibilityClaim(
+            claim.claim, evidenceItems, sourceSegments, actualSource
+          );
+        const hasUnsupportedControlFlow = !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedStickyMenuVisibilityFlow && !verifiedStickyDisconnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
           !verifiedStickyUpdateScrollCoreOperation &&
           !verifiedStickyUpdateScrollFlow &&
@@ -9365,6 +9463,7 @@ async function verifyAnswerClaim(
           );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
+          /#updateMenuVisibility/i.test(claimTextLower) ||
           (/#scrollRafId/i.test(claimTextLower) &&
             /requestAnimationFrame/i.test(claimTextLower)) ||
           (/requestAnimationFrame/i.test(claimTextLower) &&
@@ -9470,6 +9569,7 @@ async function verifyAnswerClaim(
           supportsStickyConnectedCallbackAttributeReadClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsStickyConnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyDisconnectedCallbackLifecycleClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
+          supportsStickyMenuVisibilityClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyConnectedCallbackStickyObserverInitClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyEarlyReturnClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
           supportsStickyObserveStickyRootAssignmentClaim(claim.claim, evidenceItems, sourceSegments, actualSource) ||
