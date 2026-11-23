@@ -7480,8 +7480,10 @@ function supportsAddToCartPointerenterListenerClaim(
   if (!actualCallback || !listenerPattern.test(actualCallback)) return false;
 
   return evidenceItems.some((evidence) => {
+    // A short exact addEventListener line is sufficient only when the
+    // callback is independently extracted from both the actual source and a
+    // contiguous source segment sent to Gemini, and the line belongs to both.
     if (
-      !/\bconnectedCallback\s*\(\s*\)\s*\{/i.test(evidence) ||
       !listenerPattern.test(evidence) ||
       !evidenceMatchesSource(evidence, actualCallback)
     ) {
