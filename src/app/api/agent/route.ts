@@ -9895,52 +9895,6 @@ async function verifyAnswerClaim(
           supportsGlobalBoxSizingClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedBodyColorBackgroundVariables =
           supportsBodyColorBackgroundVariablesClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
-        const isBodyColorBackgroundVariablesCandidate =
-          file === "assets/base.css" &&
-          /\bbody\b/i.test(claim.claim) &&
-          /\bcolor\b/i.test(claim.claim) &&
-          /\bbackground\b/i.test(claim.claim) &&
-          /\b(?:custom\s+properties|css\s+variables)\b/i.test(claim.claim);
-
-        if (isBodyColorBackgroundVariablesCandidate) {
-          console.log("BODY COLOR BACKGROUND VARIABLES VERIFICATION DIAGNOSTIC:", {
-            claimId: claim.id ?? null,
-            file,
-            actualCompleteBodyRuleFound:
-              /\bbody\s*\{[^{}]*\}/i.test(actualSource) &&
-              /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(actualSource) &&
-              /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(actualSource),
-            evidenceMatches: evidenceItems.map((evidence) => ({
-              hasBodyRuleOpener: /\bbody\s*\{/i.test(evidence),
-              hasForegroundVariable:
-                /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(evidence),
-              hasBackgroundVariable:
-                /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(evidence),
-              matchesActualSource: evidenceMatchesSource(evidence, actualSource),
-              matchesSuppliedSource: sourceSegments.some((segment) =>
-                evidenceMatchesSource(evidence, segment)
-              ),
-              passesTargetedVerifier:
-                supportsBodyColorBackgroundVariablesClaim(
-                  claim.claim, file, [evidence], sourceSegments, actualSource
-                ),
-            })),
-            claimIsAtomic,
-            hasUnsupportedControlFlow,
-            existsInSentContext,
-            existsInActualSource,
-            genericTokenOverlap,
-            verifiedBodyColorBackgroundVariables,
-            evidenceSupportsClaim,
-            directSourceGatePassed:
-              claimSubjectMatchesSourceFile &&
-              claimIsAtomic &&
-              !hasUnsupportedControlFlow &&
-              existsInSentContext &&
-              existsInActualSource &&
-              evidenceSupportsClaim,
-          });
-        }
         const verifiedQrModeConstants =
           supportsQrModeConstantsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedQrErrorCorrectionLevels =
@@ -10272,6 +10226,54 @@ async function verifyAnswerClaim(
           supportsMobileVariantRenderClaim(claim.claim, evidenceItems, sourceSegments) ||
           supportsVolumePricingDetectionClaim(claim.claim, evidenceItems, sourceSegments)
           );
+
+        const isBodyColorBackgroundVariablesCandidate =
+          file === "assets/base.css" &&
+          /\bbody\b/i.test(claim.claim) &&
+          /\bcolor\b/i.test(claim.claim) &&
+          /\bbackground\b/i.test(claim.claim) &&
+          /\b(?:custom\s+properties|css\s+variables)\b/i.test(claim.claim);
+
+        if (isBodyColorBackgroundVariablesCandidate) {
+          console.log("BODY COLOR BACKGROUND VARIABLES VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            file,
+            actualCompleteBodyRuleFound:
+              /\bbody\s*\{[^{}]*\}/i.test(actualSource) &&
+              /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(actualSource) &&
+              /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(actualSource),
+            evidenceMatches: evidenceItems.map((evidence) => ({
+              hasBodyRuleOpener: /\bbody\s*\{/i.test(evidence),
+              hasForegroundVariable:
+                /color\s*:\s*var\(\s*--color-foreground\s*\)\s*;/i.test(evidence),
+              hasBackgroundVariable:
+                /background\s*:\s*var\(\s*--color-background\s*\)\s*;/i.test(evidence),
+              matchesActualSource: evidenceMatchesSource(evidence, actualSource),
+              matchesSuppliedSource: sourceSegments.some((segment) =>
+                evidenceMatchesSource(evidence, segment)
+              ),
+              passesTargetedVerifier:
+                supportsBodyColorBackgroundVariablesClaim(
+                  claim.claim, file, [evidence], sourceSegments, actualSource
+                ),
+            })),
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            existsInSentContext,
+            existsInActualSource,
+            genericTokenOverlap,
+            verifiedBodyColorBackgroundVariables,
+            evidenceSupportsClaim,
+            directSourceGatePassed:
+              claimSubjectMatchesSourceFile &&
+              claimIsAtomic &&
+              !hasUnsupportedControlFlow &&
+              existsInSentContext &&
+              existsInActualSource &&
+              evidenceSupportsClaim,
+          });
+        }
+
 
         const isDocumentCloseListenerAbsenceCandidate =
           /\b(?:does\s+not|doesn't|never|no)\b[\s\S]{0,100}\b(?:register|add|attach|install)\w*\b/i.test(claimTextLower) &&
