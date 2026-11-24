@@ -16,9 +16,26 @@ import {
   User,
 } from "lucide-react";
 
+type ShopifyToolkitStatus = {
+  agentProfile?: string;
+  skillVersion?: string;
+  topics?: string[];
+  references?: string[];
+  mcp?: {
+    enabled: boolean;
+    connected: boolean;
+    toolsDiscovered: number;
+    toolsExposed: number;
+    callsMade: number;
+    lastError?: string;
+    reason?: string;
+  };
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
+  shopifyToolkit?: ShopifyToolkitStatus;
 };
 
 const STORAGE_KEY = "horizon-ai-chat-history";
@@ -107,6 +124,7 @@ export default function Home() {
         {
           role: "assistant",
           content: data.message || "No response received.",
+          shopifyToolkit: data.shopifyToolkit,
         },
       ]);
 
@@ -348,6 +366,37 @@ Provide exact source evidence for every claim. Keep each claim atomic. Preserve 
                   <p className="whitespace-pre-wrap text-sm leading-6">
                     {message.content}
                   </p>
+
+                  {message.shopifyToolkit && (
+                    <div className="mt-3 rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3 text-xs text-emerald-100/80">
+                      <p className="font-semibold text-emerald-300">
+                        Shopify AI Toolkit {message.shopifyToolkit.skillVersion || "version unknown"}
+                      </p>
+                      {message.shopifyToolkit.agentProfile && (
+                        <p className="mt-1">Specialist: {message.shopifyToolkit.agentProfile}</p>
+                      )}
+                      {message.shopifyToolkit.topics && (
+                        <p className="mt-1">Skills: {message.shopifyToolkit.topics.join(", ")}</p>
+                      )}
+                      {message.shopifyToolkit.mcp && (
+                        <p className="mt-1">
+                          Dev MCP: {message.shopifyToolkit.mcp.connected ? "connected" : message.shopifyToolkit.mcp.enabled ? "unavailable" : "disabled"}
+                          {" · "}tools {message.shopifyToolkit.mcp.toolsDiscovered}/{message.shopifyToolkit.mcp.toolsExposed}
+                          {" · "}calls {message.shopifyToolkit.mcp.callsMade}
+                        </p>
+                      )}
+                      {message.shopifyToolkit.mcp?.lastError && (
+                        <p className="mt-1 break-words text-amber-200">
+                          MCP: {message.shopifyToolkit.mcp.lastError}
+                        </p>
+                      )}
+                      {message.shopifyToolkit.mcp?.reason && (
+                        <p className="mt-1 break-words text-amber-200">
+                          {message.shopifyToolkit.mcp.reason}
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                 </div>
 

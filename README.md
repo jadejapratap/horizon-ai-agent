@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Horizon AI — Shopify Development Agent
 
-## Getting Started
+Horizon AI is the existing Next.js + Gemini-powered Shopify development agent. It retains the Horizon theme source reader, architecture/dependency analysis, evidence verification, and runtime test runner. The Shopify integration extends this same Gemini orchestration; it does not replace Gemini or create a second agent.
 
-First, run the development server:
+## Current architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- **Gemini orchestration:** `src/app/api/agent/route.ts` remains the primary API route and continues to use the existing `@google/genai` client and retry handling.
+- **Horizon theme analysis:** the existing source discovery, Liquid/JSON/JavaScript/CSS retrieval, dependency tracing, source evidence verification, and response formatting remain in place.
+- **Shopify skill loader:** `src/lib/shopify/skill-loader.ts` selects Shopify AI Toolkit topics from the user's prompt and loads only the relevant official references from `shopify-toolkit/skills/shopify`.
+- **Shopify Dev MCP bridge:** `src/lib/shopify/dev-mcp.ts` starts the official Shopify Dev MCP server over stdio, discovers its tools at runtime, maps the schemas to Gemini function declarations, executes Gemini-requested MCP tools, and returns results to Gemini for follow-up reasoning.
+- **Knowledge fallback:** Shopify API/documentation tasks that do not match a local Horizon theme file still run through the same Gemini API with selected official Shopify skill references and MCP tools (when enabled).
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Shopify AI Toolkit content
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+This repository vendors the consolidated Shopify skill and its Markdown topic references from Shopify's official [Shopify AI Toolkit](https://github.com/Shopify/Shopify-AI-Toolkit). The copied upstream skill metadata reports version **1.20.0**. The content is under the MIT license; see `shopify-toolkit/LICENSE`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The loader routes tasks into relevant topics such as Admin GraphQL, Liquid, Shopify Functions, metafields/metaobjects, Polaris surfaces, Shopify CLI, Customer Account API, Flow, Hydrogen, Storefront GraphQL, ShopifyQL, and app development. It does not install or assume compatibility with Claude/Codex/Cursor plugins. Their host-specific shell hooks are not part of this Gemini server integration.
 
-## Learn More
+## Setup
 
-To learn more about Next.js, take a look at the following resources:
+Requirements:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Node.js 20 or newer.
+- A Gemini API key.
+- `npx` available on the machine that runs the Next.js server.
+- A persistent Node.js host for local stdio MCP. Serverless platforms do not enable local stdio MCP by default.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Install dependencies and refresh the lockfile:
 
-## Deploy on Vercel
+   ```bash
+   npm install
+   ```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+2. Copy `.env.example` to `.env.local` and set `GEMINI_API_KEY`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+3. Enable Shopify Dev MCP on a compatible self-hosted Node.js instance:
+
+   ```env
+   SHOPIFY_DEV_MCP_ENABLED=true
+   SHOPIFY_DEV_MCP_PACKAGE=@shopify/dev-mcp@1.19.0
+   ```
+
+   The adapter launches the MCP server using `npx -y @shopify/dev-mcp@1.19.0` by default. It discovers available tools dynamically; tool names and JSON input schemas are not hard-coded.
+
+4. Start the application:
+
+   ```bash
+   npm run dev
+   ```
+
+   Or use `npm run build` followed by `npm run start` for production.
+
+### Environment variables
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | Existing Gemini API key | Required |
+| `SHOPIFY_DEV_MCP_ENABLED` | Enable the Shopify Dev MCP process and Gemini tool bridge | `false` |
+| `SHOPIFY_DEV_MCP_PACKAGE` | npm package/version launched by npx | `@shopify/dev-mcp@1.19.0` |
+| `SHOPIFY_DEV_MCP_COMMAND` | Override the executable used to start MCP | platform default |
+| `SHOPIFY_DEV_MCP_ARGS` | Optional JSON array of executable arguments | `["-y","@shopify/dev-mcp@1.19.0"]` |
+| `SHOPIFY_DEV_MCP_CONNECT_TIMEOUT_MS` | MCP startup timeout | `15000` |
+| `SHOPIFY_DEV_MCP_TOOL_TIMEOUT_MS` | Per-tool timeout | `20000` |
+| `SHOPIFY_DEV_MCP_ALLOW_SERVERLESS` | Explicitly allow stdio MCP on a serverless host | `false` |
+| `TEST_RUNNER_SECRET` | Existing runtime test runner authorization | Optional |
+| `GITHUB_TOKEN` | Existing runtime test log upload to GitHub | Optional |
+
+The MCP child process receives a restricted environment allowlist. It is not passed `GEMINI_API_KEY`, GitHub credentials, database secrets, or Shopify OAuth tokens. The adapter sets Shopify Toolkit telemetry opt-out environment variables for the child process.
+
+## What this integration currently provides
+
+- Official Shopify AI Toolkit skill version and topic references dynamically loaded according to the request.
+- Shopify Dev MCP stdio client using the Model Context Protocol SDK.
+- Runtime MCP tool discovery via `listTools()`.
+- Dynamic MCP-to-Gemini function declaration mapping.
+- Multi-round Gemini function calling and MCP result handoff.
+- Bounded tool execution (maximum 6 calls and 3 tool rounds per generation), tool timeouts, one retry for thrown MCP tool errors, and graceful fallback to Gemini without MCP if the service is unavailable.
+- Shopify Toolkit reference files included in Next.js output file tracing for the agent route.
+
+## Important boundaries / not yet implemented
+
+**Shopify Dev MCP is not Shopify Admin OAuth.** Its tools provide Shopify developer documentation, API schema discovery, and supported code validation. They do not authorize access to a merchant's store or perform product/order/customer CRUD.
+
+The following remain separate implementation phases and must not be assumed to work yet:
+
+- Shopify app OAuth installation/callback, encrypted access-token storage, per-shop sessions, uninstall/revocation handling, and least-privilege scope approval.
+- Admin GraphQL operation clients for product, order, fulfillment/refund, customer/B2B company, inventory, shipping, store settings, navigation, and theme publish operations.
+- Explicit approval workflows, dry-run execution, audit storage, and role/permission checks for destructive or sensitive merchant operations.
+- Shopify CLI theme upload/preview/publish automation and a connected store preview.
+- Figma API integration, SRS ingestion, spreadsheet import, and production QA agents.
+
+Do not put merchant access tokens into MCP process variables. Admin API access must be built separately using Shopify OAuth and the exact scopes required for each supported operation. Refunds, cancellations, deletions, sensitive settings, and publishing require explicit approval.
+
+## Existing runtime test runner
+
+The existing `/api/test-runner` endpoint remains available. It requires `TEST_RUNNER_SECRET` and `GITHUB_TOKEN` to publish its test log. The Shopify knowledge/MCP route can also be tested directly through the normal chat API.
+
+## Upstream references
+
+- [Shopify AI Toolkit](https://github.com/Shopify/Shopify-AI-Toolkit)
+- [Shopify AI Toolkit documentation](https://shopify.dev/docs/api/ai-toolkit)
+- [Shopify Dev MCP npm package](https://www.npmjs.com/package/@shopify/dev-mcp)
+- [Shopify Dev MCP setup](https://shopify.dev/docs/apps/build/devmcp)
+- [Shopify Admin GraphQL API](https://shopify.dev/docs/api/admin-graphql)
