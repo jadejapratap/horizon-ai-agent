@@ -37,6 +37,11 @@ import { readFile, readdir, stat } from "fs/promises";
 import path from "path";
 import { loadShopifySkillContext, resolveShopifyAgentProfile } from "@/lib/shopify/skill-loader";
 import { generateContentWithShopifyMcpTools } from "@/lib/shopify/dev-mcp";
+import {
+  executeThemeEditRequest,
+  isThemeEditRequest,
+  ThemeEditEngineError,
+} from "@/lib/theme-edit-engine";
 
 export const maxDuration = 180;
 
@@ -13988,6 +13993,44 @@ export async function POST(request: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    // Explicit storefront change requests use the writable local theme editor.
+    // Knowledge and source-explanation requests continue through the read-only verifier.
+    if (isThemeEditRequest(prompt)) {
+      try {
+        const themeEdit = await executeThemeEditRequest(prompt, history);
+        const changedFiles = themeEdit.files.map((file) =>
+          "- " + file.path + " — " + file.operations + " operation(s): " + file.reasons.join("; ")
+        );
+        const message = [
+          "### Shopify theme changes applied",
+          "",
+          themeEdit.summary,
+          "",
+          "**Files modified:**",
+          ...changedFiles,
+          "",
+          themeEdit.previewNote,
+        ].join("\n");
+
+        return NextResponse.json({
+          success: true,
+          message,
+          themeEdit,
+          filesAnalyzed: themeEdit.files.map((file) => file.path),
+          filesChanged: themeEdit.files.map((file) => file.path),
+          evidenceSummary: { total: 0, verified: 0, unverified: 0 },
+        });
+      } catch (error) {
+        const status = error instanceof ThemeEditEngineError ? error.status : 500;
+        console.error("HORIZON THEME EDIT FAILED:", error);
+        return NextResponse.json({
+          success: false,
+          error: error instanceof Error ? error.message : "Theme edit failed.",
+          themeEdit: { applied: false, files: [] },
+        }, { status });
+      }
     }
 
     // -------------------------------------

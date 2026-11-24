@@ -34,10 +34,18 @@ type ShopifyToolkitStatus = {
   };
 };
 
+type ThemeEditMessage = {
+  applied: boolean;
+  summary?: string;
+  files: Array<{ path: string; operations?: number; reasons?: string[] }>;
+  previewNote?: string;
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
   shopifyToolkit?: ShopifyToolkitStatus;
+  themeEdit?: ThemeEditMessage;
 };
 
 const STORAGE_KEY = "horizon-ai-chat-history";
@@ -194,6 +202,7 @@ export default function Home() {
           role: "assistant",
           content: data.message || "No response received.",
           shopifyToolkit: data.shopifyToolkit,
+          themeEdit: data.themeEdit,
         },
       ]);
 
@@ -383,6 +392,23 @@ export default function Home() {
                   <p className="whitespace-pre-wrap text-sm leading-6">
                     {message.content}
                   </p>
+
+                  {message.themeEdit?.applied && (
+                    <div className="mt-3 rounded-lg border border-violet-400/25 bg-violet-500/10 p-3 text-xs text-violet-100">
+                      <p className="font-semibold text-violet-200">Theme files updated</p>
+                      <ul className="mt-2 space-y-1">
+                        {message.themeEdit.files.map((file) => (
+                          <li key={file.path} className="break-all">
+                            <span className="font-mono">{file.path}</span>
+                            {typeof file.operations === "number" && <span className="ml-2 text-violet-300">({file.operations} change{file.operations === 1 ? "" : "s"})</span>}
+                          </li>
+                        ))}
+                      </ul>
+                      {message.themeEdit.previewNote && (
+                        <p className="mt-2 leading-5 text-violet-200/80">{message.themeEdit.previewNote}</p>
+                      )}
+                    </div>
+                  )}
 
                   {message.shopifyToolkit && (
                     <div className="mt-3 rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3 text-xs text-emerald-100/80">
