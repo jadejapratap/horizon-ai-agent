@@ -161,7 +161,7 @@ async function writeCachedFigmaDesignContext(
   await mkdir(FIGMA_CACHE_DIRECTORY, { recursive: true });
   const cachePath = getFigmaCachePath(fileKey, nodeId);
   const temporaryPath = cachePath + "." + process.pid + "." + Date.now() + ".tmp";
-  const record: FigmaCacheRecord = { version: 1, savedAt: Date.now(), context };
+  const record: FigmaCacheRecord = { version: 2, savedAt: Date.now(), context };
   await writeFile(temporaryPath, JSON.stringify(record), "utf8");
   await rename(temporaryPath, cachePath);
 }
