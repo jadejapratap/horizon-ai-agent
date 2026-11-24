@@ -4,6 +4,7 @@ import path from "node:path";
 import { GoogleGenAI } from "@google/genai";
 import ts from "typescript";
 import { loadShopifySkillContext, resolveShopifyAgentProfile } from "@/lib/shopify/skill-loader";
+import type { FigmaDesignContext } from "@/lib/figma-connection";
 
 const THEME_ROOT = path.resolve(process.cwd(), "themes", "horizon");
 const MODEL = "gemini-3.5-flash-lite";
@@ -509,7 +510,8 @@ async function generateEditPlan(
   history: any[],
   files: SourceFile[],
   manifest: string[],
-  directories: string[]
+  directories: string[],
+  figmaContext?: FigmaDesignContext
 ): Promise<EditPlan> {
   const skillContext = await loadShopifySkillContext(prompt);
   const specialist = resolveShopifyAgentProfile(prompt);
@@ -548,17 +550,40 @@ async function generateEditPlan(
     "",
     "SOURCE FILES RETRIEVED FOR THIS REQUEST:",
     JSON.stringify(fileContext),
+    "",
+    "FIGMA DESIGN REFERENCE:",
+    figmaContext
+      ? [
+          "File: " + figmaContext.fileName,
+          "Homepage frame: " + figmaContext.nodeName,
+          "Node ID: " + figmaContext.nodeId,
+          "The accompanying image is the actual Figma frame screenshot. Match its visible layout, visual hierarchy, colors, typography, spacing, and image placement.",
+          "The following layer hierarchy and properties were extracted from the same frame:",
+          figmaContext.summary,
+        ].join("\n")
+      : "No authenticated Figma design context was provided for this request.",
   ].join("\n");
+
+  const userParts: Array<Record<string, unknown>> = [{ text: requestText }];
+  if (figmaContext) {
+    userParts.push({
+      inlineData: {
+        mimeType: figmaContext.imageMimeType,
+        data: figmaContext.imageData,
+      },
+    });
+  }
 
   const response = await ai.models.generateContent({
     model: MODEL,
-    contents: [...boundedHistory, { role: "user", parts: [{ text: requestText }] }],
+    contents: [...boundedHistory, { role: "user", parts: userParts }],
     config: {
       responseMimeType: "application/json",
       responseSchema: makeEditPlanSchema(),
       systemInstruction: [
         "You are Horizon AI, an autonomous Shopify Horizon theme code editor.",
         "Implement the user's requested storefront change in the actual supplied theme source. You are not in read-only analysis mode. Return a concrete edit plan, not an explanation-only answer.",
+        "When FIGMA DESIGN REFERENCE is present, use its actual screenshot as the visual target and the layer hierarchy as supporting evidence. Recreate the design with native Shopify Liquid, CSS, and JavaScript; do not use the screenshot itself as a page background or substitute for implementation assets.",
         "Understand behavior by tracing the supplied Liquid, CSS, JavaScript, JSON, render calls, symbols, and dependencies. Do not choose a file based only on its filename.",
         "Only edit existing source files included in SOURCE FILES RETRIEVED FOR THIS REQUEST, or create a new file inside an existing directory listed in EXISTING THEME DIRECTORIES.",
         "Never edit files outside themes/horizon. Never edit config/settings_data.json, locale files, credentials, environment files, or application/backend files.",
@@ -659,14 +684,14 @@ export function isThemeEditRequest(prompt: string): boolean {
   if (!value) return false;
   if (/^(?:how|why|what|where|when|which|explain|describe|analyze|analyse|review|inspect|find|show me|tell me how|can you explain|could you explain)\b/i.test(value)) return false;
 
-  const action = "(?:add|create|build|implement|change|modify|update|remove|delete|replace|rework|redesign|restyle|style|fix|make|display|hide|show|enable|disable|insert|adjust|move|increase|decrease)";
+  const action = "(?:add|create|build|implement|change|modify|update|remove|delete|replace|rework|redesign|recreate|replicate|restyle|style|fix|make|display|hide|show|enable|disable|insert|adjust|move|increase|decrease)";
   const directRequest = new RegExp(
     "^(?:please\\s+)?" +
     "(?:" + action + "\\b|(?:can|could)\\s+you\\s+(?:please\\s+)?" + action + "\\b|i\\s+(?:want|need)\\s+you\\s+to\\s+" + action + "\\b)",
     "i"
   ).test(value);
   const actionAfterFeature = new RegExp(
-    "\\b(?:product cards?|product grid|theme|storefront|header|footer|collection page|cart drawer|product page|navigation|menu|section|snippet|price|logo|button|banner)\\b[\\s\\S]{0,140}\\b" + action + "\\b",
+    "\\b(?:product cards?|product grid|theme|storefront|homepage|home page|figma design|header|footer|collection page|cart drawer|product page|navigation|menu|section|snippet|price|logo|button|banner)\\b[\\s\\S]{0,140}\\b" + action + "\\b",
     "i"
   ).test(value);
   const gujaratiAction = /(?:ઉમેરો|ઉમેર|બદલો|દૂર કરો|દેખાડો|છુપાવો|બનાવો)/.test(value);
@@ -674,7 +699,11 @@ export function isThemeEditRequest(prompt: string): boolean {
   return directRequest || actionAfterFeature || gujaratiAction;
 }
 
-export async function executeThemeEditRequest(prompt: string, history: any[] = []): Promise<ThemeEditSummary> {
+export async function executeThemeEditRequest(
+  prompt: string,
+  history: any[] = [],
+  figmaContext?: FigmaDesignContext
+): Promise<ThemeEditSummary> {
   if (process.env.VERCEL === "1" || process.env.AWS_LAMBDA_FUNCTION_NAME) {
     throw new ThemeEditEngineError(
       "Automatic theme file editing requires the persistent local Horizon repository. Run Horizon AI with npm run dev in the theme workspace; deployed serverless instances cannot persist Shopify theme file changes.",
@@ -692,7 +721,7 @@ export async function executeThemeEditRequest(prompt: string, history: any[] = [
       selectedFiles: sourceContext.files.map((file) => ({ path: file.path, score: file.score, complete: file.complete, sourceCharacters: file.excerpt.length })),
     });
 
-    const plan = await generateEditPlan(prompt, history, sourceContext.files, sourceContext.manifest, sourceContext.directories);
+    const plan = await generateEditPlan(prompt, history, sourceContext.files, sourceContext.manifest, sourceContext.directories, figmaContext);
     console.info("HORIZON THEME EDIT PLAN", {
       summary: plan.summary,
       files: plan.changes.map((change) => ({ path: change.path, create: change.create, operations: change.edits?.length ?? 0 })),

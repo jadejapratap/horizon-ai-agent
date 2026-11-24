@@ -44,7 +44,10 @@ type Message = {
   content: string;
   shopifyToolkit?: ShopifyToolkitStatus;
   themeEdit?: ThemeEditMessage;
+  figmaDesign?: { fileName: string; nodeName: string; nodeId: string } | null;
 };
+
+type FigmaAgentStatus = "idle" | "checking" | "connected" | "error";
 
 const STORAGE_KEY = "horizon-ai-chat-history";
 const FIGMA_STORAGE_KEY = "horizon-ai-figma-url";
@@ -127,6 +130,35 @@ export default function Home() {
   const [figmaMode, setFigmaMode] = useState<"design" | "dev">("design");
   const [figmaRevision, setFigmaRevision] = useState(0);
   const [figmaError, setFigmaError] = useState("");
+  const [figmaAgentStatus, setFigmaAgentStatus] = useState<FigmaAgentStatus>("idle");
+  const [figmaAgentMessage, setFigmaAgentMessage] = useState("");
+  const [figmaAgentFileName, setFigmaAgentFileName] = useState("");
+
+  async function checkFigmaAgentConnection(url: string) {
+    setFigmaAgentStatus("checking");
+    setFigmaAgentMessage("Checking Figma API access for Horizon AI Agent...");
+    setFigmaAgentFileName("");
+
+    try {
+      const response = await fetch("/api/figma/connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Figma Agent connection failed.");
+      }
+
+      setFigmaAgentStatus("connected");
+      setFigmaAgentMessage("Agent API can read this Figma Design file.");
+      setFigmaAgentFileName(data.fileName || "");
+    } catch (error) {
+      setFigmaAgentStatus("error");
+      setFigmaAgentMessage(error instanceof Error ? error.message : "Figma Agent connection failed.");
+    }
+  }
 
   function loadFigmaDesign(mode: "design" | "dev" = figmaMode) {
     const value = figmaInput.trim();
@@ -145,6 +177,12 @@ export default function Home() {
       setFigmaError("");
       setFigmaRevision((revision) => revision + 1);
       localStorage.setItem(FIGMA_STORAGE_KEY, target.originalUrl);
+      if (target.fileType === "design") {
+        void checkFigmaAgentConnection(target.originalUrl);
+      } else {
+        setFigmaAgentStatus("error");
+        setFigmaAgentMessage("Horizon AI Agent reads Figma Design files only. The embed preview can still show this file type.");
+      }
     } catch (error) {
       setFigmaError(error instanceof Error ? error.message : "Unable to load this Figma link.");
     }
@@ -162,6 +200,12 @@ export default function Home() {
         setFigmaFileType(target.fileType);
         setFigmaFileKey(target.fileKey);
         setFigmaMode(savedMode);
+        if (target.fileType === "design") {
+          void checkFigmaAgentConnection(target.originalUrl);
+        } else {
+          setFigmaAgentStatus("error");
+          setFigmaAgentMessage("Horizon AI Agent reads Figma Design files only.");
+        }
       }
     } catch (error) {
       console.warn("Could not restore the saved Figma design:", error);
@@ -224,6 +268,7 @@ export default function Home() {
         body: JSON.stringify({
           prompt: userMessage.content,
           history: messages,
+          figmaUrl: figmaFileType === "design" ? figmaOriginalUrl : "",
         }),
       });
 
@@ -245,6 +290,7 @@ export default function Home() {
           content: data.message || "No response received.",
           shopifyToolkit: data.shopifyToolkit,
           themeEdit: data.themeEdit,
+          figmaDesign: data.figmaDesign ?? null,
         },
       ]);
 
@@ -439,6 +485,12 @@ export default function Home() {
                     {message.content}
                   </p>
 
+                  {message.figmaDesign && (
+                    <div className="mt-3 rounded-lg border border-violet-400/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-200">
+                      Figma reference used: {message.figmaDesign.fileName} · {message.figmaDesign.nodeName} · node {message.figmaDesign.nodeId}
+                    </div>
+                  )}
+
                   {message.themeEdit?.applied && (
                     <div className="mt-3 rounded-lg border border-violet-400/25 bg-violet-500/10 p-3 text-xs text-violet-100">
                       <p className="font-semibold text-violet-200">Theme files updated</p>
@@ -554,9 +606,20 @@ export default function Home() {
                 </div>
                 <p className="mt-1 truncate text-xs text-gray-400">
                   {figmaEmbedUrl
-                    ? "Connected · " + (figmaFileType === "proto" ? "Prototype" : figmaFileType === "board" ? "FigJam" : figmaFileType === "slides" || figmaFileType === "deck" ? "Slides" : "Design") + " · " + figmaFileKey
+                    ? "Preview loaded · " + (figmaFileType === "proto" ? "Prototype" : figmaFileType === "board" ? "FigJam" : figmaFileType === "slides" || figmaFileType === "deck" ? "Slides" : "Design") + " · " + figmaFileKey
                     : "No Figma design connected"}
                 </p>
+                {figmaEmbedUrl && (
+                  <p className={"mt-1 break-words text-[11px] " + (figmaAgentStatus === "connected" ? "text-emerald-300" : figmaAgentStatus === "checking" ? "text-violet-300" : "text-amber-200")}>
+                    {figmaAgentStatus === "connected"
+                      ? "Agent API connected · " + (figmaAgentFileName || figmaAgentMessage)
+                      : figmaAgentStatus === "checking"
+                        ? figmaAgentMessage
+                        : figmaAgentStatus === "error"
+                          ? "Preview only · " + figmaAgentMessage
+                          : "Agent API connection not checked"}
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center gap-2 text-gray-300">
