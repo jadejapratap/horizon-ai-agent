@@ -587,7 +587,7 @@ async function prepareChanges(plan: EditPlan, sourceFiles: SourceFile[], directo
     throw new ThemeEditEngineError("The edit plan exceeds the " + MAX_FILES_IN_PLAN + " file safety limit. No files were changed.", 413);
   }
 
-  const sourceByPath = new Map(sourceFiles.map((file) => [file.path, file]));
+  const sourceByPath = new Map<string, SourceFile>(sourceFiles.map((file) => [file.path, file] as const));
   const directorySet = new Set(directories);
   const seenPaths = new Set<string>();
   const prepared: PreparedChange[] = [];
@@ -657,7 +657,7 @@ function buildEditResponse(summary: string, files: PreparedChange[]): ThemeEditS
 export function isThemeEditRequest(prompt: string): boolean {
   const value = prompt.trim();
   if (!value) return false;
-  if (/^(?:how|why|what|where|when|which|explain|describe|analyze|analyse|review|inspect|find|tell me how|can you explain|could you explain)\b/i.test(value)) return false;
+  if (/^(?:how|why|what|where|when|which|explain|describe|analyze|analyse|review|inspect|find|show me|tell me how|can you explain|could you explain)\b/i.test(value)) return false;
 
   const action = "(?:add|create|build|implement|change|modify|update|remove|delete|replace|rework|redesign|restyle|style|fix|make|display|hide|show|enable|disable|insert|adjust|move|increase|decrease)";
   const directRequest = new RegExp(
