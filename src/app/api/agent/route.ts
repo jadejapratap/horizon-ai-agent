@@ -7719,41 +7719,64 @@ function supportsProductFormHandleSubmitClaim(
     !/\bhandlesubmit\b/.test(text)
   ) return false;
 
+  // Anchor every atomic assertion to the actual class method. A claim about
+  // the signature must quote the signature; a claim about one operation must
+  // quote that operation from inside this method. Do not force unrelated
+  // operations into every separate atomic claim.
   const actualMethod = getComponentClassMethodSource(
     actualSource, "ProductFormComponent", "handleSubmit"
   );
+  const signaturePattern = /handleSubmit\s*\(\s*event\s*\)/;
+  const preventDefaultPattern = /event\.preventDefault\s*\(\s*\)/;
+  const variantGuardPattern = /if\s*\(\s*this\.#variantChangeInProgress\s*\)\s*\{/;
+  const queuePushPattern = /this\.#addToCartQueue\.push\s*\(/;
+  const processPattern = /this\.#processAddToCart\s*\(/;
+
   if (
     !actualMethod ||
-    !/handleSubmit\s*\(\s*event\s*\)/.test(actualMethod) ||
-    !/event\.preventDefault\s*\(\s*\)/.test(actualMethod) ||
-    !/this\.#processAddToCart\s*\(/.test(actualMethod)
+    !signaturePattern.test(actualMethod) ||
+    !preventDefaultPattern.test(actualMethod) ||
+    !variantGuardPattern.test(actualMethod) ||
+    !queuePushPattern.test(actualMethod) ||
+    !processPattern.test(actualMethod)
   ) return false;
 
-  const requiredParts = [
-    /handleSubmit\s*\(\s*event\s*\)/,
-    /event\.preventDefault\s*\(\s*\)/,
-  ];
-  const claimsQueue = /\bqueue|queued\b/i.test(text);
-  const claimsProcess = /#?process(?:es|ing)?\b|processaddtocart/i.test(text);
-  const claimsBeginningRecommendation =
-    /\b(?:validation|validate|validating)\b/i.test(text) &&
-    /\b(?:beginning|start|safest|recommended)\b/i.test(text);
+  const requiredParts: RegExp[] = [];
+  const claimsSignature =
+    /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text);
+  const claimsPreventDefault = /preventdefault/.test(text);
+  const claimsVariantGuard =
+    /variant\s+change|variantchangeinprogress/.test(text);
+  const claimsQueue = /\bqueue\b|\bqueued\b|addtocartqueue/.test(text);
+  const claimsProcess = /#?processaddtocart/.test(text);
 
-  if (claimsQueue) {
-    if (
-      !/this\.#variantChangeInProgress/.test(actualMethod) ||
-      !/this\.#addToCartQueue\.push\s*\(/.test(actualMethod)
-    ) return false;
-    requiredParts.push(/this\.#variantChangeInProgress/);
-    requiredParts.push(/this\.#addToCartQueue\.push\s*\(/);
+  if (claimsSignature) requiredParts.push(signaturePattern);
+  if (claimsPreventDefault) requiredParts.push(preventDefaultPattern);
+  if (claimsVariantGuard) requiredParts.push(variantGuardPattern);
+  if (claimsQueue) requiredParts.push(queuePushPattern);
+  if (claimsProcess) requiredParts.push(processPattern);
+
+  // Preserve branch qualifiers: a queue claim that says "when the variant
+  // changes" must also cite the guard; an "otherwise/not in progress" handoff
+  // must cite the actual else-to-process sequence.
+  const claimsQueueCondition =
+    /\bwhen\b.{0,70}\bvariant\s+change\b|\bif\b.{0,50}\bvariant\s+change\b/i.test(text);
+  if (claimsQueueCondition) {
+    requiredParts.push(variantGuardPattern);
+    requiredParts.push(queuePushPattern);
   }
 
-  if (claimsProcess) requiredParts.push(/this\.#processAddToCart\s*\(/);
+  const claimsOtherwiseHandoff =
+    /\botherwise\b|\bnot\s+in\s+progress\b|\bno\s+variant\s+change\b/i.test(text) &&
+    claimsProcess;
+  if (claimsOtherwiseHandoff) {
+    const elseProcessPattern =
+      /\}\s*else\s*\{\s*this\.#processAddToCart\s*\(/;
+    if (!elseProcessPattern.test(actualMethod)) return false;
+    requiredParts.push(elseProcessPattern);
+  }
 
-  if (
-    claimsBeginningRecommendation &&
-    !/^\s*handleSubmit\s*\(\s*event\s*\)\s*\{\s*event\.preventDefault\s*\(\s*\)\s*;/.test(actualMethod)
-  ) return false;
+  if (requiredParts.length === 0) return false;
 
   return exactEvidencePartsMatchScope(
     evidenceItems, actualMethod, sourceSegments, requiredParts
@@ -7802,19 +7825,28 @@ function supportsProductFormSubmitBindingClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
 ): boolean {
-  const text = claim.toLowerCase();
   if (
     file !== "blocks/buy-buttons.liquid" ||
-    !/product-form-component/.test(text) ||
-    !/\bsubmit\b/.test(text)
+    !/submit|handlesubmit|product-form-component/i.test(claim)
   ) return false;
 
+  const tagPattern = /<product-form-component\b/i;
+  const handlerPattern =
+    /on:submit\s*=\s*(["'])\/handleSubmit\1/i;
   const bindingPattern =
     /<product-form-component\b[\s\S]{0,500}?\bon:submit\s*=\s*(["'])\/handleSubmit\1/i;
+
   if (!bindingPattern.test(actualSource)) return false;
 
-  const tagPattern = /<product-form-component\b/i;
-  const handlerPattern = /on:submit\s*=\s*(["'])\/handleSubmit\1/i;
+  const text = claim.toLowerCase();
+  const claimsTag =
+    /\btag\b|product-form-component/.test(text) &&
+    !/on:submit|submit\s+(?:event|binding)/.test(text);
+  const claimsBinding =
+    /on:submit|submit\s+(?:event|binding)|binds?\s+(?:the\s+)?submit|handlesubmit/.test(text);
+
+  if (!claimsTag && !claimsBinding) return false;
+
   const hasTagEvidence = evidenceItems.some((evidence) =>
     tagPattern.test(evidence) &&
     evidenceMatchesSource(evidence, actualSource) &&
@@ -7826,8 +7858,14 @@ function supportsProductFormSubmitBindingClaim(
     sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
   );
 
-  return hasTagEvidence && hasHandlerEvidence &&
-    sourceSegments.some((segment) => bindingPattern.test(segment));
+  const bindingIsPresentInSentRange = sourceSegments.some((segment) =>
+    bindingPattern.test(segment)
+  );
+
+  return (
+    (!claimsTag || hasTagEvidence) &&
+    (!claimsBinding || (hasHandlerEvidence && bindingIsPresentInSentRange))
+  );
 }
 
 function supportsProductFormValidationRecommendationClaim(
@@ -7943,16 +7981,53 @@ function supportsComponentDocumentListenerClaim(
     file !== "assets/component.js" ||
     !/document/.test(text) ||
     !/event/.test(text) ||
-    !/listener|register/.test(text)
+    !/listener|register|dispatch/.test(text)
   ) return false;
 
   const pattern = /document\.addEventListener\s*\(\s*eventName\s*,/;
-  if (!pattern.test(actualSource)) return false;
-  return evidenceItems.some((evidence) =>
-    pattern.test(evidence) &&
-    evidenceMatchesSource(evidence, actualSource) &&
-    sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
-  );
+  const registerStart = actualSource.indexOf("function registerEventListeners");
+  const callAt = registerStart >= 0
+    ? actualSource.indexOf("document.addEventListener", registerStart)
+    : -1;
+
+  if (
+    registerStart < 0 ||
+    callAt < registerStart ||
+    !pattern.test(actualSource.slice(callAt, callAt + 240))
+  ) return false;
+
+  // Some model responses quote only the first line of a multiline call.
+  // Accept that prefix only when the same contiguous sent range also contains
+  // the exact eventName argument inside registerEventListeners.
+  return evidenceItems.some((evidence) => {
+    if (
+      pattern.test(evidence) &&
+      evidenceMatchesSource(evidence, actualSource) &&
+      sourceSegments.some((segment) =>
+        segment.includes("function registerEventListeners") &&
+        pattern.test(segment) &&
+        evidenceMatchesSource(evidence, segment)
+      )
+    ) return true;
+
+    const callPrefix = /document\.addEventListener\s*\(/;
+    if (!callPrefix.test(evidence)) return false;
+
+    return sourceSegments.some((segment) => {
+      if (
+        !segment.includes("function registerEventListeners") ||
+        !callPrefix.test(segment)
+      ) return false;
+
+      const segmentCallAt = segment.indexOf("document.addEventListener");
+      const exactCallExcerpt = segment.slice(segmentCallAt, segmentCallAt + 240);
+      return (
+        pattern.test(exactCallExcerpt) &&
+        evidenceMatchesSource(evidence, segment) &&
+        evidenceMatchesSource(exactCallExcerpt, actualSource)
+      );
+    });
+  });
 }
 
 function supportsComponentCallbackInvocationClaim(
@@ -8055,7 +8130,7 @@ function supportsStickyAddToCartProxyClaim(
   const text = claim.toLowerCase();
   if (
     file !== "assets/sticky-add-to-cart.js" ||
-    !/handleaddtocartclick/.test(text)
+    !/handleaddtocartclick|sticky handler|targetaddtocartbutton/.test(text)
   ) return false;
 
   const actualHandler = getStickyAddToCartHandlerSource(actualSource);
@@ -8064,15 +8139,27 @@ function supportsStickyAddToCartProxyClaim(
   const signaturePattern =
     /handleAddToCartClick\s*=\s*async\s*\(\s*\)\s*=>\s*\{/;
   const proxyPattern = /this\.#targetAddToCartButton\.click\s*\(\s*\)/;
-  const claimsPuppet = /puppet|dataset/.test(text);
-  const requiredParts: RegExp[] = [signaturePattern, proxyPattern];
+  const puppetPattern =
+    /this\.#targetAddToCartButton\.dataset\.puppet\s*=\s*['"]true['"]/;
 
+  const requiredParts: RegExp[] = [];
+  const claimsSignature =
+    /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text);
+  const claimsPuppet = /puppet|dataset/.test(text);
+  const claimsClick =
+    /click\s+operation|\.click\s*\(|executes?\s+the\s+click|clicks?\s+(?:the\s+)?target/i.test(text);
+
+  if (claimsSignature) requiredParts.push(signaturePattern);
   if (claimsPuppet) {
-    if (!/this\.#targetAddToCartButton\.dataset\.puppet\s*=/.test(actualHandler)) {
-      return false;
-    }
-    requiredParts.push(/this\.#targetAddToCartButton\.dataset\.puppet\s*=/);
+    if (!puppetPattern.test(actualHandler)) return false;
+    requiredParts.push(puppetPattern);
   }
+  if (claimsClick) {
+    if (!proxyPattern.test(actualHandler)) return false;
+    requiredParts.push(proxyPattern);
+  }
+
+  if (requiredParts.length === 0) return false;
 
   const handlerAvailableInSentContext = sourceSegments.some((segment) =>
     getStickyAddToCartHandlerSource(segment, false) !== null
@@ -8141,28 +8228,41 @@ function supportsAddToCartButtonBindingClaim(
   const text = claim.toLowerCase();
   if (
     file !== "snippets/add-to-cart-button.liquid" ||
-    !/button/.test(text) ||
-    !/submit/.test(text) ||
-    !/handleclick|click/.test(text)
+    !/\bbutton\b/.test(text)
   ) return false;
 
-  const buttonPattern = /<button\b[\s\S]{0,500}?type\s*=\s*(["'])submit\1[\s\S]{0,500}?on:click\s*=\s*(["'])\/handleClick\2/i;
+  const buttonPattern =
+    /<button\b[\s\S]{0,500}?type\s*=\s*(["'])submit\1[\s\S]{0,500}?on:click\s*=\s*(["'])\/handleClick\2/i;
   const typePattern = /type\s*=\s*(["'])submit\1/i;
   const clickPattern = /on:click\s*=\s*(["'])\/handleClick\1/i;
+
+  const claimsSubmitType =
+    /type\s*=\s*["']submit|type.{0,20}submit|submit\s+(?:button|type)/i.test(text);
+  const claimsClickBinding =
+    /on:click|handleclick|click\s+binding/i.test(text);
+
+  if (!claimsSubmitType && !claimsClickBinding) return false;
   if (!buttonPattern.test(actualSource)) return false;
 
-  const hasType = evidenceItems.some((evidence) =>
+  const hasTypeEvidence = evidenceItems.some((evidence) =>
     typePattern.test(evidence) &&
     evidenceMatchesSource(evidence, actualSource) &&
     sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
   );
-  const hasClick = evidenceItems.some((evidence) =>
+  const hasClickEvidence = evidenceItems.some((evidence) =>
     clickPattern.test(evidence) &&
     evidenceMatchesSource(evidence, actualSource) &&
     sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
   );
-  return hasType && hasClick &&
-    sourceSegments.some((segment) => buttonPattern.test(segment));
+
+  // The two button attributes are separate atomic facts. Verify only the
+  // attribute actually asserted by this claim, while the actual button source
+  // confirms that both attributes belong to the same element.
+  return (
+    (!claimsSubmitType || hasTypeEvidence) &&
+    (!claimsClickBinding || hasClickEvidence) &&
+    sourceSegments.some((segment) => buttonPattern.test(segment))
+  );
 }
 
 function supportsAddToCartSuperConnectedCallbackClaim(
@@ -11279,6 +11379,18 @@ async function verifyAnswerClaim(
           );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
+          (/^\s*the\s+standard\s+add\s+to\s+cart\s+button/i.test(claimTextLower) &&
+            /type\s*=\s*["']submit|on:click|handleclick/i.test(claimTextLower)) ||
+          (/productformcomponent/i.test(claimTextLower) &&
+            /handlesubmit/i.test(claimTextLower)) ||
+          (/product-form-component/i.test(claimTextLower) &&
+            /submit/i.test(claimTextLower)) ||
+          (/document\.addEventListener|callback\.call/i.test(claimTextLower)) ||
+          (/handleaddtocartclick|targetaddtocartbutton/i.test(claimTextLower)) ||
+          (/sticky\s+handler/i.test(claimTextLower) &&
+            /dataset|puppet|\.click|click\s+operation/i.test(claimTextLower)) ||
+          (/productformcomponent/i.test(claimTextLower) &&
+            /validation|validate/i.test(claimTextLower)) ||
           ((/addtocartcomponent/i.test(claimTextLower)) &&
             /(?:connected|disconnected)callback/i.test(claimTextLower) &&
             /(?:before|inside|within|conditional)/i.test(claimTextLower) &&
@@ -12922,6 +13034,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (
+      !explicitOnly &&
+      detectCoverageDomains(prompt).includes("add-to-cart") &&
+      themeFileManifest.includes("snippets/scripts.liquid") &&
+      !selectedFiles.has("snippets/scripts.liquid")
+    ) {
+      try {
+        const importMapContent = await readThemeFile("snippets/scripts.liquid");
+        selectedFiles.set("snippets/scripts.liquid", {
+          file: "snippets/scripts.liquid",
+          content: importMapContent,
+          score: 1,
+        });
+        console.log("ADD-TO-CART IMPORT-MAP SUPPORT FILE LOADED:", {
+          file: "snippets/scripts.liquid",
+          totalLength: importMapContent.length,
+        });
+      } catch {
+        console.warn("Could not load Add-to-Cart import-map support file.");
+      }
+    }
+
     console.log(
       "\n========== SMART ROOT FILES =========="
     );
@@ -13234,6 +13368,21 @@ export async function POST(request: NextRequest) {
       relevantDependencies,
       explicitFileAllowlist
     );
+
+    if (
+      !explicitOnly &&
+      detectCoverageDomains(prompt).includes("add-to-cart")
+    ) {
+      const importMapSource = allLoadedFiles.find(
+        (file) => normalizePath(file.file) === "snippets/scripts.liquid"
+      );
+      if (
+        importMapSource &&
+        !relevantFiles.some((file) => normalizePath(file.file) === "snippets/scripts.liquid")
+      ) {
+        relevantFiles.push(importMapSource);
+      }
+    }
 
     const filesAnalyzed = Array.from(
       selectedFiles.keys()
@@ -15054,6 +15203,14 @@ or implementation details.
     (z) The final answer must include the complete discovered execution flow,
         not only file names or entry points. When exact source is unavailable,
         explicitly mark that particular edge UNVERIFIED.
+    (aa) Keep each answer sentence aligned with its claim ID. Reuse the claim's
+         subject and factual wording; do not replace it with "it", "this", or
+         another vague pronoun. Do not paraphrase a narrow claim into a broader
+         behavior than its exact evidence supports.
+    (ab) Treat ProductFormComponent.handleSubmit facts as separate atomic
+         claims: method signature, preventDefault, variant guard, queue push,
+         and process handoff. A branch qualifier belongs only on a claim whose
+         evidence also quotes the corresponding branch and operation.
 
 The answer field should contain a practical explanation for the user.
 
