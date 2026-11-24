@@ -7581,8 +7581,12 @@ function getComponentClassMethodSource(
   if (!classMatch) return null;
   const classTail = source.slice(classMatch.index + classMatch[0].length);
   const classEnd = /\n\}/.exec(classTail);
-  if (!classEnd) return null;
-  const classBody = classTail.slice(0, classEnd.index);
+  // Gemini may receive a contiguous partial range that contains the complete
+  // method but not the class's final closing brace. The method's own signature
+  // and indented closing brace are sufficient when the class tail is truncated.
+  const classBody = classEnd
+    ? classTail.slice(0, classEnd.index)
+    : classTail;
   const methodPattern = new RegExp(
     "(^|\\n)([ \\t]{2})" + methodName +
       "\\s*\\([^\\n]*\\)\\s*\\{[\\s\\S]*?\\n\\2\\}",
@@ -7597,36 +7601,55 @@ function supportsAddToCartHandleClickClaim(
   sourceSegments: string[], actualSource: string
 ): boolean {
   const text = claim.toLowerCase();
-  if (file !== "assets/product-form.js" ||
-      !/\baddtocartcomponent\b/.test(text) ||
-      !/\bhandleclick\b/.test(text) ||
-      !/\b(?:form|validity)\b/.test(text) ||
-      !/\bquantity\b/.test(text)) return false;
+  if (
+    file !== "assets/product-form.js" ||
+    !/\baddtocartcomponent\b/.test(text) ||
+    !/\bhandleclick\b/.test(text) ||
+    !/\b(?:click|validity|valid)\b/.test(text)
+  ) return false;
 
   const actualMethod = getComponentClassMethodSource(
     actualSource, "AddToCartComponent", "handleClick"
   );
-  if (!actualMethod ||
-      !/form\?\.checkValidity\s*\(\s*\)/.test(actualMethod) ||
-      !/quantitySelector\?\.canAddToCart/.test(actualMethod) ||
-      !/!validation\.canAdd/.test(actualMethod)) return false;
+  if (
+    !actualMethod ||
+    !/handleClick\s*\(\s*event\s*\)/.test(actualMethod) ||
+    !/form\?\.checkValidity\s*\(\s*\)/.test(actualMethod)
+  ) return false;
+
+  const claimMentionsQuantity =
+    /\bquantity\b|\bcanaddtocart\b/i.test(text);
+  if (
+    claimMentionsQuantity &&
+    (!/quantitySelector\?\.canAddToCart/.test(actualMethod) ||
+     !/!validation\.canAdd/.test(actualMethod))
+  ) return false;
 
   return evidenceItems.some((evidence) => {
-    if (!/handleClick\s*\(\s*event\s*\)/.test(evidence) ||
-        !/form\?\.checkValidity\s*\(\s*\)/.test(evidence) ||
-        !/quantitySelector\?\.canAddToCart/.test(evidence) ||
-        !/!validation\.canAdd/.test(evidence) ||
-        !evidenceMatchesSource(evidence, actualMethod)) return false;
+    if (
+      !/handleClick\s*\(\s*event\s*\)/.test(evidence) ||
+      !/form\?\.checkValidity\s*\(\s*\)/.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualMethod)
+    ) return false;
+
+    if (
+      claimMentionsQuantity &&
+      (!/quantitySelector\?\.canAddToCart/.test(evidence) ||
+       !/!validation\.canAdd/.test(evidence))
+    ) return false;
 
     return sourceSegments.some((segment) => {
       const suppliedMethod = getComponentClassMethodSource(
         segment, "AddToCartComponent", "handleClick"
       );
-      return Boolean(suppliedMethod &&
+      return Boolean(
+        suppliedMethod &&
         /form\?\.checkValidity\s*\(\s*\)/.test(suppliedMethod) &&
-        /quantitySelector\?\.canAddToCart/.test(suppliedMethod) &&
-        /!validation\.canAdd/.test(suppliedMethod) &&
-        evidenceMatchesSource(evidence, suppliedMethod));
+        (!claimMentionsQuantity ||
+          (/quantitySelector\?\.canAddToCart/.test(suppliedMethod) &&
+           /!validation\.canAdd/.test(suppliedMethod))) &&
+        evidenceMatchesSource(evidence, suppliedMethod)
+      );
     });
   });
 }
@@ -7636,40 +7659,121 @@ function supportsProductFormHandleSubmitClaim(
   sourceSegments: string[], actualSource: string
 ): boolean {
   const text = claim.toLowerCase();
-  if (file !== "assets/product-form.js" ||
-      !/\bproductformcomponent\b/.test(text) ||
-      !/\bhandlesubmit\b/.test(text) ||
-      !/\bqueue/.test(text) ||
-      !/\bprocess/.test(text) ||
-      !/add[\s_-]*to[\s_-]*cart/.test(text)) return false;
+  if (
+    file !== "assets/product-form.js" ||
+    !/\bproductformcomponent\b/.test(text) ||
+    !/\bhandlesubmit\b/.test(text)
+  ) return false;
 
   const actualMethod = getComponentClassMethodSource(
     actualSource, "ProductFormComponent", "handleSubmit"
   );
-  if (!actualMethod ||
-      !/event\.preventDefault\s*\(\s*\)/.test(actualMethod) ||
-      !/this\.#variantChangeInProgress/.test(actualMethod) ||
-      !/this\.#addToCartQueue\.push\s*\(/.test(actualMethod) ||
-      !/this\.#processAddToCart\s*\(/.test(actualMethod)) return false;
+  if (
+    !actualMethod ||
+    !/handleSubmit\s*\(\s*event\s*\)/.test(actualMethod) ||
+    !/event\.preventDefault\s*\(\s*\)/.test(actualMethod) ||
+    !/this\.#processAddToCart\s*\(/.test(actualMethod)
+  ) return false;
+
+  const claimsQueue = /\bqueue|queued\b/i.test(text);
+  const claimsProcess = /#?process(?:es|ing)?\b|processaddtocart/i.test(text);
+  const claimsBeginningRecommendation =
+    /\b(?:validation|validate|validating)\b/i.test(text) &&
+    /\b(?:beginning|start|safest|recommended)\b/i.test(text);
+
+  if (
+    claimsQueue &&
+    (!/this\.#variantChangeInProgress/.test(actualMethod) ||
+     !/this\.#addToCartQueue\.push\s*\(/.test(actualMethod))
+  ) return false;
+
+  if (
+    claimsProcess &&
+    !/this\.#processAddToCart\s*\(/.test(actualMethod)
+  ) return false;
+
+  if (
+    claimsBeginningRecommendation &&
+    !/^\s*handleSubmit\s*\(\s*event\s*\)\s*\{\s*event\.preventDefault\s*\(\s*\)\s*;/s.test(actualMethod)
+  ) return false;
 
   return evidenceItems.some((evidence) => {
-    if (!/handleSubmit\s*\(\s*event\s*\)/.test(evidence) ||
-        !/event\.preventDefault\s*\(\s*\)/.test(evidence) ||
-        !/this\.#variantChangeInProgress/.test(evidence) ||
-        !/this\.#addToCartQueue\.push\s*\(/.test(evidence) ||
-        !/this\.#processAddToCart\s*\(/.test(evidence) ||
-        !evidenceMatchesSource(evidence, actualMethod)) return false;
+    if (
+      !/handleSubmit\s*\(\s*event\s*\)/.test(evidence) ||
+      !/event\.preventDefault\s*\(\s*\)/.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualMethod)
+    ) return false;
+
+    if (
+      claimsQueue &&
+      (!/this\.#variantChangeInProgress/.test(evidence) ||
+       !/this\.#addToCartQueue\.push\s*\(/.test(evidence))
+    ) return false;
+
+    if (
+      claimsProcess &&
+      !/this\.#processAddToCart\s*\(/.test(evidence)
+    ) return false;
 
     return sourceSegments.some((segment) => {
       const suppliedMethod = getComponentClassMethodSource(
         segment, "ProductFormComponent", "handleSubmit"
       );
-      return Boolean(suppliedMethod &&
+      return Boolean(
+        suppliedMethod &&
         /event\.preventDefault\s*\(\s*\)/.test(suppliedMethod) &&
-        /this\.#variantChangeInProgress/.test(suppliedMethod) &&
-        /this\.#addToCartQueue\.push\s*\(/.test(suppliedMethod) &&
-        /this\.#processAddToCart\s*\(/.test(suppliedMethod) &&
-        evidenceMatchesSource(evidence, suppliedMethod));
+        (!claimsQueue ||
+          (/this\.#variantChangeInProgress/.test(suppliedMethod) &&
+           /this\.#addToCartQueue\.push\s*\(/.test(suppliedMethod))) &&
+        (!claimsProcess ||
+          /this\.#processAddToCart\s*\(/.test(suppliedMethod)) &&
+        evidenceMatchesSource(evidence, suppliedMethod)
+      );
+    });
+  });
+}
+
+function supportsProductFormCartFetchClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/product-form.js" ||
+    !/\bfetch\b/.test(text) ||
+    !/theme\.routes\.cart_add_url/i.test(claim)
+  ) return false;
+
+  const actualMethod = getComponentClassMethodSource(
+    actualSource, "ProductFormComponent", "#processAddToCart"
+  );
+  const fetchPattern = /fetch\s*\(\s*Theme\.routes\.cart_add_url\s*,/;
+  if (!actualMethod || !fetchPattern.test(actualMethod)) return false;
+
+  const claimsFinalOrdering = /\b(?:finally|afterwards|after\s+dispatch)\b/i.test(text);
+  if (claimsFinalOrdering) {
+    const dispatchIndex = actualMethod.indexOf("this.dispatchEvent(");
+    const fetchIndex = actualMethod.search(fetchPattern);
+    if (dispatchIndex < 0 || fetchIndex < 0 || dispatchIndex >= fetchIndex) {
+      return false;
+    }
+  }
+
+  return evidenceItems.some((evidence) => {
+    if (
+      !fetchPattern.test(evidence) ||
+      !evidenceMatchesSource(evidence, actualMethod)
+    ) return false;
+
+    return sourceSegments.some((segment) => {
+      const suppliedMethod = getComponentClassMethodSource(
+        segment, "ProductFormComponent", "#processAddToCart"
+      );
+      return Boolean(
+        suppliedMethod &&
+        fetchPattern.test(suppliedMethod) &&
+        evidenceMatchesSource(evidence, suppliedMethod)
+      );
     });
   });
 }
@@ -10599,6 +10703,10 @@ async function verifyAnswerClaim(
           supportsProductFormHandleSubmitClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedProductFormCartFetch =
+          supportsProductFormCartFetchClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedProductFormSubmitBinding =
           supportsProductFormSubmitBindingClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -10647,6 +10755,7 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartHandleClick ||
           verifiedProductFormHandleSubmit ||
+          verifiedProductFormCartFetch ||
           verifiedProductFormSubmitBinding ||
           verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
@@ -10872,6 +10981,7 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartHandleClick ||
           verifiedProductFormHandleSubmit ||
+          verifiedProductFormCartFetch ||
           verifiedProductFormSubmitBinding ||
           verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
@@ -14434,6 +14544,41 @@ or implementation details.
     claim unless one quote starts at the outer \`if is_product_card\` and reaches
     its paired \`else\`, nested quantity-break check, assignment, and closing
     \`endif\` statements. An \`else\`-only quote is insufficient; omit the claim.
+52. ADD-TO-CART ARCHITECTURE EVIDENCE RULES (apply when the user asks about Add to Cart):
+    (a) Do not infer a component's responsibilities from its class declaration
+        alone. For click behavior, quote the actual AddToCartComponent.handleClick
+        method signature and the exact validity/quantity checks being described.
+    (b) For form submission, quote ProductFormComponent.handleSubmit with its
+        event.preventDefault call and the exact queue/process operations being
+        described. Do not claim that both branches are covered when the quote
+        shows only the queue branch.
+    (c) Keep form-data creation, CartLinesUpdateEvent dispatch, and the final
+        fetch to Theme.routes.cart_add_url as separate atomic claims. A quote
+        containing only one operation cannot support the others.
+    (d) For Liquid form binding, quote the product-form-component opening tag
+        together with its on:submit binding. For the Add to Cart button, quote
+        the actual button type and on:click binding, not only a wrapper tag.
+    (e) For the event dispatcher, evidence must include the actual
+        document.addEventListener registration and the callback invocation
+        (callback.call). The registerEventListeners function name or initialized
+        guard alone does not prove event delegation.
+    (f) For the module import map, create separate atomic claims for each
+        mapping. Quote the exact @theme/product-form and @theme/component
+        mapping lines separately; one mapping does not prove the other.
+    (g) For the sticky Add to Cart path, keep the section's on:click binding,
+        the sticky handler's target-button .click() proxy, and the standard
+        submit-button binding as separate source facts. Do not infer a complete
+        cross-file path if any of those source excerpts is unavailable.
+    (h) Do not describe a class declaration, wrapper opening tag, import-map
+        opening tag, or event-registration function header as proof of the
+        behavior implemented inside it. Include the actual operation.
+    (i) A validation-placement recommendation is an inference, not an existing
+        source behavior. Clearly label it as a recommendation and ground it
+        in verified submit-handler and pre-cart-request facts. Never say that
+        custom validation already exists unless the source proves it.
+    (j) Never call a file complete unless its backend source-coverage metadata
+        says it is complete. Mark missing or partial relationships UNVERIFIED.
+
 The answer field should contain a practical explanation for the user.
 
 The claims array should contain important factual claims
