@@ -488,46 +488,110 @@ async function downloadFigmaImageAssets(
 
   // This is Figma's Tier 2 image-fills endpoint. It returns temporary source
   // URLs for the imageRef values found on the selected frame's image fills.
-  const fillResponse = await figmaJson<{ images?: Record<string, string> }>(
-    "/files/" + fileKey + "/images"
+  const fillResponse = await figmaJson<{
+    images?: Record<string, string>;
+    meta?: { images?: Record<string, string> };
+    data?: { images?: Record<string, string> };
+    result?: { images?: Record<string, string>; meta?: { images?: Record<string, string> } };
+  }>("/files/" + fileKey + "/images");
+
+  // The official REST response uses a top-level images map. Also accept
+  // metadata-wrapped responses returned by some transport adapters.
+  const imageUrls =
+    fillResponse.images ??
+    fillResponse.meta?.images ??
+    fillResponse.data?.images ??
+    fillResponse.result?.images ??
+    fillResponse.result?.meta?.images ??
+    {};
+
+  const normalizeImageRef = (value: string) => value.trim().replace(/^image:/i, "").toLowerCase();
+  const imageUrlByRef = new Map(
+    Object.entries(imageUrls).map(([key, url]) => [normalizeImageRef(key), url])
   );
-  const imageUrls = fillResponse.images ?? {};
-  const selectedUses = imageUses.slice(0, 8);
+
+  const selectedUses = imageUses.slice(0, 12);
   const assets: FigmaDesignAsset[] = [];
   let totalBytes = 0;
+  let matchedRefs = 0;
+  let downloadFailures = 0;
+  let unsupportedTypes = 0;
 
   for (const use of selectedUses) {
-    const imageUrl = imageUrls[use.imageRef];
+    const imageUrl = imageUrlByRef.get(normalizeImageRef(use.imageRef));
     if (!imageUrl) continue;
+    matchedRefs += 1;
 
-    const response = await fetch(imageUrl, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!response.ok) continue;
+    try {
+      const response = await fetch(imageUrl, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!response.ok) {
+        downloadFailures += 1;
+        console.warn("HORIZON FIGMA IMAGE DOWNLOAD FAILED", {
+          nodeId: use.nodeId,
+          nodeName: use.nodeName,
+          status: response.status,
+        });
+        continue;
+      }
 
-    const mimeType = response.headers.get("content-type")?.split(";")[0].trim() || "application/octet-stream";
-    const extension = getImageExtension(mimeType, imageUrl);
-    if (!extension) continue;
+      const mimeType = response.headers.get("content-type")?.split(";")[0].trim() || "application/octet-stream";
+      const extension = getImageExtension(mimeType, imageUrl);
+      if (!extension) {
+        unsupportedTypes += 1;
+        console.warn("HORIZON FIGMA IMAGE TYPE UNSUPPORTED", {
+          nodeId: use.nodeId,
+          nodeName: use.nodeName,
+          mimeType,
+          urlPath: (() => {
+            try { return new URL(imageUrl).pathname; } catch { return "invalid-url"; }
+          })(),
+        });
+        continue;
+      }
 
-    const imageBuffer = Buffer.from(await response.arrayBuffer());
-    if (imageBuffer.length === 0 || imageBuffer.length > 8 * 1024 * 1024) continue;
-    if (totalBytes + imageBuffer.length > 20 * 1024 * 1024) break;
-    totalBytes += imageBuffer.length;
+      const imageBuffer = Buffer.from(await response.arrayBuffer());
+      if (imageBuffer.length === 0 || imageBuffer.length > 8 * 1024 * 1024) {
+        downloadFailures += 1;
+        continue;
+      }
+      if (totalBytes + imageBuffer.length > 20 * 1024 * 1024) break;
+      totalBytes += imageBuffer.length;
 
-    const nodeToken = use.nodeId.replace(/[^0-9]/g, "-").replace(/-+/g, "-");
-    const refToken = createHash("sha256").update(use.imageRef).digest("hex").slice(0, 10);
-    assets.push({
-      fileName: "figma-" + nodeToken + "-" + refToken + "." + extension,
-      nodeId: use.nodeId,
-      nodeName: use.nodeName,
-      imageRef: use.imageRef,
-      mimeType,
-      width: use.width,
-      height: use.height,
-      imageData: imageBuffer.toString("base64"),
-    });
+      const nodeToken = use.nodeId.replace(/[^0-9]/g, "-").replace(/-+/g, "-");
+      const refToken = createHash("sha256").update(use.imageRef).digest("hex").slice(0, 10);
+      assets.push({
+        fileName: "figma-" + nodeToken + "-" + refToken + "." + extension,
+        nodeId: use.nodeId,
+        nodeName: use.nodeName,
+        imageRef: use.imageRef,
+        mimeType,
+        width: use.width,
+        height: use.height,
+        imageData: imageBuffer.toString("base64"),
+      });
+    } catch (error) {
+      downloadFailures += 1;
+      console.warn("HORIZON FIGMA IMAGE DOWNLOAD ERROR", {
+        nodeId: use.nodeId,
+        nodeName: use.nodeName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
+
+  console.info("HORIZON FIGMA IMAGE FILL LOOKUP", {
+    responseKeys: Object.keys(fillResponse),
+    returnedImageRefs: Object.keys(imageUrls).length,
+    imageUsesFound: imageUses.length,
+    selectedImageUses: selectedUses.length,
+    matchedRefs,
+    downloadedAssets: assets.length,
+    downloadFailures,
+    unsupportedTypes,
+  });
 
   return assets;
 }
@@ -648,7 +712,7 @@ async function fetchFigmaDesignContext(
 
   if (imageUses.length > 0 && assets.length === 0) {
     throw new FigmaConnectionError(
-      "The Figma hero contains image fills, but Horizon AI could not download the original image assets. Check the file_content:read scope and retry after any Figma API limit resets.",
+      "The Figma hero contains " + imageUses.length + " image fill(s), but none could be mapped to downloadable image URLs. Check the HORIZON FIGMA IMAGE FILL LOOKUP log for returned image refs, matched refs, HTTP download failures, and unsupported content types. This is not necessarily a token-scope problem.",
       502
     );
   }
