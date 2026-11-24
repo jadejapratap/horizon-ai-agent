@@ -7987,7 +7987,11 @@ function exactEvidencePartsMatchScope(
   );
 }
 
-function exactMethodOperationEvidenceMatches(
+function getComponentMethodFromSuppliedRange(
+  source: string,
+  methodName: string
+): string | null {
+  const escapedMethodName = methodName.replace(/[.*+?^$()|[\]\\]/g, "\\function exactMethodOperationEvidenceMatches(
   evidenceItems: string[],
   actualSource: string,
   sourceSegments: string[],
@@ -8003,6 +8007,45 @@ function exactMethodOperationEvidenceMatches(
   return sourceSegments.some((segment) => {
     const suppliedMethod = getComponentClassMethodSource(
       segment, className, methodName
+    );
+    if (!suppliedMethod || !operationPattern.test(suppliedMethod)) return false;
+
+    return evidenceItems.some((evidence) =>
+      operationPattern.test(evidence) &&
+      evidenceMatchesSource(evidence, actualMethod) &&
+      evidenceMatchesSource(evidence, suppliedMethod)
+    );
+  });
+}");
+  const methodPattern = new RegExp(
+    "(^|\\n)([ \\t]{2})" + escapedMethodName +
+      "\\s*\\([^\\n]*\\)\\s*\\{[\\s\\S]*?\\n\\2\\}",
+    "m"
+  );
+  const match = methodPattern.exec(source);
+  return match ? match[0].replace(/^\\n/, "") : null;
+}
+
+function exactMethodOperationEvidenceMatches(
+  evidenceItems: string[],
+  actualSource: string,
+  sourceSegments: string[],
+  className: string,
+  methodName: string,
+  operationPattern: RegExp
+): boolean {
+  // Class ownership is established from the complete actual source. The
+  // sent context may contain only the method window, so it need not repeat
+  // the class declaration; the exact method signature and body must still
+  // exist together in one contiguous Gemini source range.
+  const actualMethod = getComponentClassMethodSource(
+    actualSource, className, methodName
+  );
+  if (!actualMethod || !operationPattern.test(actualMethod)) return false;
+
+  return sourceSegments.some((segment) => {
+    const suppliedMethod = getComponentMethodFromSuppliedRange(
+      segment, methodName
     );
     if (!suppliedMethod || !operationPattern.test(suppliedMethod)) return false;
 
@@ -8101,8 +8144,8 @@ function recoverExactAddToCartMethodEvidence(
 
   const recovered: string[] = [];
   for (const segment of sourceSegments) {
-    const sentMethod = getComponentClassMethodSource(
-      segment, className, methodName
+    const sentMethod = getComponentMethodFromSuppliedRange(
+      segment, methodName
     );
     if (!sentMethod) continue;
 
