@@ -525,22 +525,22 @@ function resolveExplicitFileRequest(
     occurrences.push({ path: candidate, index: match.index ?? 0 });
   }
 
-  const scopeRestriction = /\b(?:only|just|exactly|exclusively)\b/i;
-  const hasDirectFileAnalysisIntent = occurrences.some(({ index, path: candidate }) => {
-    const beforePath = prompt.slice(Math.max(0, index - 100), index);
-    const afterPath = prompt.slice(index + candidate.length, Math.min(prompt.length, index + candidate.length + 100));
-    const localContext = `${beforePath} ${afterPath}`;
-    const directFileAction =
-      /\b(?:inspect|analy[sz]e|review|explain|describe|read|open|trace|debug|understand|summari[sz]e|check|examine|study|investigate|compare|diff|look\s+at|go\s+through|use)\b(?:\s+[A-Za-z0-9_#.-]+){0,5}\s*$/i.test(beforePath) ||
-      /\b(?:file|source|code|method|function|class|path)\b.{0,45}$/i.test(beforePath);
-    return directFileAction || scopeRestriction.test(localContext);
-  });
-  const enabled = detected.size > 0 && hasDirectFileAnalysisIntent;
+  // Mentioning or inspecting named files seeds source discovery; it must not
+  // silently turn off filename-independent dependency and call-chain tracing.
+  // Explicit-only mode is reserved for prompts that clearly forbid expansion
+  // beyond the named files.
+  const explicitlyRestrictsFileScope =
+    /\b(?:only|just|exclusively|exactly)\b.{0,55}\b(?:these|the following|the listed|the specified|provided|named)?\s*(?:theme\s+)?(?:source\s+)?files?\b/i.test(prompt) ||
+    /\b(?:only|just|exclusively)\s+(?:inspect|analy[sz]e|review|read|use|check)\b.{0,70}\b(?:assets|blocks|config|layout|sections|snippets|templates)[\\/]/i.test(prompt) ||
+    /\b(?:restrict|limit|confine)\b.{0,70}\b(?:analysis|inspection|source discovery|search|scope)\b.{0,70}\b(?:files?|paths?)\b/i.test(prompt) ||
+    /\b(?:do not|don't|never)\s+(?:inspect|read|load|search|open|include)\b.{0,55}\bother\s+(?:theme\s+)?files?\b/i.test(prompt) ||
+    /\b(?:exclude|ignore)\b.{0,40}\bother\s+(?:theme\s+)?files?\b/i.test(prompt);
+  const enabled = detected.size > 0 && explicitlyRestrictsFileScope;
 
-  if (!enabled) {
+  if (detected.size === 0) {
     return {
       enabled: false,
-      detectedPaths: [...detected],
+      detectedPaths: [],
       canonicalPaths: [],
       invalidPaths: [],
     };
@@ -13849,7 +13849,10 @@ export async function POST(request: NextRequest) {
 
     const rootFilePriorities = explicitOnly
       ? [...explicitFileRequest.canonicalPaths]
-      : getArchitectureRootFiles(prompt);
+      : [...new Set([
+          ...explicitFileRequest.canonicalPaths,
+          ...getArchitectureRootFiles(prompt),
+        ])];
 
     // Map search results for quick lookup
     const searchResultMap = new Map(
