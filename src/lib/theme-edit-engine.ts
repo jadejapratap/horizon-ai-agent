@@ -917,7 +917,7 @@ export async function executeThemeEditRequest(
       prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
     } catch (error) {
       const mismatchPath = error instanceof ThemeEditEngineError
-        ? error.message.match(/^Patch did not match the current source in (.+?)\\. The source may have changed;/)?.[1]
+        ? error.message.match(/^Patch did not match the current source in (.+?)\. The source may have changed;/)?.[1]
         : undefined;
       const completeSource = mismatchPath
         ? sourceContext.files.find((file) => file.path === mismatchPath && file.complete)
@@ -941,7 +941,7 @@ export async function executeThemeEditRequest(
         "For the failed file, copy each oldText byte-for-byte from the complete source supplied in SOURCE FILES RETRIEVED FOR THIS REQUEST. Use the shortest unique exact anchor that safely identifies the intended JSON setting. Do not reconstruct, normalize, paraphrase, or guess source text.",
         "Preserve the Shopify header comment, all unrelated section and block settings, valid JSON, and stable IDs.",
         "Do not edit any file that is absent from the supplied source context. If an exact patch cannot be formed safely, return changes=[] and explain why.",
-      ].join("\\n");
+      ].join("\n");
 
       plan = await generateEditPlan(
         repairPrompt,
