@@ -108,15 +108,34 @@ export function resolveShopifyAgentProfile(prompt: string): ShopifyAgentProfile 
 
 function selectTopics(prompt: string): string[] {
   const selected = new Set<string>();
+  const isThemeDevelopmentRequest =
+    /\b(?:liquid|theme|sections?|snippets?|templates?|add to cart|cart drawer|theme editor)\b/i.test(prompt);
+  const explicitlyNeedsAdminContext =
+    /\b(?:admin\s+(?:graphql|api)|graphql|metafields?|metaobjects?|api version|api scopes?)\b/i.test(prompt);
 
   for (const rule of TOPIC_RULES) {
+    // Product/variant mentions in a theme task describe storefront source,
+    // not necessarily Admin API work. Avoid loading unrelated Admin guidance.
+    if (
+      rule.topic === "admin" &&
+      isThemeDevelopmentRequest &&
+      !explicitlyNeedsAdminContext
+    ) {
+      continue;
+    }
+
     if (rule.matches.some((pattern) => pattern.test(prompt))) {
       selected.add(rule.topic);
     }
   }
 
   if (/metafields?|metaobjects?/i.test(prompt)) selected.add("admin");
-  if (/\b(?:product|variant|order|inventory|collection|fulfillment|refund|customer)\b/i.test(prompt)) selected.add("admin");
+  if (
+    /\b(?:product|variant|order|inventory|collection|fulfillment|refund|customer)\b/i.test(prompt) &&
+    (!isThemeDevelopmentRequest || explicitlyNeedsAdminContext)
+  ) {
+    selected.add("admin");
+  }
   if (/checkout.{0,30}(?:extension|ui)|(?:extension|ui).{0,30}checkout/i.test(prompt)) selected.add("polaris-checkout-extensions");
   if (/\b(?:customer account|order status)\b.{0,40}extension/i.test(prompt)) selected.add("polaris-customer-account-extensions");
 
