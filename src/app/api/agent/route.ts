@@ -8075,12 +8075,37 @@ function supportsStickyAddToCartProxyClaim(
   }
 
   const handlerAvailableInSentContext = sourceSegments.some((segment) =>
-    getStickyAddToCartHandlerSource(segment) !== null
+    getStickyAddToCartHandlerSource(segment, false) !== null
   );
   if (!handlerAvailableInSentContext) return false;
 
   return exactEvidencePartsMatchScope(
     evidenceItems, actualHandler, sourceSegments, requiredParts
+  );
+}
+
+function supportsStickyAddToCartTargetAssignmentClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/sticky-add-to-cart.js" ||
+    !/targetaddtocartbutton/.test(text) ||
+    !/queryselector|reference|selects|stores/.test(text)
+  ) return false;
+
+  const assignmentPattern =
+    /this\.#targetAddToCartButton\s*=\s*productForm\.querySelector\(\s*['"]\[ref="addToCartButton"\]['"]\s*\)/;
+  if (!assignmentPattern.test(actualSource)) return false;
+
+  return evidenceItems.some((evidence) =>
+    assignmentPattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      evidenceMatchesSource(evidence, segment) &&
+      assignmentPattern.test(segment)
+    )
   );
 }
 
