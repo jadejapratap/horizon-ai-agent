@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { Buffer } from "node:buffer";
+import { lstat, mkdir, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { GoogleGenAI } from "@google/genai";
 import ts from "typescript";
@@ -22,6 +23,7 @@ export type ThemeEditSummary = {
   applied: boolean;
   summary: string;
   files: Array<{ path: string; operations: number; reasons: string[] }>;
+  assets: Array<{ path: string; nodeId: string; nodeName: string; mimeType: string; bytes: number; created: boolean }>;
   previewNote: string;
 };
 
@@ -456,6 +458,110 @@ async function atomicWrite(fullPath: string, content: string): Promise<void> {
   }
 }
 
+type PersistedFigmaAsset = {
+  path: string;
+  fullPath: string;
+  nodeId: string;
+  nodeName: string;
+  mimeType: string;
+  bytes: number;
+  created: boolean;
+};
+
+async function persistFigmaImageAssets(context?: FigmaDesignContext): Promise<PersistedFigmaAsset[]> {
+  if (!context?.assets?.length) return [];
+
+  const root = await realpath(THEME_ROOT);
+  const assetsDirectory = path.resolve(root, "assets");
+  await mkdir(assetsDirectory, { recursive: true });
+  const realAssetsDirectory = await realpath(assetsDirectory);
+  if (!isInsideRoot(root, realAssetsDirectory)) {
+    throw new ThemeEditEngineError("The Shopify theme assets directory resolves outside themes/horizon.", 403);
+  }
+
+  const persisted: PersistedFigmaAsset[] = [];
+  let totalBytes = 0;
+  try {
+    for (const asset of context.assets) {
+      if (
+        !asset ||
+        !/^figma-[0-9-]+-[a-f0-9]{10}\.(?:png|jpg|webp|gif|svg)$/i.test(asset.fileName) ||
+        !/^image\/(?:png|jpeg|webp|gif|svg\+xml)$/i.test(asset.mimeType)
+      ) {
+        throw new ThemeEditEngineError("Figma returned an unsupported or unsafe image asset name/type. No theme files were changed.", 422);
+      }
+
+      const imageBuffer = Buffer.from(asset.imageData, "base64");
+      if (imageBuffer.length === 0 || imageBuffer.length > 8 * 1024 * 1024) {
+        throw new ThemeEditEngineError("Figma image asset is empty or exceeds the 8 MB per-image limit: " + asset.fileName, 413);
+      }
+      totalBytes += imageBuffer.length;
+      if (totalBytes > 20 * 1024 * 1024) {
+        throw new ThemeEditEngineError("Figma hero image assets exceed the 20 MB total import limit. No theme files were changed.", 413);
+      }
+
+      const fullPath = path.resolve(realAssetsDirectory, asset.fileName);
+      if (!isInsideRoot(realAssetsDirectory, fullPath)) {
+        throw new ThemeEditEngineError("Figma image asset path escaped the Shopify assets directory.", 403);
+      }
+
+      let created = false;
+      try {
+        const existing = await readFile(fullPath);
+        const existingHash = createHash("sha256").update(existing).digest("hex");
+        const incomingHash = createHash("sha256").update(imageBuffer).digest("hex");
+        if (existingHash !== incomingHash) {
+          throw new ThemeEditEngineError(
+            "A different file already exists at " + asset.fileName + ". The existing theme asset was not overwritten.",
+            409
+          );
+        }
+      } catch (error) {
+        if (error instanceof ThemeEditEngineError) throw error;
+        const code = error && typeof error === "object"
+          ? (error as NodeJS.ErrnoException).code
+          : undefined;
+        if (code !== "ENOENT") throw error;
+
+        const temporaryPath = path.join(realAssetsDirectory, ".horizon-ai-figma-" + randomUUID() + ".tmp");
+        try {
+          await writeFile(temporaryPath, imageBuffer, { flag: "wx" });
+          await rename(temporaryPath, fullPath);
+          created = true;
+        } catch (writeError) {
+          await unlink(temporaryPath).catch(() => undefined);
+          throw writeError;
+        }
+      }
+
+      persisted.push({
+        path: "assets/" + asset.fileName,
+        fullPath,
+        nodeId: asset.nodeId,
+        nodeName: asset.nodeName,
+        mimeType: asset.mimeType,
+        bytes: imageBuffer.length,
+        created,
+      });
+    }
+  } catch (error) {
+    await Promise.all(
+      persisted.filter((asset) => asset.created).map((asset) => unlink(asset.fullPath).catch(() => undefined))
+    );
+    throw error;
+  }
+
+  return persisted;
+}
+
+async function rollbackCreatedFigmaAssets(assets: PersistedFigmaAsset[]): Promise<void> {
+  await Promise.all(
+    assets.filter((asset) => asset.created).map((asset) => unlink(asset.fullPath).catch((error) => {
+      console.error("FIGMA ASSET ROLLBACK FAILED:", asset.path, error);
+    }))
+  );
+}
+
 async function applyPreparedChanges(changes: PreparedChange[]): Promise<void> {
   const written: PreparedChange[] = [];
   try {
@@ -571,13 +677,23 @@ async function generateEditPlan(
     figmaContext
       ? [
           "File: " + figmaContext.fileName,
-          "Homepage frame: " + figmaContext.nodeName,
+          "Homepage/frame: " + figmaContext.nodeName,
           "Node ID: " + figmaContext.nodeId,
           "The accompanying image is the actual Figma frame screenshot. Match its visible layout, visual hierarchy, colors, typography, spacing, and image placement.",
           "The following layer hierarchy and properties were extracted from the same frame:",
           figmaContext.summary,
         ].join("\n")
       : "No authenticated Figma design context was provided for this request.",
+    "ORIGINAL FIGMA IMAGE ASSETS AVAILABLE IN themes/horizon/assets:",
+    JSON.stringify((figmaContext?.assets ?? []).map((asset) => ({
+      nodeId: asset.nodeId,
+      nodeName: asset.nodeName,
+      path: "assets/" + asset.fileName,
+      fileName: asset.fileName,
+      mimeType: asset.mimeType,
+      width: asset.width,
+      height: asset.height,
+    }))),
   ].join("\n");
 
   const userParts: Array<Record<string, unknown>> = [{ text: requestText }];
@@ -600,6 +716,7 @@ async function generateEditPlan(
         "You are Horizon AI, an autonomous Shopify Horizon theme code editor.",
         "Implement the user's requested storefront change in the actual supplied theme source. You are not in read-only analysis mode. Return a concrete edit plan, not an explanation-only answer.",
         "When FIGMA DESIGN REFERENCE is present, use its actual screenshot as the visual target and the layer hierarchy as supporting evidence. Recreate the design with native Shopify Liquid, CSS, and JavaScript; do not use the screenshot itself as a page background or substitute for implementation assets.",
+        "When ORIGINAL FIGMA IMAGE ASSETS are listed, those original image files will be saved locally under themes/horizon/assets before the source patch is applied. Use the exact listed filenames and node names. Never use temporary Figma URLs. For the native hero section, use its image_1_asset and image_2_asset settings for these local files; do not put a theme asset filename into an image_picker setting. Preserve the Figma left/right image mapping and add meaningful alt text.",
         "Understand behavior by tracing the supplied Liquid, CSS, JavaScript, JSON, render calls, symbols, and dependencies. Do not choose a file based only on its filename.",
         "For homepage and landing-page requests, treat templates/index.json as the Shopify page-composition entrypoint. Inspect its existing section instances and order, preserve stable section/block IDs where practical, and make only grounded changes to the supplied JSON and its inspected section implementations.",
         "Only edit existing source files included in SOURCE FILES RETRIEVED FOR THIS REQUEST, or create a new file inside an existing directory listed in EXISTING THEME DIRECTORIES.",
@@ -687,12 +804,24 @@ async function prepareChanges(plan: EditPlan, sourceFiles: SourceFile[], directo
   return prepared;
 }
 
-function buildEditResponse(summary: string, files: PreparedChange[]): ThemeEditSummary {
+function buildEditResponse(
+  summary: string,
+  files: PreparedChange[],
+  assets: PersistedFigmaAsset[]
+): ThemeEditSummary {
   return {
     applied: true,
     summary,
     files: files.map((file) => ({ path: file.path, operations: file.operations, reasons: file.reasons })),
-    previewNote: "The local theme files have been updated. Shopify CLI theme dev should sync the changed files; refresh the storefront preview if it does not reload automatically.",
+    assets: assets.map((asset) => ({
+      path: asset.path,
+      nodeId: asset.nodeId,
+      nodeName: asset.nodeName,
+      mimeType: asset.mimeType,
+      bytes: asset.bytes,
+      created: asset.created,
+    })),
+    previewNote: "The local theme files and any referenced Figma image assets have been updated. Shopify CLI theme dev should sync the changed files; refresh the storefront preview if it does not reload automatically.",
   };
 }
 
@@ -745,10 +874,17 @@ export async function executeThemeEditRequest(
     });
 
     const prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
-    await applyPreparedChanges(prepared);
+    const persistedFigmaAssets = await persistFigmaImageAssets(figmaContext);
+    try {
+      await applyPreparedChanges(prepared);
+    } catch (error) {
+      await rollbackCreatedFigmaAssets(persistedFigmaAssets);
+      throw error;
+    }
     console.info("HORIZON THEME EDIT APPLIED", {
       files: prepared.map((change) => ({ path: change.path, operations: change.operations })),
+      assets: persistedFigmaAssets.map((asset) => ({ path: asset.path, bytes: asset.bytes, created: asset.created })),
     });
-    return buildEditResponse(plan.summary, prepared);
+    return buildEditResponse(plan.summary, prepared, persistedFigmaAssets);
   });
 }
