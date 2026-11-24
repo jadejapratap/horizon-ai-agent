@@ -23,7 +23,17 @@ export type ThemeEditSummary = {
   applied: boolean;
   summary: string;
   files: Array<{ path: string; operations: number; reasons: string[] }>;
-  assets: Array<{ path: string; nodeId: string; nodeName: string; mimeType: string; bytes: number; created: boolean }>;
+  assets: Array<{
+    path: string;
+    nodeId: string;
+    nodeName: string;
+    frameNodeId: string;
+    frameNodeName: string;
+    heroSlot?: "left" | "right";
+    mimeType: string;
+    bytes: number;
+    created: boolean;
+  }>;
   previewNote: string;
 };
 
@@ -506,6 +516,9 @@ type PersistedFigmaAsset = {
   fullPath: string;
   nodeId: string;
   nodeName: string;
+  frameNodeId: string;
+  frameNodeName: string;
+  heroSlot?: "left" | "right";
   mimeType: string;
   bytes: number;
   created: boolean;
@@ -582,6 +595,9 @@ async function persistFigmaImageAssets(context?: FigmaDesignContext): Promise<Pe
         fullPath,
         nodeId: asset.nodeId,
         nodeName: asset.nodeName,
+        frameNodeId: asset.frameNodeId,
+        frameNodeName: asset.frameNodeName,
+        heroSlot: asset.heroSlot,
         mimeType: asset.mimeType,
         bytes: imageBuffer.length,
         created,
@@ -731,6 +747,9 @@ async function generateEditPlan(
     JSON.stringify((figmaContext?.assets ?? []).map((asset) => ({
       nodeId: asset.nodeId,
       nodeName: asset.nodeName,
+      frameNodeId: asset.frameNodeId,
+      frameNodeName: asset.frameNodeName,
+      heroSlot: asset.heroSlot,
       path: "assets/" + asset.fileName,
       fileName: asset.fileName,
       mimeType: asset.mimeType,
@@ -877,21 +896,45 @@ async function prepareFigmaHeroTemplateChange(
     );
   }
 
-  const normalizeFigmaNodeId = (value: string) => value.replace(/-/g, ":");
-  const leftAsset = figmaContext.assets.find(
-    (asset) => normalizeFigmaNodeId(asset.nodeId) === "108:13297"
+  const leftAssets = figmaContext.assets.filter(
+    (asset) =>
+      asset.heroSlot === "left" &&
+      asset.frameNodeName.trim().toLowerCase() === "frm/top/left"
   );
-  const rightAsset = figmaContext.assets.find(
-    (asset) => normalizeFigmaNodeId(asset.nodeId) === "108:13272"
+  const rightAssets = figmaContext.assets.filter(
+    (asset) =>
+      asset.heroSlot === "right" &&
+      asset.frameNodeName.trim().toLowerCase() === "button/top/right"
   );
 
-  if (!leftAsset || !rightAsset || leftAsset.fileName === rightAsset.fileName) {
+  // Match the image fill through its containing Figma frame, not the leaf
+  // node that happens to own the IMAGE paint. A slot must resolve to exactly
+  // one original image; multiple fills remain ambiguous and are rejected.
+  if (
+    leftAssets.length !== 1 ||
+    rightAssets.length !== 1 ||
+    leftAssets[0]?.fileName === rightAssets[0]?.fileName
+  ) {
+    const describeAsset = (asset: FigmaDesignContext["assets"][number]) =>
+      asset.nodeId +
+      " (" + asset.nodeName + ")" +
+      " inside frame " + asset.frameNodeId +
+      " (" + asset.frameNodeName + ")" +
+      (asset.heroSlot ? " [" + asset.heroSlot + " slot]" : " [unscoped]");
+    const available = figmaContext.assets.length > 0
+      ? figmaContext.assets.map(describeAsset).join(", ")
+      : "none";
     throw new ThemeEditEngineError(
-      "Horizon could not uniquely match both original Figma hero images by their exact source nodes (108:13297 and 108:13272). No theme files were changed. Available image nodes: " +
-        figmaContext.assets.map((asset) => asset.nodeId + " (" + asset.nodeName + ")").join(", "),
+      "Horizon could not uniquely match one original image fill inside each Figma hero slot. " +
+        "Expected exactly one image in left frame 108:13297 (frm/top/left), found " + leftAssets.length +
+        "; expected exactly one image in right frame 108:13272 (Button/Top/right), found " + rightAssets.length +
+        ". No theme files were changed. Available image assets: " + available,
       422
     );
   }
+
+  const leftAsset = leftAssets[0];
+  const rightAsset = rightAssets[0];
 
   if (
     !Number.isFinite(leftAsset.width) ||
@@ -1004,14 +1047,20 @@ async function prepareFigmaHeroTemplateChange(
   console.info("HORIZON FIGMA HERO TEMPLATE MAPPED", {
     sectionId: heroSectionId,
     left: {
-      nodeId: leftAsset.nodeId,
+      imageNodeId: leftAsset.nodeId,
+      imageNodeName: leftAsset.nodeName,
+      frameNodeId: leftAsset.frameNodeId,
+      frameNodeName: leftAsset.frameNodeName,
       fileName: leftAsset.fileName,
-      width: leftAsset.width,
+      frameWidth: leftAsset.width,
     },
     right: {
-      nodeId: rightAsset.nodeId,
+      imageNodeId: rightAsset.nodeId,
+      imageNodeName: rightAsset.nodeName,
+      frameNodeId: rightAsset.frameNodeId,
+      frameNodeName: rightAsset.frameNodeName,
       fileName: rightAsset.fileName,
-      width: rightAsset.width,
+      frameWidth: rightAsset.width,
     },
     image1Width,
     previousValues,
@@ -1024,8 +1073,8 @@ async function prepareFigmaHeroTemplateChange(
     nextContent,
     operations: 7,
     reasons: [
-      "Connect original Figma left image node 108:13297 to image_1_asset",
-      "Connect original Figma right image node 108:13272 to image_2_asset",
+      "Connect the original image fill inside Figma left frame 108:13297 to image_1_asset",
+      "Connect the original image fill inside Figma right frame 108:13272 to image_2_asset",
       "Set hero image width ratio from the original Figma frame widths",
       "Preserve existing homepage sections, hero blocks, copy and overlay settings",
     ],
@@ -1045,6 +1094,9 @@ function buildEditResponse(
       path: asset.path,
       nodeId: asset.nodeId,
       nodeName: asset.nodeName,
+      frameNodeId: asset.frameNodeId,
+      frameNodeName: asset.frameNodeName,
+      heroSlot: asset.heroSlot,
       mimeType: asset.mimeType,
       bytes: asset.bytes,
       created: asset.created,
