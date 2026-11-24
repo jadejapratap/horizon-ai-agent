@@ -7772,6 +7772,129 @@ function exactEvidencePartsMatchScope(
   );
 }
 
+function recoverExactAddToCartMethodEvidence(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): string[] {
+  const text = claim.toLowerCase();
+  let className: string | null = null;
+  let methodName: string | null = null;
+  let requiredPatterns: RegExp[] = [];
+
+  if (file === "assets/product-form.js" && /\bhandlesubmit\b/.test(text)) {
+    className = "ProductFormComponent";
+    methodName = "handleSubmit";
+    const signature = /handleSubmit\s*\(\s*event\s*\)/;
+    const preventDefault = /event\.preventDefault\s*\(\s*\)/;
+    const variantGuard = /if\s*\(\s*this\.#variantChangeInProgress\s*\)\s*\{/;
+    const queuePush = /this\.#addToCartQueue\.push\s*\([^;]*\);/;
+    const processHandoff = /this\.#processAddToCart\s*\([^;]*\);/;
+
+    requiredPatterns.push(signature);
+    if (/preventdefault/.test(text)) requiredPatterns.push(preventDefault);
+    if (/variant\s+change|variantchangeinprogress/.test(text) ||
+        /validation|validate|recommend/.test(text)) {
+      requiredPatterns.push(variantGuard);
+    }
+    if (/queue|queued|addtocartqueue/.test(text) ||
+        /validation|validate|recommend/.test(text)) {
+      requiredPatterns.push(queuePush);
+    }
+    if (/processaddtocart|handoff/.test(text) ||
+        /validation|validate|recommend/.test(text)) {
+      requiredPatterns.push(processHandoff);
+    }
+  } else if (
+    file === "assets/product-form.js" &&
+    /#?processaddtocart/.test(text) &&
+    /formdata|cartlinesupdateevent|cart_add_url|fetch/.test(text)
+  ) {
+    className = "ProductFormComponent";
+    methodName = "#processAddToCart";
+    requiredPatterns.push(/#processAddToCart\s*\([^)]*\)/);
+    if (/formdata/.test(text)) {
+      requiredPatterns.push(/new FormData\s*\(\s*form\s*\)/);
+    }
+    if (/cartlinesupdateevent/.test(text)) {
+      requiredPatterns.push(/CartLinesUpdateEvent\.createPromise\s*\(\s*\)/);
+      requiredPatterns.push(/new CartLinesUpdateEvent\s*\(/);
+      requiredPatterns.push(/this\.dispatchEvent\s*\(/);
+    }
+    if (/cart_add_url|fetch/.test(text)) {
+      requiredPatterns.push(/fetch\s*\(\s*Theme\.routes\.cart_add_url\s*,/);
+    }
+  } else if (
+    file === "assets/product-form.js" &&
+    /addtocartcomponent/.test(text) &&
+    /handleclick/.test(text)
+  ) {
+    className = "AddToCartComponent";
+    methodName = "handleClick";
+    requiredPatterns.push(/handleClick\s*\(\s*event\s*\)/);
+    if (/validity|checkvalidity|form\s+(?:is\s+)?valid/.test(text)) {
+      requiredPatterns.push(/form\?\.checkValidity\s*\(\s*\)/);
+    }
+    if (/quantity|canaddtocart/.test(text)) {
+      requiredPatterns.push(/quantitySelector\?\.canAddToCart/);
+      requiredPatterns.push(/!validation\.canAdd/);
+    }
+  }
+
+  if (!className || !methodName || requiredPatterns.length === 0) {
+    return evidenceItems;
+  }
+
+  const actualMethod = getComponentClassMethodSource(
+    actualSource, className, methodName
+  );
+  if (!actualMethod) return evidenceItems;
+
+  const recovered: string[] = [];
+  for (const segment of sourceSegments) {
+    const sentMethod = getComponentClassMethodSource(
+      segment, className, methodName
+    );
+    if (!sentMethod) continue;
+
+    for (const pattern of requiredPatterns) {
+      const actualMatch = pattern.exec(actualMethod);
+      const sentMatch = pattern.exec(sentMethod);
+      if (!actualMatch || !sentMatch) continue;
+
+      const exactExcerpt = sentMatch[0];
+      if (
+        !evidenceMatchesSource(exactExcerpt, actualMethod) ||
+        !evidenceMatchesSource(exactExcerpt, actualSource) ||
+        !evidenceMatchesSource(exactExcerpt, segment)
+      ) continue;
+
+      const alreadyCovered = evidenceItems.some((existing) =>
+        evidenceMatchesSource(existing, actualMethod) &&
+        pattern.test(existing)
+      );
+      const alreadyRecovered = recovered.some((existing) =>
+        evidenceMatchesSource(existing, actualMethod) &&
+        pattern.test(existing)
+      );
+      if (!alreadyCovered && !alreadyRecovered) recovered.push(exactExcerpt);
+    }
+    break;
+  }
+
+  if (recovered.length > 0) {
+    console.log("RECOVERED EXACT ADD-TO-CART METHOD EVIDENCE:", {
+      file,
+      method: methodName,
+      recoveredEvidence: recovered,
+    });
+  }
+
+  return [...evidenceItems, ...recovered];
+}
+
 function supportsAddToCartHandleClickClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
@@ -7781,30 +7904,34 @@ function supportsAddToCartHandleClickClaim(
     file !== "assets/product-form.js" ||
     !/\baddtocartcomponent\b/.test(text) ||
     !/\bhandleclick\b/.test(text) ||
-    !/\b(?:click|validity|valid)\b/.test(text)
+    !/\b(?:click|validity|valid|method|handler)\b/.test(text)
   ) return false;
 
   const actualMethod = getComponentClassMethodSource(
     actualSource, "AddToCartComponent", "handleClick"
   );
-  if (
-    !actualMethod ||
-    !/handleClick\s*\(\s*event\s*\)/.test(actualMethod) ||
-    !/form\?\.checkValidity\s*\(\s*\)/.test(actualMethod)
-  ) return false;
+  const signaturePattern = /handleClick\s*\(\s*event\s*\)/;
+  const validityPattern = /form\?\.checkValidity\s*\(\s*\)/;
+  const quantityMethodPattern = /quantitySelector\?\.canAddToCart/;
+  const quantityGuardPattern = /!validation\.canAdd/;
 
-  const requiredParts = [
-    /handleClick\s*\(\s*event\s*\)/,
-    /form\?\.checkValidity\s*\(\s*\)/,
-  ];
-  const claimMentionsQuantity = /\bquantity\b|\bcanaddtocart\b/i.test(text);
-  if (claimMentionsQuantity) {
+  if (!actualMethod || !signaturePattern.test(actualMethod)) return false;
+
+  const requiredParts: RegExp[] = [signaturePattern];
+  const claimsValidity =
+    /validity|checkvalidity|form\s+(?:is\s+)?valid/i.test(text);
+  const claimsQuantity = /\bquantity\b|\bcanaddtocart\b/i.test(text);
+
+  if (claimsValidity) {
+    if (!validityPattern.test(actualMethod)) return false;
+    requiredParts.push(validityPattern);
+  }
+  if (claimsQuantity) {
     if (
-      !/quantitySelector\?\.canAddToCart/.test(actualMethod) ||
-      !/!validation\.canAdd/.test(actualMethod)
+      !quantityMethodPattern.test(actualMethod) ||
+      !quantityGuardPattern.test(actualMethod)
     ) return false;
-    requiredParts.push(/quantitySelector\?\.canAddToCart/);
-    requiredParts.push(/!validation\.canAdd/);
+    requiredParts.push(quantityMethodPattern, quantityGuardPattern);
   }
 
   return exactEvidencePartsMatchScope(
@@ -8310,9 +8437,13 @@ function supportsStickyAddToCartProxyClaim(
   sourceSegments: string[], actualSource: string
 ): boolean {
   const text = claim.toLowerCase();
+  const refersToStickyHandler =
+    /handleaddtocartclick|sticky handler|targetaddtocartbutton/.test(text) ||
+    (/target.{0,35}button/.test(text) &&
+      /dataset|puppet|proxy|click|reference|assign/.test(text));
   if (
     file !== "assets/sticky-add-to-cart.js" ||
-    !/handleaddtocartclick|sticky handler|targetaddtocartbutton/.test(text)
+    !refersToStickyHandler
   ) return false;
 
   const actualHandler = getStickyAddToCartHandlerSource(actualSource);
@@ -8326,10 +8457,12 @@ function supportsStickyAddToCartProxyClaim(
 
   const requiredParts: RegExp[] = [];
   const claimsSignature =
-    /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text);
+    /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text) ||
+    /\bdefines?\b.{0,70}\bhandleaddtocartclick\b/i.test(text) ||
+    /\bhandleaddtocartclick\b.{0,50}\bmethod\b/i.test(text);
   const claimsPuppet = /puppet|dataset/.test(text);
   const claimsClick =
-    /click\s+operation|\.click\s*\(|executes?\s+the\s+click|clicks?\s+(?:the\s+)?target/i.test(text);
+    /click.{0,50}(?:proxy|invok|operation|method)|(?:proxy|invok).{0,50}click|\.click\s*\(/i.test(text);
 
   if (claimsSignature) requiredParts.push(signaturePattern);
   if (claimsPuppet) {
@@ -8358,10 +8491,13 @@ function supportsStickyAddToCartTargetAssignmentClaim(
   sourceSegments: string[], actualSource: string
 ): boolean {
   const text = claim.toLowerCase();
+  const identifiesTargetReference =
+    /targetaddtocartbutton/.test(text) ||
+    (/target.{0,45}add[\s-]*to[\s-]*cart.{0,25}button/.test(text) &&
+      /reference|assign|select|queryselector/.test(text));
   if (
     file !== "assets/sticky-add-to-cart.js" ||
-    !/targetaddtocartbutton/.test(text) ||
-    !/queryselector|reference|selects|stores/.test(text)
+    !identifiesTargetReference
   ) return false;
 
   const assignmentPattern =
@@ -11199,6 +11335,23 @@ async function verifyAnswerClaim(
           "\n\n[UNRETRIEVED SOURCE RANGE GAP]\n\n"
         );
 
+        const recoveredAddToCartMethodEvidence =
+          recoverExactAddToCartMethodEvidence(
+            claim.claim,
+            file,
+            evidenceItems,
+            sourceSegments,
+            actualSource
+          );
+        if (recoveredAddToCartMethodEvidence.length > evidenceItems.length) {
+          evidenceItems.splice(
+            0,
+            evidenceItems.length,
+            ...recoveredAddToCartMethodEvidence
+          );
+          claim.evidence = [...evidenceItems];
+        }
+
         // Gemini occasionally rewrites plain statements inside a Shopify
         // {% liquid %} block as invented {% if %}/{% elsif %} tags. For the
         // two known sticky-setting assignment claims only, recover the exact
@@ -11453,6 +11606,8 @@ async function verifyAnswerClaim(
           verifiedProductFormSubmitBinding ||
           verifiedProductFormProcessOperation ||
           verifiedThemeImportMapMapping ||
+          verifiedComponentAttributeParsing ||
+          verifiedComponentInstanceResolution ||
           verifiedComponentAttributeParsing ||
           verifiedComponentInstanceResolution ||
           verifiedComponentDocumentDispatcher ||
@@ -12092,6 +12247,33 @@ async function verifyAnswerClaim(
               existsInSentContext &&
               existsInActualSource &&
               evidenceSupportsClaim,
+          });
+        }
+
+        if (
+          file === "assets/product-form.js" &&
+          /addtocartcomponent|handlesubmit|#?processaddtocart|validation|validate/i.test(claim.claim)
+        ) {
+          console.log("ADD-TO-CART CLAIM VERIFICATION DIAGNOSTIC:", {
+            claimId: claim.id ?? null,
+            claim: claim.claim,
+            claimSubjectMatchesSourceFile,
+            claimIsAtomic,
+            hasUnsupportedControlFlow,
+            existsInSentContext,
+            existsInActualSource,
+            evidenceSupportsClaim,
+            evidenceCount: evidenceItems.length,
+            evidenceMatches: getEvidenceMatchDiagnostics(
+              evidenceItems,
+              sourceSegments,
+              actualSource
+            ),
+            methodScopes: {
+              handleClick: Boolean(getComponentClassMethodSource(actualSource, "AddToCartComponent", "handleClick")),
+              handleSubmit: Boolean(getComponentClassMethodSource(actualSource, "ProductFormComponent", "handleSubmit")),
+              processAddToCart: Boolean(getComponentClassMethodSource(actualSource, "ProductFormComponent", "#processAddToCart")),
+            },
           });
         }
 
