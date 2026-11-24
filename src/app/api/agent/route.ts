@@ -8322,7 +8322,6 @@ function supportsProductFormCartFetchClaim(
     !fetchPattern.test(actualMethod)
   ) return false;
 
-  const requiredParts = [methodSignature, fetchPattern];
   const claimsFinalOrdering = /\b(?:finally|afterwards|after\s+dispatch)\b/i.test(text);
   if (claimsFinalOrdering) {
     const dispatchIndex = actualMethod.indexOf("this.dispatchEvent(");
@@ -8330,11 +8329,26 @@ function supportsProductFormCartFetchClaim(
     if (dispatchIndex < 0 || fetchIndex < 0 || dispatchIndex >= fetchIndex) {
       return false;
     }
-    requiredParts.push(/this\.dispatchEvent\s*\(/);
+
+    return exactEvidencePartsMatchScope(
+      evidenceItems,
+      actualMethod,
+      sourceSegments,
+      [methodSignature, fetchPattern, /this\.dispatchEvent\s*\(/]
+    );
   }
 
-  return exactEvidencePartsMatchScope(
-    evidenceItems, actualMethod, sourceSegments, requiredParts
+  // The complete method is parsed from the supplied contiguous range. Its
+  // signature therefore need not be redundantly quoted as a second evidence
+  // item; the fetch excerpt itself must still match that exact method in both
+  // the actual file and the source range sent to Gemini.
+  return exactMethodOperationEvidenceMatches(
+    evidenceItems,
+    actualSource,
+    sourceSegments,
+    "ProductFormComponent",
+    "#processAddToCart",
+    fetchPattern
   );
 }
 
@@ -8430,9 +8444,15 @@ function supportsProductFormProcessOperationClaim(
   sourceSegments: string[], actualSource: string
 ): boolean {
   const text = claim.toLowerCase();
+  const namesProcessMethod = /#?processaddtocart/.test(text);
+  const namesProcessOperation =
+    /\bformdata\b/.test(text) ||
+    /\bcartlinesupdateevent\b/.test(text) ||
+    /theme\.routes\.cart_add_url/.test(text);
+
   if (
     file !== "assets/product-form.js" ||
-    !/#?processaddtocart/.test(text)
+    (!namesProcessMethod && !namesProcessOperation)
   ) return false;
 
   const actualMethod = getComponentClassMethodSource(
