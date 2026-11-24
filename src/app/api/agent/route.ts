@@ -1544,7 +1544,7 @@ function getBehavioralCodeRelevance(
     /["']click["']/.test(source) &&
     /["']submit["']/.test(source)
   ) {
-    score += 150;
+    score += 260;
   }
 
   // Sticky add-to-cart controls may proxy their click to the real form button.
@@ -1576,7 +1576,7 @@ function getBehavioralCodeRelevance(
     /product-form\.js/.test(source) &&
     /@theme\/component/.test(source)
   ) {
-    score += 55;
+    score += 280;
   }
 
   // Rendering a button snippet is supporting markup, not the submit implementation.
@@ -3436,7 +3436,7 @@ type PlannerManifestFile = {
   isComplete: boolean;
 };
 
-type CoverageDomain = "sticky-header" | "header" | "pricing" | "settings";
+type CoverageDomain = "sticky-header" | "header" | "pricing" | "settings" | "add-to-cart";
 
 function isStickyHeaderArchitectureIntent(prompt: string): boolean {
   return /\bsticky[\s-]?header\b|\bheader[\s-]?sticky\b|\benable_sticky_header\b/i.test(prompt);
@@ -3449,6 +3449,10 @@ function isSettingsSchemaIntent(prompt: string): boolean {
 function detectCoverageDomains(prompt: string): CoverageDomain[] {
   const lower = prompt.toLowerCase();
   const domains: CoverageDomain[] = [];
+
+  const addToCartIntent =
+    /\badd[\s_-]*to[\s_-]*cart\b|\baddtocart\b|\bcart_add_url\b/i.test(prompt);
+  if (addToCartIntent) domains.push("add-to-cart");
 
   const stickyHeaderIntent = isStickyHeaderArchitectureIntent(prompt);
 
@@ -3478,6 +3482,18 @@ function getCoverageFilePriority(
   domain: CoverageDomain
 ): number {
   const file = normalizePath(filePath).toLowerCase();
+
+  if (domain === "add-to-cart") {
+    const exact: Record<string, number> = {
+      "assets/component.js": 6500,
+      "snippets/scripts.liquid": 6200,
+      "assets/product-form.js": 5900,
+      "assets/sticky-add-to-cart.js": 5600,
+      "sections/product-information.liquid": 5400,
+      "blocks/buy-buttons.liquid": 5200,
+    };
+    return exact[file] ?? 0;
+  }
 
   if (domain === "settings") {
     return file === "config/settings_schema.json" ? 2200 : 0;
@@ -7553,6 +7569,134 @@ function getAddToCartConnectedCallbackSource(source: string): string | null {
   return callbackMatch[0].replace(/^\n/, "");
 }
 
+function getComponentClassMethodSource(
+  source: string,
+  className: string,
+  methodName: string
+): string | null {
+  const classPattern = new RegExp(
+    "(?:export\\s+)?class\\s+" + className + "\\s+extends\\s+Component\\s*\\{"
+  );
+  const classMatch = classPattern.exec(source);
+  if (!classMatch) return null;
+  const classTail = source.slice(classMatch.index + classMatch[0].length);
+  const classEnd = /\n\}/.exec(classTail);
+  if (!classEnd) return null;
+  const classBody = classTail.slice(0, classEnd.index);
+  const methodPattern = new RegExp(
+    "(^|\\n)([ \\t]{2})" + methodName +
+      "\\s*\\([^\\n]*\\)\\s*\\{[\\s\\S]*?\\n\\2\\}",
+    "m"
+  );
+  const methodMatch = methodPattern.exec(classBody);
+  return methodMatch ? methodMatch[0].replace(/^\n/, "") : null;
+}
+
+function supportsAddToCartHandleClickClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/product-form.js" ||
+      !/\baddtocartcomponent\b/.test(text) ||
+      !/\bhandleclick\b/.test(text) ||
+      !/\b(?:form|validity)\b/.test(text) ||
+      !/\bquantity\b/.test(text)) return false;
+
+  const actualMethod = getComponentClassMethodSource(
+    actualSource, "AddToCartComponent", "handleClick"
+  );
+  if (!actualMethod ||
+      !/form\?\.checkValidity\s*\(\s*\)/.test(actualMethod) ||
+      !/quantitySelector\?\.canAddToCart/.test(actualMethod) ||
+      !/!validation\.canAdd/.test(actualMethod)) return false;
+
+  return evidenceItems.some((evidence) => {
+    if (!/handleClick\s*\(\s*event\s*\)/.test(evidence) ||
+        !/form\?\.checkValidity\s*\(\s*\)/.test(evidence) ||
+        !/quantitySelector\?\.canAddToCart/.test(evidence) ||
+        !/!validation\.canAdd/.test(evidence) ||
+        !evidenceMatchesSource(evidence, actualMethod)) return false;
+
+    return sourceSegments.some((segment) => {
+      const suppliedMethod = getComponentClassMethodSource(
+        segment, "AddToCartComponent", "handleClick"
+      );
+      return Boolean(suppliedMethod &&
+        /form\?\.checkValidity\s*\(\s*\)/.test(suppliedMethod) &&
+        /quantitySelector\?\.canAddToCart/.test(suppliedMethod) &&
+        /!validation\.canAdd/.test(suppliedMethod) &&
+        evidenceMatchesSource(evidence, suppliedMethod));
+    });
+  });
+}
+
+function supportsProductFormHandleSubmitClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "assets/product-form.js" ||
+      !/\bproductformcomponent\b/.test(text) ||
+      !/\bhandlesubmit\b/.test(text) ||
+      !/\bqueue/.test(text) ||
+      !/\bprocess/.test(text) ||
+      !/add[\s_-]*to[\s_-]*cart/.test(text)) return false;
+
+  const actualMethod = getComponentClassMethodSource(
+    actualSource, "ProductFormComponent", "handleSubmit"
+  );
+  if (!actualMethod ||
+      !/event\.preventDefault\s*\(\s*\)/.test(actualMethod) ||
+      !/this\.#variantChangeInProgress/.test(actualMethod) ||
+      !/this\.#addToCartQueue\.push\s*\(/.test(actualMethod) ||
+      !/this\.#processAddToCart\s*\(/.test(actualMethod)) return false;
+
+  return evidenceItems.some((evidence) => {
+    if (!/handleSubmit\s*\(\s*event\s*\)/.test(evidence) ||
+        !/event\.preventDefault\s*\(\s*\)/.test(evidence) ||
+        !/this\.#variantChangeInProgress/.test(evidence) ||
+        !/this\.#addToCartQueue\.push\s*\(/.test(evidence) ||
+        !/this\.#processAddToCart\s*\(/.test(evidence) ||
+        !evidenceMatchesSource(evidence, actualMethod)) return false;
+
+    return sourceSegments.some((segment) => {
+      const suppliedMethod = getComponentClassMethodSource(
+        segment, "ProductFormComponent", "handleSubmit"
+      );
+      return Boolean(suppliedMethod &&
+        /event\.preventDefault\s*\(\s*\)/.test(suppliedMethod) &&
+        /this\.#variantChangeInProgress/.test(suppliedMethod) &&
+        /this\.#addToCartQueue\.push\s*\(/.test(suppliedMethod) &&
+        /this\.#processAddToCart\s*\(/.test(suppliedMethod) &&
+        evidenceMatchesSource(evidence, suppliedMethod));
+    });
+  });
+}
+
+function supportsProductFormSubmitBindingClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (file !== "blocks/buy-buttons.liquid" ||
+      !/product-form-component/.test(text) ||
+      !/\bsubmit\b/.test(text)) return false;
+
+  const bindingPattern =
+    /<product-form-component\b[\s\S]{0,500}?\bon:submit\s*=\s*(["'])\/handleSubmit\1/i;
+  if (!bindingPattern.test(actualSource)) return false;
+
+  return evidenceItems.some((evidence) => {
+    if (!bindingPattern.test(evidence) ||
+        !evidenceMatchesSource(evidence, actualSource)) return false;
+    return sourceSegments.some((segment) =>
+      bindingPattern.test(segment) &&
+      evidenceMatchesSource(evidence, segment)
+    );
+  });
+}
+
 function supportsAddToCartSuperConnectedCallbackClaim(
   claim: string,
   file: string,
@@ -10447,6 +10591,18 @@ async function verifyAnswerClaim(
           supportsQrErrorCorrectionLevelsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAddToCartCustomElement =
           supportsRegisteredAddToCartCustomElementClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAddToCartHandleClick =
+          supportsAddToCartHandleClickClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
+        const verifiedProductFormHandleSubmit =
+          supportsProductFormHandleSubmitClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
+        const verifiedProductFormSubmitBinding =
+          supportsProductFormSubmitBindingClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAddToCartSuperConnectedCallback =
           supportsAddToCartSuperConnectedCallbackClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -10489,6 +10645,9 @@ async function verifyAnswerClaim(
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
+          verifiedAddToCartHandleClick ||
+          verifiedProductFormHandleSubmit ||
+          verifiedProductFormSubmitBinding ||
           verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterListener ||
@@ -10711,6 +10870,9 @@ async function verifyAnswerClaim(
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
           verifiedAddToCartCustomElement ||
+          verifiedAddToCartHandleClick ||
+          verifiedProductFormHandleSubmit ||
+          verifiedProductFormSubmitBinding ||
           verifiedAddToCartSuperConnectedCallback ||
           verifiedAddToCartPointerenterListener ||
           verifiedAddToCartPointerenterListener ||
