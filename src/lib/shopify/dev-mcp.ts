@@ -51,7 +51,7 @@ const DEFAULT_TOOL_TIMEOUT_MS = 20000;
 // Keep a 60-second floor even when an older .env.local still says 15000.
 const DEFAULT_CONNECT_TIMEOUT_MS = 60000;
 const MAX_CONNECT_TIMEOUT_MS = 120000;
-const MAX_TOOL_RESULT_CHARS = 24000;
+const MAX_TOOL_RESULT_CHARS = 12000;
 
 const runtimeGlobal = globalThis as typeof globalThis & {
   __horizonShopifyMcpConnection?: Promise<McpConnection>;
@@ -480,7 +480,7 @@ export async function generateContentWithShopifyMcpTools(
 
   const compactTaskContext = (toolContext || collectRequestText(request.contents).join("\n"))
     .trim()
-    .slice(0, 12000);
+    .slice(0, 8000);
   // MCP tool selection/search should not resend the full theme source bundle on
   // every function-calling round. The full original context is retained for
   // Gemini's final reasoning pass below.
@@ -532,8 +532,8 @@ export async function generateContentWithShopifyMcpTools(
           text: [
             "ACTUAL SHOPIFY DEV MCP TOOL RESULTS",
             "The following outputs came from MCP tool executions in this request. Use them as evidence in your final reasoning.",
-            transcriptText.length > 18000
-              ? transcriptText.slice(0, 18000) + "\n[Combined MCP results truncated by Horizon Agent.]"
+            transcriptText.length > 10000
+              ? transcriptText.slice(0, 10000) + "\n[Combined MCP results truncated by Horizon Agent.]"
               : transcriptText,
           ].join("\n"),
         }],
