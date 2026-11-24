@@ -14039,6 +14039,9 @@ export async function POST(request: NextRequest) {
         const changedFiles = themeEdit.files.map((file) =>
           "- " + file.path + " — " + file.operations + " operation(s): " + file.reasons.join("; ")
         );
+        const addedAssets = themeEdit.assets.map((asset) =>
+          "- " + asset.path + " — " + asset.nodeName + " (" + Math.round(asset.bytes / 1024) + " KB" + (asset.created ? ", added" : ", reused") + ")"
+        );
         const message = [
           "### Shopify theme changes applied",
           "",
@@ -14046,6 +14049,7 @@ export async function POST(request: NextRequest) {
           "",
           "**Files modified:**",
           ...changedFiles,
+          ...(addedAssets.length > 0 ? ["", "**Figma image assets added:**", ...addedAssets] : []),
           "",
           themeEdit.previewNote,
         ].join("\n");
