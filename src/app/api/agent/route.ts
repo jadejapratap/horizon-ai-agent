@@ -59,6 +59,7 @@ const ON_DEMAND_CONTEXT_BUDGET = 28000;
 const MAX_ON_DEMAND_FILES = 5;
 const MAX_ON_DEMAND_FILE_SIZE = 26000;
 const MAX_CHUNK_SIZE = 8000;
+const MAX_TARGETED_METHOD_CHUNK_SIZE = 8500;
 
 // Keep conversation context useful without replaying entire historical
 // answers and source excerpts on every Gemini request.
@@ -797,7 +798,8 @@ function retrieveChunk(
   filePath: string,
   fullContent: string,
   requestedStart: number | null,
-  requestedMaxChars: number = MAX_CHUNK_SIZE
+  requestedMaxChars: number = MAX_CHUNK_SIZE,
+  allowTargetedMethodChunk = false
 ): RetrievedChunk | null {
   const totalLength = fullContent.length;
 
@@ -927,11 +929,14 @@ function retrieveChunk(
       ? Math.floor(requestedMaxChars)
       : MAX_CHUNK_SIZE;
 
+  const maxAllowedChunkChars = allowTargetedMethodChunk
+    ? MAX_TARGETED_METHOD_CHUNK_SIZE
+    : MAX_CHUNK_SIZE;
   const maxChars = Math.max(
     1,
     Math.min(
       safeRequestedMaxChars,
-      MAX_CHUNK_SIZE,
+      maxAllowedChunkChars,
       remainingFileCapacity
     )
   );
@@ -4272,14 +4277,14 @@ function buildBackendCoverageRequests(
       ) => {
         if (
           endOffset <= startOffset ||
-          endOffset - startOffset > MAX_CHUNK_SIZE
+          endOffset - startOffset > MAX_TARGETED_METHOD_CHUNK_SIZE
         ) {
           console.warn("ADD-TO-CART PRODUCT-FORM TARGET RANGE EXCEEDS CHUNK LIMIT:", {
             method,
             startOffset,
             endOffset,
             requestedCharacters: endOffset - startOffset,
-            maxChunkSize: MAX_CHUNK_SIZE,
+            maxChunkSize: MAX_TARGETED_METHOD_CHUNK_SIZE,
           });
           return;
         }
@@ -4573,7 +4578,9 @@ function allocateChunkRequestBudgets(
       0,
       Math.min(
         Math.floor(request.max_chars),
-        MAX_CHUNK_SIZE,
+        request.must_retrieve === true
+          ? MAX_TARGETED_METHOD_CHUNK_SIZE
+          : MAX_CHUNK_SIZE,
         sourceRemaining,
         MAX_ON_DEMAND_FILE_SIZE
       )
@@ -8066,6 +8073,11 @@ function exactMethodOperationEvidenceMatches(
         /validation|validate|recommend/.test(text)) {
       requiredPatterns.push(processHandoff);
     }
+    if (/validation|validate|recommend/.test(text)) {
+      requiredPatterns.push(
+        /event\.preventDefault\s*\(\s*\)\s*;\s*if\s*\(\s*this\.#variantChangeInProgress\s*\)/
+      );
+    }
   } else if (
     file === "assets/product-form.js" &&
     /#?processaddtocart/.test(text) &&
@@ -8397,6 +8409,7 @@ function supportsProductFormValidationRecommendationClaim(
     /this\.#variantChangeInProgress/,
     /this\.#addToCartQueue\.push\s*\(/,
     /this\.#processAddToCart\s*\(/,
+    /event\.preventDefault\s*\(\s*\)\s*;\s*if\s*\(\s*this\.#variantChangeInProgress\s*\)/,
   ];
   const orderIsCorrect =
     actualMethod.indexOf("event.preventDefault()") >= 0 &&
@@ -8582,27 +8595,21 @@ function supportsComponentRegisterEventListenersClaim(
   if (
     file !== "assets/component.js" ||
     !/registereventlisteners/.test(text) ||
-    !/register|call|initializ|setup/.test(text)
+    !/define|declar|function|method/.test(text)
   ) return false;
 
   const declarationPattern = /function registerEventListeners\s*\(\s*\)\s*\{/;
-  const invocationPattern = /registerEventListeners\s*\(\s*\)\s*;/;
-  if (
-    !declarationPattern.test(actualSource) ||
-    !invocationPattern.test(actualSource)
-  ) return false;
+  if (!declarationPattern.test(actualSource)) return false;
 
   return evidenceItems.some((evidence) =>
-    invocationPattern.test(evidence) &&
+    declarationPattern.test(evidence) &&
     evidenceMatchesSource(evidence, actualSource) &&
     sourceSegments.some((segment) =>
       declarationPattern.test(segment) &&
-      invocationPattern.test(segment) &&
       evidenceMatchesSource(evidence, segment)
     )
   );
 }
-
 function supportsComponentDocumentListenerClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
@@ -12305,6 +12312,8 @@ async function verifyAnswerClaim(
           verifiedThemeImportMapMapping ||
           verifiedComponentDocumentDispatcher ||
           verifiedComponentRegisterEventListeners ||
+          verifiedComponentAttributeParsing ||
+          verifiedComponentInstanceResolution ||
           verifiedComponentDocumentListener ||
           verifiedComponentCallbackInvocation ||
           verifiedProductFormValidationRecommendation ||
@@ -12720,7 +12729,7 @@ async function verifyAnswerClaim(
         if (
           claimSubjectMatchesSourceFile &&
           claimIsAtomic &&
-          !hasUnsupportedControlFlow &&
+          (!hasUnsupportedControlFlow || verifiedProductFormValidationRecommendation) &&
           existsInSentContext &&
           existsInActualSource &&
           evidenceSupportsClaim
@@ -14965,7 +14974,8 @@ If no additional chunks are needed:
         req.file,
         fullContent,
         req.start_offset,
-        req.max_chars
+        req.max_chars,
+        req.must_retrieve === true
       );
 
       if (!chunk) {
