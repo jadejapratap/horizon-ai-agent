@@ -7619,8 +7619,8 @@ function supportsAddToCartSnippetWrapperClaim(
     !/element|wrapper|component/.test(text)
   ) return false;
 
-  const openingTag = /<add-to-cart-component\\b/i;
-  const closingTag = /<\\/add-to-cart-component\\s*>/i;
+  const openingTag = /<add-to-cart-component\b/i;
+  const closingTag = /<\/add-to-cart-component\s*>/i;
   if (!openingTag.test(actualSource) || !closingTag.test(actualSource)) return false;
 
   return evidenceItems.some((evidence) =>
@@ -7648,7 +7648,7 @@ function supportsConditionalStickyAddToCartElementClaim(
   ) return false;
 
   const conditionalElementPattern =
-    /{%-?\\s*if\\s+section\\.settings\\.enable_sticky_add_to_cart\\s*%}[\\s\\S]{0,1500}<sticky-add-to-cart\\b/i;
+    /{%-?\s*if\s+section\.settings\.enable_sticky_add_to_cart\s*%}[\s\S]{0,1500}<sticky-add-to-cart\b/i;
   if (!conditionalElementPattern.test(actualSource)) return false;
 
   return evidenceItems.some((evidence) =>
