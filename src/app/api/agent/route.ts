@@ -8040,6 +8040,31 @@ function getStickyAddToCartHandlerSource(source: string): string | null {
   return handlerMatch ? handlerMatch[0].replace(/^\n/, "") : null;
 }
 
+function supportsStickyAddToCartTargetAssignmentClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/sticky-add-to-cart.js" ||
+    !/targetaddtocartbutton/.test(text) ||
+    !/queryselector|reference|selects|stores/.test(text)
+  ) return false;
+
+  const assignmentPattern =
+    /this\.#targetAddToCartButton\s*=\s*productForm\.querySelector\(\s*['"]\[ref="addToCartButton"\]['"]\s*\)/;
+  if (!assignmentPattern.test(actualSource)) return false;
+
+  return evidenceItems.some((evidence) =>
+    assignmentPattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      evidenceMatchesSource(evidence, segment) &&
+      assignmentPattern.test(segment)
+    )
+  );
+}
+
 function supportsStickyAddToCartProxyClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
@@ -11070,6 +11095,10 @@ async function verifyAnswerClaim(
           supportsStickyAddToCartProxyClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedStickyAddToCartTargetAssignment =
+          supportsStickyAddToCartTargetAssignmentClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedStickyProductInformationBinding =
           supportsStickyProductInformationBindingClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -11131,6 +11160,7 @@ async function verifyAnswerClaim(
           verifiedComponentCallbackInvocation ||
           verifiedProductFormValidationRecommendation ||
           verifiedStickyAddToCartProxy ||
+          verifiedStickyAddToCartTargetAssignment ||
           verifiedStickyProductInformationBinding ||
           verifiedAddToCartButtonBinding ||
           verifiedAddToCartSuperConnectedCallback ||
@@ -11366,6 +11396,7 @@ async function verifyAnswerClaim(
           verifiedComponentCallbackInvocation ||
           verifiedProductFormValidationRecommendation ||
           verifiedStickyAddToCartProxy ||
+          verifiedStickyAddToCartTargetAssignment ||
           verifiedStickyProductInformationBinding ||
           verifiedAddToCartButtonBinding ||
           verifiedAddToCartSuperConnectedCallback ||
@@ -15005,6 +15036,16 @@ or implementation details.
     (v) Include separate atomic #processAddToCart claims for FormData creation,
         CartLinesUpdateEvent creation/dispatch, and the final cart_add_url fetch.
         For every operation, cite the #processAddToCart signature and operation.
+    (w) Include a separate claim for the product-information sticky button's
+        on:click="/handleAddToCartClick" binding, with that exact binding excerpt.
+    (x) Include a separate claim for the buy-buttons product-form-component
+        on:submit="/handleSubmit" binding, with the component tag and binding.
+    (y) Include a separate claim for the sticky handler's
+        this.#targetAddToCartButton = productForm.querySelector('[ref="addToCartButton"]')
+        assignment. Do not infer the target's identity from .click() alone.
+    (z) The final answer must include the complete discovered execution flow,
+        not only file names or entry points. When exact source is unavailable,
+        explicitly mark that particular edge UNVERIFIED.
 
 The answer field should contain a practical explanation for the user.
 
