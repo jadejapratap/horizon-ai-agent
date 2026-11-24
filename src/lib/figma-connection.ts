@@ -576,10 +576,17 @@ async function downloadFigmaImageAssets(
   let matchedRefs = 0;
   let downloadFailures = 0;
   let unsupportedTypes = 0;
+  let heroSlotDownloadFailures = imageUses
+    .slice(selectedUses.length)
+    .filter((use) => Boolean(use.heroSlot)).length;
 
-  for (const use of selectedUses) {
+  for (let index = 0; index < selectedUses.length; index += 1) {
+    const use = selectedUses[index];
     const imageUrl = imageUrlByRef.get(normalizeImageRef(use.imageRef));
-    if (!imageUrl) continue;
+    if (!imageUrl) {
+      if (use.heroSlot) heroSlotDownloadFailures += 1;
+      continue;
+    }
     matchedRefs += 1;
 
     try {
@@ -589,9 +596,13 @@ async function downloadFigmaImageAssets(
       });
       if (!response.ok) {
         downloadFailures += 1;
+        if (use.heroSlot) heroSlotDownloadFailures += 1;
         console.warn("HORIZON FIGMA IMAGE DOWNLOAD FAILED", {
           nodeId: use.nodeId,
           nodeName: use.nodeName,
+          frameNodeId: use.frameNodeId,
+          frameNodeName: use.frameNodeName,
+          heroSlot: use.heroSlot || null,
           status: response.status,
         });
         continue;
@@ -601,9 +612,13 @@ async function downloadFigmaImageAssets(
       const extension = getImageExtension(mimeType, imageUrl);
       if (!extension) {
         unsupportedTypes += 1;
+        if (use.heroSlot) heroSlotDownloadFailures += 1;
         console.warn("HORIZON FIGMA IMAGE TYPE UNSUPPORTED", {
           nodeId: use.nodeId,
           nodeName: use.nodeName,
+          frameNodeId: use.frameNodeId,
+          frameNodeName: use.frameNodeName,
+          heroSlot: use.heroSlot || null,
           mimeType,
           urlPath: (() => {
             try { return new URL(imageUrl).pathname; } catch { return "invalid-url"; }
@@ -615,9 +630,15 @@ async function downloadFigmaImageAssets(
       const imageBuffer = Buffer.from(await response.arrayBuffer());
       if (imageBuffer.length === 0 || imageBuffer.length > 8 * 1024 * 1024) {
         downloadFailures += 1;
+        if (use.heroSlot) heroSlotDownloadFailures += 1;
         continue;
       }
-      if (totalBytes + imageBuffer.length > 20 * 1024 * 1024) break;
+      if (totalBytes + imageBuffer.length > 20 * 1024 * 1024) {
+        heroSlotDownloadFailures += selectedUses
+          .slice(index)
+          .filter((remainingUse) => Boolean(remainingUse.heroSlot)).length;
+        break;
+      }
       totalBytes += imageBuffer.length;
 
       const nodeToken = use.nodeId.replace(/[^0-9]/g, "-").replace(/-+/g, "-");
@@ -637,9 +658,13 @@ async function downloadFigmaImageAssets(
       });
     } catch (error) {
       downloadFailures += 1;
+      if (use.heroSlot) heroSlotDownloadFailures += 1;
       console.warn("HORIZON FIGMA IMAGE DOWNLOAD ERROR", {
         nodeId: use.nodeId,
         nodeName: use.nodeName,
+        frameNodeId: use.frameNodeId,
+        frameNodeName: use.frameNodeName,
+        heroSlot: use.heroSlot || null,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -654,11 +679,24 @@ async function downloadFigmaImageAssets(
     downloadedAssets: assets.length,
     downloadFailures,
     unsupportedTypes,
+    heroSlotDownloadFailures,
   });
+
+  // A partial download could make a slot with multiple image fills look
+  // uniquely mapped. Reject incomplete hero-slot coverage instead of letting
+  // the theme editor select whichever image happened to download first.
+  if (heroSlotDownloadFailures > 0) {
+    throw new FigmaConnectionError(
+      "Horizon found " + heroSlotDownloadFailures +
+        " original Figma hero image fill(s) in the named left/right frames that could not be fully imported. " +
+        "It will not guess a slot from a partial image list. No theme files were changed. " +
+        "Check the HORIZON FIGMA IMAGE FILL LOOKUP and HORIZON FIGMA IMAGE DOWNLOAD logs.",
+      502
+    );
+  }
 
   return assets;
 }
-
 function getFigmaFileNameFromUrl(value: string): string {
   try {
     const lastSegment = new URL(value).pathname.split("/").filter(Boolean).at(-1) || "";
