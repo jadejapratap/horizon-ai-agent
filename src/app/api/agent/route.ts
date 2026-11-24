@@ -537,16 +537,30 @@ function resolveExplicitFileRequest(
     /\b(?:restrict|limit|confine)\b.{0,45}\b(?:analysis|inspection|source discovery|search|scope)\b.{0,45}\bto\s+(?:only\s+)?(?:these|the following|the listed|the specified|named)?\s*(?:theme\s+)?(?:source\s+)?files?\b/i.test(prompt) ||
     /\b(?:do not|don't|never)\s+(?:inspect|read|load|search|open|include)\b.{0,40}\bother\s+(?:theme\s+)?files?\b/i.test(prompt) ||
     /\b(?:exclude|ignore)\b.{0,35}\bother\s+(?:theme\s+)?files?\b/i.test(prompt);
-  // Named paths are discovery seeds when the prompt explicitly says they are
-  // non-exclusive. This takes precedence over weaker "only these files" wording
-  // elsewhere in a long checklist, while preserving genuinely file-only scope.
+  // A prompt may first name files in a checklist and later clarify that
+  // those paths are discovery seeds rather than a closed allowlist. Detect
+  // that intent independently of sentence order and common wording variants.
+  const hasNamedPathReferences = /\b(?:source\s+)?(?:file|files|path|paths)\b/i.test(prompt);
+  const hasSeedLanguage = /\bseeds?\b/i.test(prompt);
+  const hasNonExclusiveLanguage =
+    /\bnon[-\s]?exclusive\b/i.test(prompt) ||
+    /\bnot\b[\s\S]{0,140}\bexclusive\b/i.test(prompt);
   const namedPathsAreDiscoverySeeds =
-    /\b(?:source\s+)?paths?\b[\s\S]{0,100}\b(?:discovery\s+)?seeds?\b[\s\S]{0,80}\bnot\s+(?:(?:the|an?)\s+)?exclusive\b/i.test(prompt) ||
-    /\b(?:discovery\s+)?seeds?\b[\s\S]{0,80}\bnot\s+(?:(?:the|an?)\s+)?exclusive\b/i.test(prompt);
+    hasNamedPathReferences && hasSeedLanguage && hasNonExclusiveLanguage;
   const enabled =
     detected.size > 0 &&
     explicitlyRestrictsFileScope &&
     !namedPathsAreDiscoverySeeds;
+
+  console.info("EXPLICIT FILE SCOPE DECISION:", {
+    detectedPathCount: detected.size,
+    explicitlyRestrictsFileScope,
+    hasNamedPathReferences,
+    hasSeedLanguage,
+    hasNonExclusiveLanguage,
+    namedPathsAreDiscoverySeeds,
+    enabled,
+  });
 
   if (detected.size === 0) {
     return {
