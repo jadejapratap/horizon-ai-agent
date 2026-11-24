@@ -102,9 +102,16 @@ async function figmaJson<T>(endpoint: string): Promise<T> {
   const payload = await response.json().catch(() => ({})) as Record<string, any>;
   if (!response.ok) {
     const detail = typeof payload.err === "string" ? payload.err : "";
-    if (response.status === 401 || response.status === 403) {
+    if (response.status === 401) {
       throw new FigmaConnectionError(
-        "Figma rejected the API request. Check that FIGMA_ACCESS_TOKEN is valid, includes file_content:read, and belongs to an account that can view this file." +
+        "Figma rejected the API token. Check that FIGMA_ACCESS_TOKEN is a valid, non-expired token." +
+          (detail ? " Figma: " + detail : ""),
+        403
+      );
+    }
+    if (response.status === 403) {
+      throw new FigmaConnectionError(
+        "Figma denied access to this file. Confirm the token includes file_content:read and its Figma account can view the file." +
           (detail ? " Figma: " + detail : ""),
         403
       );
