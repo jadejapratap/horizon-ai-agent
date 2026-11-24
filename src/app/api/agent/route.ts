@@ -7581,8 +7581,12 @@ function getComponentClassMethodSource(
   if (!classMatch) return null;
   const classTail = source.slice(classMatch.index + classMatch[0].length);
   const classEnd = /\n\}/.exec(classTail);
-  if (!classEnd) return null;
-  const classBody = classTail.slice(0, classEnd.index);
+  // Gemini may receive a contiguous partial range that contains the complete
+  // method but not the class's final closing brace. The method's own signature
+  // and indented closing brace are sufficient when the class tail is truncated.
+  const classBody = classEnd
+    ? classTail.slice(0, classEnd.index)
+    : classTail;
   const methodPattern = new RegExp(
     "(^|\\n)([ \\t]{2})" + methodName +
       "\\s*\\([^\\n]*\\)\\s*\\{[\\s\\S]*?\\n\\2\\}",
