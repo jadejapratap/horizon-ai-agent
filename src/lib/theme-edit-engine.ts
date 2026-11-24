@@ -207,14 +207,20 @@ async function discoverSourceContext(prompt: string): Promise<{ files: SourceFil
   }
 
   const terms = getPromptTerms(prompt);
+  const requiredHomepageFiles = /\b(homepage|home page|landing page|landing desktop|storefront home)\b/i.test(prompt)
+    ? new Set(["templates/index.json"])
+    : new Set<string>();
+
   const results = await Promise.all(manifest.map(async (relativePath) => {
     const fullPath = path.resolve(root, relativePath);
     try {
       const metadata = await stat(fullPath);
       if (!metadata.isFile() || metadata.size > 250000) return null;
       const content = await readFile(fullPath, "utf8");
-      const score = scoreThemeFile(prompt.toLowerCase(), relativePath, content, terms);
-      if (score <= 0) return null;
+      const isRequiredHomepageFile = requiredHomepageFiles.has(relativePath);
+      const score = scoreThemeFile(prompt.toLowerCase(), relativePath, content, terms) +
+        (isRequiredHomepageFile ? 1000 : 0);
+      if (score <= 0 && !isRequiredHomepageFile) return null;
       return {
         path: relativePath,
         fullPath,
@@ -231,6 +237,16 @@ async function discoverSourceContext(prompt: string): Promise<{ files: SourceFil
   for (const result of results) {
     if (result) loaded.push({ ...result, excerpt: "", complete: false });
   }
+
+  for (const requiredPath of requiredHomepageFiles) {
+    if (!loaded.some((file) => file.path === requiredPath)) {
+      throw new ThemeEditEngineError(
+        "The required Shopify homepage composition file was not found or could not be read: " + requiredPath + ". No files were changed.",
+        404
+      );
+    }
+  }
+
   loaded.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
 
   const selected: SourceFile[] = [];
@@ -585,6 +601,7 @@ async function generateEditPlan(
         "Implement the user's requested storefront change in the actual supplied theme source. You are not in read-only analysis mode. Return a concrete edit plan, not an explanation-only answer.",
         "When FIGMA DESIGN REFERENCE is present, use its actual screenshot as the visual target and the layer hierarchy as supporting evidence. Recreate the design with native Shopify Liquid, CSS, and JavaScript; do not use the screenshot itself as a page background or substitute for implementation assets.",
         "Understand behavior by tracing the supplied Liquid, CSS, JavaScript, JSON, render calls, symbols, and dependencies. Do not choose a file based only on its filename.",
+        "For homepage and landing-page requests, treat templates/index.json as the Shopify page-composition entrypoint. Inspect its existing section instances and order, preserve stable section/block IDs where practical, and make only grounded changes to the supplied JSON and its inspected section implementations.",
         "Only edit existing source files included in SOURCE FILES RETRIEVED FOR THIS REQUEST, or create a new file inside an existing directory listed in EXISTING THEME DIRECTORIES.",
         "Never edit files outside themes/horizon. Never edit config/settings_data.json, locale files, credentials, environment files, or application/backend files.",
         "For an existing file, return create=false and one or more exact oldText/newText replacements. Every oldText must be copied byte-for-byte from the supplied source and be unique in the file at the time that operation is applied.",
