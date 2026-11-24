@@ -87,7 +87,7 @@ The following remain separate implementation phases and must not be assumed to w
 - Admin GraphQL operation clients for product, order, fulfillment/refund, customer/B2B company, inventory, shipping, store settings, navigation, and theme publish operations.
 - Explicit approval workflows, dry-run execution, audit storage, and role/permission checks for destructive or sensitive merchant operations.
 - Automated Shopify CLI upload/preview/publish and OAuth-connected store preview. The dashboard can embed a real preview URL started separately with Shopify CLI.
-- Figma OAuth/REST API integration for automatic file browsing, layer/component metadata, asset extraction, comments, and design-to-code handoff. The dashboard currently supports the official Figma Embed Kit viewer.
+- Full Figma OAuth sign-in, file browsing, comments, write operations, and team-level account management remain separate. Local design-to-code uses a server-side Figma personal access token with read-only `file_content:read` scope; the token is never sent to the browser.
 
 Do not put merchant access tokens into MCP process variables. Admin API access must be built separately using Shopify OAuth and the exact scopes required for each supported operation. Refunds, cancellations, deletions, sensitive settings, and publishing require explicit approval.
 
@@ -192,9 +192,13 @@ Do not put merchant access tokens into MCP process variables. Admin API access m
 
 ## Dashboard Figma workspace
 
-The dashboard's right-hand workspace embeds Figma files using Figma Embed Kit 2.0. Paste a Figma share URL for a Design file, prototype, FigJam board, Slides, or Deck and select **Load Figma**. The URL is validated and converted to the official `https://embed.figma.com/...` format with the required `embed-host=horizon-ai` parameter. The last used Figma URL is stored in this browser. Design files can be opened in Design or Dev Mode; the original file can also be opened in a new tab.
+The dashboard's right-hand workspace embeds Figma files using Figma Embed Kit 2.0. Paste a Figma share URL and select **Load Figma**. The browser preview supports Design, Prototype, FigJam, Slides, and Deck links. Design links are also checked against the Figma REST API so the dashboard distinguishes a visible iframe preview from a design that the Agent can actually read.
 
-Figma embed access follows the file's share permissions. Organization-only files require the viewer to be signed in and have access. Password-protected files cannot be embedded. This is a browser embed integration; it does not yet implement Figma OAuth, REST API access, automatic file browsing, or programmatic extraction of layers/assets. See the [Figma Embed Kit documentation](https://developers.figma.com/docs/embeds/).
+For Agent design-to-code, set `FIGMA_ACCESS_TOKEN` in the local `.env.local` file. Create a Figma personal access token under **Figma account Settings → Security → Personal access tokens** and grant the read-only `file_content:read` scope. The token is used only on the server and is never sent to the browser or included in Gemini prompts. Keep the token private and restart the Next.js server after adding it. The API connection check reports missing token, insufficient scope, invalid token, and inaccessible file errors separately.
+
+When a design edit is requested, Horizon sends the active Figma Design URL to the server. The server reads the file's layer hierarchy and exports the selected homepage frame screenshot through the Figma REST API; both are provided to the theme-edit planner as design reference. If the URL has no `node-id`, the Agent selects the most likely homepage-sized frame by its name and dimensions. For the most reliable target, select the actual homepage frame in Figma and copy its link before loading it in Horizon.
+
+This uses the Figma REST API's [personal access token authentication](https://developers.figma.com/docs/rest-api/personal-access-tokens/) and [file/image endpoints](https://developers.figma.com/docs/rest-api/file-endpoints/). The authenticated account must be able to view the file, and the token must include `file_content:read`. The embed viewer can still work when the Agent API connection is not configured, but in that case the Agent will not claim to have read the design or silently guess at the visual target.
 
 ## Dashboard Shopify theme preview
 
