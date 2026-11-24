@@ -87,7 +87,7 @@ The following remain separate implementation phases and must not be assumed to w
 - Admin GraphQL operation clients for product, order, fulfillment/refund, customer/B2B company, inventory, shipping, store settings, navigation, and theme publish operations.
 - Explicit approval workflows, dry-run execution, audit storage, and role/permission checks for destructive or sensitive merchant operations.
 - Automated Shopify CLI upload/preview/publish and OAuth-connected store preview. The dashboard can embed a real preview URL started separately with Shopify CLI.
-- Figma API integration, SRS ingestion, spreadsheet import, and production QA agents.
+- Figma OAuth/REST API integration for automatic file browsing, layer/component metadata, asset extraction, comments, and design-to-code handoff. The dashboard currently supports the official Figma Embed Kit viewer.
 
 Do not put merchant access tokens into MCP process variables. Admin API access must be built separately using Shopify OAuth and the exact scopes required for each supported operation. Refunds, cancellations, deletions, sensitive settings, and publishing require explicit approval.
 
@@ -189,6 +189,12 @@ The following remain separate implementation phases and must not be assumed to w
 - Figma API integration, SRS ingestion, spreadsheet import, and production QA agents.
 
 Do not put merchant access tokens into MCP process variables. Admin API access must be built separately using Shopify OAuth and the exact scopes required for each supported operation. Refunds, cancellations, deletions, sensitive settings, and publishing require explicit approval.
+
+## Dashboard Figma workspace
+
+The dashboard's right-hand workspace embeds Figma files using Figma Embed Kit 2.0. Paste a Figma share URL for a Design file, prototype, FigJam board, Slides, or Deck and select **Load Figma**. The URL is validated and converted to the official `https://embed.figma.com/...` format with the required `embed-host=horizon-ai` parameter. The last used Figma URL is stored in this browser. Design files can be opened in Design or Dev Mode; the original file can also be opened in a new tab.
+
+Figma embed access follows the file's share permissions. Organization-only files require the viewer to be signed in and have access. Password-protected files cannot be embedded. This is a browser embed integration; it does not yet implement Figma OAuth, REST API access, automatic file browsing, or programmatic extraction of layers/assets. See the [Figma Embed Kit documentation](https://developers.figma.com/docs/embeds/).
 
 ## Dashboard Shopify theme preview
 
