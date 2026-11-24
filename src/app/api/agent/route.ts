@@ -367,7 +367,20 @@ async function generateContentWithRetry(
         `GEMINI REQUEST ATTEMPT ${attempt}/${GEMINI_RETRY_ATTEMPTS}`
       );
 
-      return await ai.models.generateContent(request as any);
+      const response = await ai.models.generateContent(request as any);
+      const usage = response?.usageMetadata ?? response?.usage_metadata;
+
+      if (usage) {
+        console.info("GEMINI REQUEST USAGE", {
+          model: request.model,
+          promptTokenCount: usage.promptTokenCount ?? usage.prompt_token_count ?? null,
+          candidatesTokenCount: usage.candidatesTokenCount ?? usage.candidates_token_count ?? null,
+          totalTokenCount: usage.totalTokenCount ?? usage.total_token_count ?? null,
+          cachedContentTokenCount: usage.cachedContentTokenCount ?? usage.cached_content_token_count ?? null,
+        });
+      }
+
+      return response;
     } catch (error) {
       lastError = error;
 
