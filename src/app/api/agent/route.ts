@@ -1562,7 +1562,8 @@ function getArchitectureRootFiles(prompt: string): string[] {
   if (domains.includes("add-to-cart")) {
     roots.push(
       "sections/product-information.liquid",
-      "snippets/add-to-cart-button.liquid"
+      "snippets/add-to-cart-button.liquid",
+      "blocks/buy-buttons.liquid"
     );
   }
 
@@ -4183,8 +4184,28 @@ function buildBackendCoverageRequests(
   prompt = "",
   fullContents: Map<string, string> = new Map()
 ): PlannerChunkRequest[] {
+  const isAddToCartArchitectureRequest =
+    detectCoverageDomains(prompt).includes("add-to-cart");
+  const addToCartTargetedFiles = new Set([
+    "assets/component.js",
+    "assets/sticky-add-to-cart.js",
+  ]);
+  const targetedPlannerFiles = new Set(
+    isAddToCartArchitectureRequest
+      ? plannerRequests
+          .filter((request) => addToCartTargetedFiles.has(normalizePath(request.file)))
+          .map((request) => normalizePath(request.file))
+      : []
+  );
   const requestedFiles = new Set(
-    plannerRequests.map((request) => request.file)
+    plannerRequests
+      .filter((request) =>
+        !(
+          isAddToCartArchitectureRequest &&
+          addToCartTargetedFiles.has(normalizePath(request.file))
+        )
+      )
+      .map((request) => request.file)
   );
 
   const requestedDomains = detectCoverageDomains(prompt);
@@ -4206,7 +4227,9 @@ function buildBackendCoverageRequests(
     ? Math.min(maxRequests, 3)
     : domains.length === 1 && domains[0] === "sticky-header"
       ? Math.min(maxRequests, 4)
-      : maxRequests;
+      : isAddToCartArchitectureRequest
+        ? Math.min(MAX_ON_DEMAND_FILES, maxRequests + targetedPlannerFiles.size)
+        : maxRequests;
 
   // A narrow request must never fall through to arbitrary high-priority
   // files when every file in its requested domain is already complete.
@@ -14652,8 +14675,19 @@ If no additional chunks are needed:
       retrievalState.fullContents
     );
 
+    const addToCartTargetedFiles = new Set([
+      "assets/component.js",
+      "assets/sticky-add-to-cart.js",
+    ]);
+    const plannerRequestsForAllocation =
+      detectCoverageDomains(prompt).includes("add-to-cart")
+        ? plannedRequests.filter((request) =>
+            !addToCartTargetedFiles.has(normalizePath(request.file))
+          )
+        : plannedRequests;
+
     const coverageCandidateRequests = [
-      ...plannedRequests,
+      ...plannerRequestsForAllocation,
       ...backendCoverageRequests,
     ];
 
@@ -15980,6 +16014,35 @@ or implementation details.
          validation guard. It must say "recommendation" and must not imply
          validation already exists. Ground it in the submit signature,
          preventDefault, variant guard, queue push, and process handoff.
+    (ae) Use the exact source identifiers and actions in JavaScript claim
+         wording: "checks this.#variantChangeInProgress", "calls
+         this.#processAddToCart", "creates FormData with new FormData(form)",
+         and "calls fetch(Theme.routes.cart_add_url, ...)" where those exact
+         operations appear. Avoid loose substitutes such as "hands off",
+         "creates an object", or "executes a request" when the identifier is
+         present in the excerpt. This is wording guidance only; every claim
+         must still pass the unchanged backend evidence verifier.
+    (af) Do not say the sticky Add to Cart click bypasses the standard button
+         click handler. The sticky handler invokes click() on the referenced
+         target button; describe only that evidenced proxy behavior.
+    (ag) Attribute the product-form-component on:submit="/handleSubmit"
+         binding to blocks/buy-buttons.liquid. Keep it separate from the
+         ProductFormComponent.handleSubmit method implementation in
+         assets/product-form.js.
+    (ah) Never attribute an event operation to a different file from the
+         evidence. In particular, document.addEventListener and callback.call
+         belong to assets/component.js; the sticky on:click binding belongs
+         to sections/product-information.liquid.
+    (ai) Do not assert Enter-key or programmatic requestSubmit behavior unless
+         the supplied source directly proves it. Explain the validation
+         recommendation from the verified form submit handler and its
+         position before the existing queue/process branching instead.
+    (aj) Present source findings as separate concise bullets. Each factual
+         bullet must match the exact wording and file attribution of one
+         verified claim and end with only its one claim marker. Do not combine
+         multiple claims into a paragraph or reuse a marker for a broad
+         summary. Include the requested execution-flow stages; label an
+         individual missing edge UNVERIFIED rather than inventing it.
 
 The answer field should contain a practical explanation for the user.
 
