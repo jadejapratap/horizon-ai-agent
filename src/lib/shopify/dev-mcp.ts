@@ -27,6 +27,10 @@ type McpStatus = {
   toolsDiscovered: number;
   toolsExposed: number;
   callsMade: number;
+  requiredToolCall: boolean;
+  discoveredTools: string[];
+  validationToolsDiscovered: string[];
+  toolExecutions: Array<{ name: string; isError: boolean; durationMs: number }>;
   lastError?: string;
   reason?: string;
 };
@@ -248,6 +252,28 @@ function buildGeminiDeclarations(connection: McpConnection): Array<Record<string
     }));
 }
 
+function collectRequestText(value: any, output: string[] = []): string[] {
+  if (typeof value === "string") {
+    output.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectRequestText(item, output);
+  } else if (value && typeof value === "object") {
+    if (typeof value.text === "string") output.push(value.text);
+    for (const [key, item] of Object.entries(value)) {
+      if (key !== "text") collectRequestText(item, output);
+    }
+  }
+  return output;
+}
+
+function explicitlyRequestsShopifyMcp(request: GeminiRequest): boolean {
+  const requestText = collectRequestText(request.contents).join("\n");
+  const marker = requestText.lastIndexOf("USER REQUEST:");
+  const userRequest = marker >= 0 ? requestText.slice(marker + "USER REQUEST:".length) : requestText;
+  return /\b(?:use|call|invoke|run|execute)\s+(?:the\s+)?shopify dev mcp\b/i.test(userRequest)
+    || /\b(?:call|invoke|run|execute)\s+(?:an?\s+)?mcp tool\b/i.test(userRequest);
+}
+
 function getFunctionCalls(response: any): GeminiToolCall[] {
   const candidateParts = response?.candidates?.[0]?.content?.parts;
   const calls = Array.isArray(candidateParts)
@@ -298,12 +324,17 @@ export async function generateContentWithShopifyMcpTools(
   generateContent: GenerateFunction
 ): Promise<{ response: any; status: McpStatus }> {
   const enabled = process.env.SHOPIFY_DEV_MCP_ENABLED === "true";
+  const requiredToolCall = explicitlyRequestsShopifyMcp(request);
   const status: McpStatus = {
     enabled,
     connected: false,
     toolsDiscovered: 0,
     toolsExposed: 0,
     callsMade: 0,
+    requiredToolCall,
+    discoveredTools: [],
+    validationToolsDiscovered: [],
+    toolExecutions: [],
   };
 
   const generateWithoutTools = async () => ({
@@ -313,6 +344,7 @@ export async function generateContentWithShopifyMcpTools(
 
   if (!enabled) {
     status.reason = "SHOPIFY_DEV_MCP_ENABLED is not true.";
+    console.info("SHOPIFY DEV MCP STATUS", status);
     return generateWithoutTools();
   }
 
@@ -321,6 +353,7 @@ export async function generateContentWithShopifyMcpTools(
     process.env.SHOPIFY_DEV_MCP_ALLOW_SERVERLESS !== "true"
   ) {
     status.reason = "Local stdio MCP is disabled on serverless hosts by default; use a persistent Node.js host or a remote MCP proxy.";
+    console.info("SHOPIFY DEV MCP STATUS", status);
     return generateWithoutTools();
   }
 
@@ -333,8 +366,21 @@ export async function generateContentWithShopifyMcpTools(
     );
     status.connected = true;
     status.toolsDiscovered = connection.tools.length;
+    status.discoveredTools = connection.tools.map((tool) => tool.name);
+    status.validationToolsDiscovered = connection.tools
+      .filter((tool) => /validat|graphql.{0,20}schema|schema.{0,20}graphql/i.test(
+        tool.name + " " + (tool.description || "")
+      ))
+      .map((tool) => tool.name);
+    console.info("SHOPIFY DEV MCP CONNECTED", {
+      toolsDiscovered: status.toolsDiscovered,
+      tools: status.discoveredTools,
+      validationTools: status.validationToolsDiscovered,
+    });
   } catch (error) {
     status.lastError = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+    console.error("SHOPIFY DEV MCP CONNECTION FAILED", status);
+    console.info("SHOPIFY DEV MCP STATUS", status);
     return generateWithoutTools();
   }
 
@@ -342,6 +388,7 @@ export async function generateContentWithShopifyMcpTools(
   status.toolsExposed = declarations.length;
   if (declarations.length === 0) {
     status.reason = "Shopify Dev MCP connected but returned no tools.";
+    console.info("SHOPIFY DEV MCP STATUS", status);
     return generateWithoutTools();
   }
 
@@ -355,13 +402,19 @@ export async function generateContentWithShopifyMcpTools(
     config: {
       ...(request.config || {}),
       tools: [{ functionDeclarations: declarations }],
-      toolConfig: { functionCallingConfig: { mode: "AUTO" } },
+      toolConfig: { functionCallingConfig: { mode: requiredToolCall ? "ANY" : "AUTO" } },
     },
   });
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const calls = getFunctionCalls(response);
-    if (calls.length === 0) return { response, status };
+    if (calls.length === 0) {
+      if (requiredToolCall && status.callsMade === 0) {
+        status.reason = "The prompt explicitly requested Shopify Dev MCP, but Gemini did not invoke an MCP function.";
+      }
+      console.info("SHOPIFY DEV MCP STATUS", status);
+      return { response, status };
+    }
 
     const modelContent = response?.candidates?.[0]?.content;
     if (modelContent && Array.isArray(contents)) contents.push(modelContent);
@@ -400,10 +453,13 @@ export async function generateContentWithShopifyMcpTools(
           call.args || {},
           timeoutMs
         );
+        const durationMs = Date.now() - started;
+        const isError = Boolean(result?.isError);
+        status.toolExecutions.push({ name: actualName, isError, durationMs });
         console.info("SHOPIFY DEV MCP TOOL COMPLETED", {
           tool: actualName,
-          durationMs: Date.now() - started,
-          isError: Boolean(result?.isError),
+          durationMs,
+          isError,
         });
         functionResponses.push({
           functionResponse: {
@@ -417,9 +473,11 @@ export async function generateContentWithShopifyMcpTools(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         status.lastError = message.slice(0, 500);
+        const durationMs = Date.now() - started;
+        status.toolExecutions.push({ name: actualName, isError: true, durationMs });
         console.error("SHOPIFY DEV MCP TOOL FAILED", {
           tool: actualName,
-          durationMs: Date.now() - started,
+          durationMs,
           error: status.lastError,
         });
         functionResponses.push({
@@ -458,5 +516,6 @@ export async function generateContentWithShopifyMcpTools(
     config: finalConfig,
   });
 
+  console.info("SHOPIFY DEV MCP STATUS", status);
   return { response, status };
 }
