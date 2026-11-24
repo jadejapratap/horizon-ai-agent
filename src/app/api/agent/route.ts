@@ -8785,9 +8785,21 @@ function supportsComponentConnectedCallbackRegistrationClaim(
     !/\b(?:invoke|invokes|call|calls)\b/.test(text)
   ) return false;
 
-  const actualMethod = getComponentClassMethodSource(
-    actualSource, "Component", "connectedCallback"
-  );
+  // Component extends DeclarativeShadowElement, not Component itself, so do
+  // not use getComponentClassMethodSource(), whose class matcher is intended
+  // for custom-element subclasses.
+  const classPattern =
+    /(?:export\s+)?class\s+Component\s+extends\s+DeclarativeShadowElement\s*\{/;
+  const classMatch = classPattern.exec(actualSource);
+  if (!classMatch) return false;
+
+  const classTail = actualSource.slice(classMatch.index + classMatch[0].length);
+  const classEnd = /\n\}/.exec(classTail);
+  const classBody = classEnd ? classTail.slice(0, classEnd.index) : classTail;
+  const callbackPattern =
+    /(^|\n)([ \t]{2})connectedCallback\s*\(\s*\)\s*\{[\s\S]*?\n\2\}/m;
+  const actualMethodMatch = callbackPattern.exec(classBody);
+  const actualMethod = actualMethodMatch?.[0] ?? "";
   const callPattern = /registerEventListeners\s*\(\s*\)\s*;/;
   if (!actualMethod || !callPattern.test(actualMethod)) return false;
 
