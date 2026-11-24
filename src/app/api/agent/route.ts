@@ -541,8 +541,8 @@ function resolveExplicitFileRequest(
   // non-exclusive. This takes precedence over weaker "only these files" wording
   // elsewhere in a long checklist, while preserving genuinely file-only scope.
   const namedPathsAreDiscoverySeeds =
-    /\b(?:source\s+)?paths?\b[\s\S]{0,80}\b(?:discovery\s+)?seeds?\b[\s\S]{0,60}\bnot\s+(?:the\s+)?exclusive\b/i.test(prompt) ||
-    /\b(?:discovery\s+)?seeds?\b[\s\S]{0,60}\bnot\s+(?:the\s+)?exclusive\b/i.test(prompt);
+    /\b(?:source\s+)?paths?\b[\s\S]{0,100}\b(?:discovery\s+)?seeds?\b[\s\S]{0,80}\bnot\s+(?:(?:the|an?)\s+)?exclusive\b/i.test(prompt) ||
+    /\b(?:discovery\s+)?seeds?\b[\s\S]{0,80}\bnot\s+(?:(?:the|an?)\s+)?exclusive\b/i.test(prompt);
   const enabled =
     detected.size > 0 &&
     explicitlyRestrictsFileScope &&
@@ -8297,6 +8297,42 @@ function supportsProductFormHandleSubmitClaim(
   return requiredParts.length > 0 &&
     exactEvidencePartsMatchScope(evidenceItems, actualMethod, sourceSegments, requiredParts);
 }
+function supportsProductFormPostGuardHandoffClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  const claimsPostGuardHandoff =
+    /#?processaddtocart/.test(text) &&
+    /\b(?:after|following|post[-\s]?guard)\b/.test(text) &&
+    /variant[-\s]?change|variantchangeinprogress/.test(text) &&
+    /early[-\s]?return|return/.test(text);
+  if (file !== "assets/product-form.js" || !claimsPostGuardHandoff) return false;
+
+  // Prove the complete control-flow sequence inside one actual method and
+  // one contiguous method range supplied to Gemini. A cautionary mention of
+  // an "else branch" in the claim wording is not itself an else-branch claim.
+  const postGuardPattern =
+    /if\s*\(\s*this\.#variantChangeInProgress\s*\)\s*\{[\s\S]{0,500}?this\.#addToCartQueue\.push\s*\([^;]*\);[\s\S]{0,500}?return\s*;\s*\}\s*this\.#processAddToCart\s*\([^;]*\);/;
+  const actualMethod = getComponentClassMethodSource(
+    actualSource, "ProductFormComponent", "handleSubmit"
+  );
+  if (!actualMethod || !postGuardPattern.test(actualMethod)) return false;
+
+  return sourceSegments.some((segment) => {
+    const suppliedMethod = getComponentMethodFromSuppliedRange(
+      segment, "handleSubmit"
+    );
+    if (!suppliedMethod || !postGuardPattern.test(suppliedMethod)) return false;
+    return evidenceItems.some((evidence) =>
+      postGuardPattern.test(evidence) &&
+      evidenceMatchesSource(evidence, actualMethod) &&
+      evidenceMatchesSource(evidence, suppliedMethod) &&
+      evidenceMatchesSource(evidence, segment)
+    );
+  });
+}
+
 function supportsProductFormCartFetchClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
@@ -11943,12 +11979,9 @@ async function verifyAnswerClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
         const verifiedProductFormPostGuardHandoff =
-          file === "assets/product-form.js" &&
-          /productformcomponent/i.test(claim.claim) &&
-          /handlesubmit/i.test(claim.claim) &&
-          /#?processaddtocart/i.test(claim.claim) &&
-          /after\s+(?:the\s+)?variant[-\s]?change\s+guard/i.test(claim.claim) &&
-          verifiedProductFormHandleSubmit;
+          supportsProductFormPostGuardHandoffClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedProductFormCartFetch =
           supportsProductFormCartFetchClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -12055,6 +12088,7 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartHandleClick ||
           verifiedProductFormHandleSubmit ||
+          verifiedProductFormPostGuardHandoff ||
           verifiedProductFormCartFetch ||
           verifiedProductFormSubmitBinding ||
           verifiedProductFormProcessOperation ||
@@ -12316,6 +12350,7 @@ async function verifyAnswerClaim(
           verifiedAddToCartCustomElement ||
           verifiedAddToCartHandleClick ||
           verifiedProductFormHandleSubmit ||
+          verifiedProductFormPostGuardHandoff ||
           verifiedProductFormCartFetch ||
           verifiedProductFormSubmitBinding ||
           verifiedProductFormProcessOperation ||
