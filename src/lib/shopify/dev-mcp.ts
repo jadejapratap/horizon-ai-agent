@@ -442,7 +442,18 @@ export async function generateContentWithShopifyMcpTools(
     return generateWithoutTools();
   }
 
-  const declarations = buildGeminiDeclarations(connection);
+  const compactTaskContext = (toolContext || collectRequestText(request.contents).join("\n"))
+    .trim()
+    .slice(0, 8000);
+  const feedbackFunctionName = (
+    connection.aliasByToolName.get("feedback") || toGeminiFunctionName("feedback")
+  ).toLowerCase();
+  const explicitlyRequestsFeedback =
+    /\b(?:send|submit|leave|provide|share|record)\b[\s\S]{0,60}\bfeedback\b|\bfeedback\b[\s\S]{0,60}\b(?:send|submit|leave|provide|share|record)\b/i
+      .test(compactTaskContext);
+  const declarations = buildGeminiDeclarations(connection).filter((declaration) =>
+    declaration.name.toLowerCase() !== feedbackFunctionName || explicitlyRequestsFeedback
+  );
   status.toolsExposed = declarations.length;
   if (declarations.length === 0) {
     status.reason = "Shopify Dev MCP connected but returned no tools.";
@@ -470,6 +481,14 @@ export async function generateContentWithShopifyMcpTools(
   // tool-calling phase without JSON response constraints, then run a final
   // structured-output phase after the MCP results have been added to context.
   const toolCallConfig = { ...originalConfig };
+  toolCallConfig.systemInstruction = [
+    "You are routing one Shopify task to the available Shopify Dev MCP tools.",
+    "Use only a tool that directly helps with the user's request.",
+    "Do not call feedback unless the user explicitly asks you to send or submit feedback.",
+    "Do not call validation tools unless the user asks for code or schema validation.",
+    "Do not repeat identical calls. Stop when the relevant documentation lookup is complete.",
+    "Do not produce the final user answer during this tool-selection phase.",
+  ].join("\n");
   delete toolCallConfig.responseMimeType;
   delete toolCallConfig.response_mime_type;
   delete toolCallConfig.responseSchema;
@@ -478,9 +497,6 @@ export async function generateContentWithShopifyMcpTools(
   delete toolCallConfig.tools;
   delete toolCallConfig.toolConfig;
 
-  const compactTaskContext = (toolContext || collectRequestText(request.contents).join("\n"))
-    .trim()
-    .slice(0, 8000);
   // MCP tool selection/search should not resend the full theme source bundle on
   // every function-calling round. The full original context is retained for
   // Gemini's final reasoning pass below.
