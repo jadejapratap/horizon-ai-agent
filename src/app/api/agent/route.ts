@@ -368,15 +368,15 @@ async function generateContentWithRetry(
       );
 
       const response = await ai.models.generateContent(request as any);
-      const usage = response?.usageMetadata ?? response?.usage_metadata;
+      const usage = response?.usageMetadata;
 
       if (usage) {
         console.info("GEMINI REQUEST USAGE", {
           model: request.model,
-          promptTokenCount: usage.promptTokenCount ?? usage.prompt_token_count ?? null,
-          candidatesTokenCount: usage.candidatesTokenCount ?? usage.candidates_token_count ?? null,
-          totalTokenCount: usage.totalTokenCount ?? usage.total_token_count ?? null,
-          cachedContentTokenCount: usage.cachedContentTokenCount ?? usage.cached_content_token_count ?? null,
+          promptTokenCount: usage.promptTokenCount ?? null,
+          candidatesTokenCount: usage.candidatesTokenCount ?? null,
+          totalTokenCount: usage.totalTokenCount ?? null,
+          cachedContentTokenCount: usage.cachedContentTokenCount ?? null,
         });
       }
 
