@@ -46,6 +46,7 @@ import {
   FigmaConnectionError,
   loadFigmaDesignContext,
 } from "@/lib/figma-connection";
+import type { FigmaDesignContext } from "@/lib/figma-connection";
 
 export const maxDuration = 180;
 
@@ -14004,7 +14005,7 @@ export async function POST(request: NextRequest) {
     // Homepage / Figma design implementation requests also load the authenticated
     // Figma frame so Gemini receives both the layer hierarchy and actual screenshot.
     if (isThemeEditRequest(prompt)) {
-      let figmaContext = null;
+      let figmaContext: FigmaDesignContext | null = null;
       const shouldUseFigma =
         Boolean(figmaUrl) &&
         /\b(figma|design|reference|homepage|home page|redesign|recreate|replicate|match|based on)\b/i.test(prompt);
