@@ -10,8 +10,7 @@ import {
   Send,
   Paperclip,
   Code2,
-  Monitor,
-  Smartphone,
+  Figma,
   Sparkles,
   User,
   RefreshCw,
@@ -49,82 +48,126 @@ type Message = {
 };
 
 const STORAGE_KEY = "horizon-ai-chat-history";
+const FIGMA_STORAGE_KEY = "horizon-ai-figma-url";
+
+type FigmaFileType = "design" | "proto" | "board" | "slides" | "deck";
+
+type FigmaEmbedTarget = {
+  originalUrl: string;
+  embedUrl: string;
+  fileType: FigmaFileType;
+  fileKey: string;
+};
+
+function createFigmaEmbedTarget(value: string, mode: "design" | "dev"): FigmaEmbedTarget {
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new Error("Paste a valid Figma design, prototype, FigJam, or Slides URL.");
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const isFigmaHost = hostname === "figma.com" || hostname.endsWith(".figma.com");
+  if (
+    parsed.protocol !== "https:" ||
+    !isFigmaHost ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port
+  ) {
+    throw new Error("Use a secure https://www.figma.com share URL.");
+  }
+
+  const match = parsed.pathname.match(/^\/(design|file|proto|board|slides|deck)\/([a-z0-9]{22,128})(?:\/.*)?$/i);
+  if (!match) {
+    throw new Error("Supported links: Figma Design, Prototype, FigJam board, Slides, or Deck share URLs.");
+  }
+
+  const requestedType = match[1].toLowerCase();
+  const fileType = (requestedType === "file" ? "design" : requestedType) as FigmaFileType;
+  const fileKey = match[2];
+  const remainder = parsed.pathname.split("/").slice(3).filter(Boolean).join("/");
+  const embedUrl = new URL(
+    "https://embed.figma.com/" + fileType + "/" + fileKey + (remainder ? "/" + remainder : "")
+  );
+
+  parsed.searchParams.forEach((parameterValue, key) => {
+    if (key !== "embed_host" && key !== "embed_origin" && key !== "url" && key !== "m" && key !== "mode") {
+      embedUrl.searchParams.set(key, parameterValue);
+    }
+  });
+
+  if (fileType === "design" && mode === "dev") {
+    embedUrl.searchParams.set("mode", "dev");
+  }
+
+  embedUrl.searchParams.set("embed-host", "horizon-ai");
+  embedUrl.searchParams.set("theme", "dark");
+  embedUrl.searchParams.set("footer", "false");
+
+  const originalUrl = parsed.origin + parsed.pathname + parsed.search;
+  return {
+    originalUrl,
+    embedUrl: embedUrl.toString(),
+    fileType,
+    fileKey,
+  };
+}
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const configuredPreviewUrl = process.env.NEXT_PUBLIC_SHOPIFY_THEME_PREVIEW_URL?.trim() || "";
-  const [previewInput, setPreviewInput] = useState(configuredPreviewUrl);
-  const [previewUrl, setPreviewUrl] = useState(() => {
-    if (!configuredPreviewUrl) return "";
-    try {
-      const parsed = new URL(configuredPreviewUrl);
-      const localHosts = ["localhost", "127.0.0.1", "[::1]"];
-      const isAllowedProtocol = parsed.protocol === "https:"
-        || (parsed.protocol === "http:" && localHosts.includes(parsed.hostname));
-      return isAllowedProtocol && !parsed.username && !parsed.password
-        ? parsed.toString()
-        : "";
-    } catch {
-      return "";
-    }
-  });
-  const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
-  const [previewRevision, setPreviewRevision] = useState(0);
-  const [previewError, setPreviewError] = useState("");
-  const isLocalCliPreview = previewUrl
-    ? ["127.0.0.1", "localhost", "[::1]"].includes(new URL(previewUrl).hostname)
-    : false;
+  const [figmaInput, setFigmaInput] = useState("");
+  const [figmaOriginalUrl, setFigmaOriginalUrl] = useState("");
+  const [figmaEmbedUrl, setFigmaEmbedUrl] = useState("");
+  const [figmaFileType, setFigmaFileType] = useState<FigmaFileType | "">("");
+  const [figmaFileKey, setFigmaFileKey] = useState("");
+  const [figmaMode, setFigmaMode] = useState<"design" | "dev">("design");
+  const [figmaRevision, setFigmaRevision] = useState(0);
+  const [figmaError, setFigmaError] = useState("");
 
-  function openThemePreviewWindow() {
-    if (!previewUrl) return;
-
-    const isMobile = previewMode === "mobile";
-    const width = isMobile
-      ? 390
-      : Math.min(1440, Math.max(1024, window.screen.availWidth - 80));
-    const height = isMobile
-      ? 844
-      : Math.min(960, Math.max(700, window.screen.availHeight - 80));
-
-    window.open(
-      previewUrl,
-      "horizon-shopify-theme-preview",
-      `popup=yes,width=${width},height=${height},resizable=yes,scrollbars=yes`
-    );
-  }
-
-  function connectThemePreview() {
-    const value = previewInput.trim();
+  function loadFigmaDesign(mode: "design" | "dev" = figmaMode) {
+    const value = figmaInput.trim();
     if (!value) {
-      setPreviewError("Paste the storefront preview URL first.");
+      setFigmaError("Paste your Figma share URL first.");
       return;
     }
 
     try {
-      const parsed = new URL(value);
-      const localHosts = ["localhost", "127.0.0.1", "[::1]"];
-      const isAllowedProtocol = parsed.protocol === "https:"
-        || (parsed.protocol === "http:" && localHosts.includes(parsed.hostname));
-      if (!isAllowedProtocol || parsed.username || parsed.password) {
-        throw new Error("Use an HTTPS storefront URL or a local Shopify CLI URL such as http://127.0.0.1:9292.");
-      }
-      if (parsed.origin === window.location.origin) {
-        throw new Error("Enter the Shopify storefront preview URL, not the Horizon AI application URL.");
-      }
-
-      setPreviewUrl(parsed.toString());
-      setPreviewError("");
-      setPreviewRevision((revision) => revision + 1);
+      const target = createFigmaEmbedTarget(value, mode);
+      setFigmaOriginalUrl(target.originalUrl);
+      setFigmaEmbedUrl(target.embedUrl);
+      setFigmaFileType(target.fileType);
+      setFigmaFileKey(target.fileKey);
+      setFigmaMode(mode);
+      setFigmaError("");
+      setFigmaRevision((revision) => revision + 1);
+      localStorage.setItem(FIGMA_STORAGE_KEY, target.originalUrl);
     } catch (error) {
-      setPreviewError(error instanceof Error
-        ? error.message
-        : "Enter a valid Shopify storefront preview URL.");
+      setFigmaError(error instanceof Error ? error.message : "Unable to load this Figma link.");
     }
   }
 
+  useEffect(() => {
+    try {
+      const savedFigmaUrl = localStorage.getItem(FIGMA_STORAGE_KEY);
+      if (savedFigmaUrl) {
+        const savedMode = /[?&](?:m|mode)=dev(?:&|$)/.test(savedFigmaUrl) ? "dev" : "design";
+        const target = createFigmaEmbedTarget(savedFigmaUrl, savedMode);
+        setFigmaInput(savedFigmaUrl);
+        setFigmaOriginalUrl(target.originalUrl);
+        setFigmaEmbedUrl(target.embedUrl);
+        setFigmaFileType(target.fileType);
+        setFigmaFileKey(target.fileKey);
+        setFigmaMode(savedMode);
+      }
+    } catch (error) {
+      console.warn("Could not restore the saved Figma design:", error);
+    }
+  }, []);
 
   // Load chat history
   useEffect(() => {
@@ -266,10 +309,14 @@ export default function Home() {
             My Projects
           </div>
 
-          <div className="flex gap-3">
-            <Code2 />
+          <button
+            type="button"
+            onClick={() => document.getElementById("figma-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            className="flex w-full items-center gap-3 text-left hover:text-white"
+          >
+            <Figma />
             Figma Designs
-          </div>
+          </button>
 
           <div className="flex gap-3">
             <Code2 />
@@ -496,61 +543,59 @@ export default function Home() {
 
           </div>
 
-          {/* LIVE PREVIEW */}
+          {/* FIGMA WORKSPACE */}
 
-          <div className="flex min-h-[620px] min-w-0 flex-col rounded-2xl border border-white/10 bg-[#141525] p-5">
+          <div id="figma-workspace" className="flex min-h-[620px] min-w-0 flex-col rounded-2xl border border-white/10 bg-[#141525] p-5">
 
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="font-semibold">Live Preview</h3>
+                <div className="flex items-center gap-2">
+                  <Figma size={19} className="text-violet-300" />
+                  <h3 className="font-semibold">Figma Designs</h3>
+                </div>
                 <p className="mt-1 truncate text-xs text-gray-400">
-                  {previewUrl
-                    ? `${isLocalCliPreview ? "Local CLI preview" : "Preview URL selected"} · ${new URL(previewUrl).host}`
-                    : "No storefront preview connected"}
+                  {figmaEmbedUrl
+                    ? "Connected · " + (figmaFileType === "proto" ? "Prototype" : figmaFileType === "board" ? "FigJam" : figmaFileType === "slides" || figmaFileType === "deck" ? "Slides" : "Design") + " · " + figmaFileKey
+                    : "No Figma design connected"}
                 </p>
               </div>
 
               <div className="flex items-center gap-2 text-gray-300">
+                {figmaFileType === "design" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => loadFigmaDesign("design")}
+                      aria-pressed={figmaMode === "design"}
+                      className={"rounded-lg px-3 py-2 text-xs transition-colors " + (figmaMode === "design" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10")}
+                    >
+                      Design
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => loadFigmaDesign("dev")}
+                      aria-pressed={figmaMode === "dev"}
+                      className={"rounded-lg px-3 py-2 text-xs transition-colors " + (figmaMode === "dev" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10")}
+                    >
+                      Dev Mode
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
-                  onClick={() => setPreviewMode("desktop")}
-                  aria-label="Desktop preview"
-                  aria-pressed={previewMode === "desktop"}
-                  className={`rounded-lg p-2 transition-colors ${previewMode === "desktop" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10"}`}
-                >
-                  <Monitor size={18} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPreviewMode("mobile")}
-                  aria-label="Mobile preview"
-                  aria-pressed={previewMode === "mobile"}
-                  className={`rounded-lg p-2 transition-colors ${previewMode === "mobile" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10"}`}
-                >
-                  <Smartphone size={18} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewError("");
-                    if (isLocalCliPreview) {
-                      openThemePreviewWindow();
-                    } else {
-                      setPreviewRevision((revision) => revision + 1);
-                    }
-                  }}
-                  disabled={!previewUrl}
-                  aria-label="Refresh theme preview"
+                  onClick={() => loadFigmaDesign()}
+                  disabled={!figmaOriginalUrl}
+                  aria-label="Refresh Figma embed"
                   className="rounded-lg p-2 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30"
                 >
                   <RefreshCw size={17} />
                 </button>
-                {previewUrl && (
+                {figmaOriginalUrl && (
                   <a
-                    href={previewUrl}
+                    href={figmaOriginalUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    aria-label="Open storefront preview in a new tab"
+                    aria-label="Open design in Figma"
                     className="rounded-lg p-2 transition-colors hover:bg-white/10"
                   >
                     <ExternalLink size={17} />
@@ -562,85 +607,59 @@ export default function Home() {
             <form
               onSubmit={(event) => {
                 event.preventDefault();
-                connectThemePreview();
+                loadFigmaDesign("design");
               }}
               className="mb-3 flex gap-2"
             >
               <input
                 type="url"
-                value={previewInput}
-                onChange={(event) => setPreviewInput(event.target.value)}
-                placeholder="Paste Shopify theme preview URL (e.g. http://127.0.0.1:9292)"
-                aria-label="Shopify storefront preview URL"
+                value={figmaInput}
+                onChange={(event) => setFigmaInput(event.target.value)}
+                placeholder="Paste Figma Design, Prototype, FigJam or Slides link"
+                aria-label="Figma share URL"
                 className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#0c0d18] px-3 py-2 text-xs text-white outline-none transition-colors focus:border-violet-500/60"
               />
               <button
                 type="submit"
                 className="shrink-0 rounded-lg bg-violet-600 px-3 py-2 text-xs font-medium transition-colors hover:bg-violet-500"
               >
-                Load Preview
+                Load Figma
               </button>
             </form>
 
-            {previewError && (
+            {figmaError && (
               <p role="alert" className="mb-3 rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-2 text-xs text-red-200">
-                {previewError}
+                {figmaError}
               </p>
             )}
 
-            {previewUrl ? (
-              isLocalCliPreview ? (
-                <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center rounded-xl border border-white/15 bg-[#0c0d18] p-7 text-center">
-                  <Monitor size={42} className="mb-4 text-violet-400" />
-                  <h3 className="font-semibold">Open your Shopify CLI preview</h3>
-                  <p className="mt-2 max-w-lg text-sm leading-6 text-gray-400">
-                    Shopify CLI serves the real storefront locally, but the store can block it from being embedded inside another website. Open the preview directly in Chrome instead of showing a blank iframe.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={openThemePreviewWindow}
-                    className="mt-5 inline-flex items-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold transition-colors hover:bg-violet-500"
-                  >
-                    <ExternalLink size={17} />
-                    Open {previewMode === "mobile" ? "Mobile" : "Desktop"} Preview
-                  </button>
-                  <p className="mt-4 max-w-md text-xs leading-5 text-gray-500">
-                    Desktop and Mobile choose the preview window size. Keep the Shopify CLI terminal running to retain hot reload while editing theme files.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center overflow-auto rounded-xl border border-white/15 bg-[#0c0d18] p-3">
-                  <div
-                    className={`h-[calc(100vh-360px)] min-h-[430px] overflow-hidden rounded-lg bg-white shadow-2xl transition-[width] duration-300 ${previewMode === "mobile" ? "w-[390px] max-w-full" : "w-full"}`}
-                  >
-                    <iframe
-                      key={`${previewUrl}:${previewRevision}`}
-                      src={previewUrl}
-                      title="Shopify storefront theme preview"
-                      className="h-full w-full border-0 bg-white"
-                      loading="lazy"
-                      referrerPolicy="no-referrer"
-                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
-                      onError={() => setPreviewError("The storefront preview could not be loaded. Open it in a new tab to check whether the storefront blocks iframe embedding.")}
-                    />
-                  </div>
-                  <p className="mt-3 text-center text-xs text-gray-500">
-                    Preview not visible? Use the Open in New Tab icon above. Some Shopify storefronts block iframe embedding.
-                  </p>
-                </div>
-              )
+            {figmaEmbedUrl ? (
+              <div className="min-h-[460px] flex-1 overflow-hidden rounded-xl border border-white/15 bg-[#0c0d18]">
+                <iframe
+                  key={figmaEmbedUrl + ":" + figmaRevision}
+                  src={figmaEmbedUrl}
+                  title={"Figma " + (figmaFileType || "design") + " workspace"}
+                  className="h-full min-h-[460px] w-full border-0 bg-[#0c0d18]"
+                  loading="lazy"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  allowFullScreen
+                />
+              </div>
             ) : (
               <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#0c0d18] p-7 text-center">
-                <Code2 size={44} className="mb-4 text-violet-400" />
-                <h3 className="font-semibold">Connect a real Shopify theme preview</h3>
-                <p className="mt-2 max-w-md text-sm text-gray-400">
-                  Start Shopify CLI preview for the theme in this repository, then paste the local preview URL above.
+                <Figma size={46} className="mb-4 text-violet-400" />
+                <h3 className="font-semibold">Connect your Figma workspace</h3>
+                <p className="mt-2 max-w-md text-sm leading-6 text-gray-400">
+                  Paste a Figma share link to open a live design, interactive prototype, FigJam board, or Slides file here.
                 </p>
-                <code className="mt-5 max-w-full overflow-x-auto rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-left text-xs text-violet-200">
-                  shopify theme dev --path themes/horizon --store your-store.myshopify.com
-                </code>
-                <p className="mt-4 max-w-md text-xs leading-5 text-gray-500">
-                  Shopify CLI authentication is required. Keep the CLI preview running while using Horizon AI. For a remote deployment, use an HTTPS preview URL reachable from the browser.
+                <div className="mt-5 flex flex-wrap justify-center gap-2 text-xs">
+                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">Figma Design</span>
+                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">Prototype</span>
+                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">FigJam</span>
+                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">Slides</span>
+                </div>
+                <p className="mt-5 max-w-md text-xs leading-5 text-gray-500">
+                  The file must be shared with your Figma account or have link access. Private organization files require you to be signed in with permission.
                 </p>
               </div>
             )}
