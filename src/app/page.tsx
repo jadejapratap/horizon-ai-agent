@@ -47,7 +47,7 @@ type Message = {
   figmaDesign?: { fileName: string; nodeName: string; nodeId: string } | null;
 };
 
-type FigmaAgentStatus = "idle" | "checking" | "connected" | "error";
+type FigmaAgentStatus = "idle" | "checking" | "configured" | "connected" | "error";
 
 const STORAGE_KEY = "horizon-ai-chat-history";
 const FIGMA_STORAGE_KEY = "horizon-ai-figma-url";
@@ -151,8 +151,12 @@ export default function Home() {
         throw new Error(data.error || "Figma Agent connection failed.");
       }
 
-      setFigmaAgentStatus("connected");
-      setFigmaAgentMessage("Agent API can read this Figma Design file.");
+      setFigmaAgentStatus(data.cached ? "connected" : "configured");
+      setFigmaAgentMessage(
+        data.cached
+          ? "A saved Figma design context is cached locally; no Figma API request was needed."
+          : "Token is configured. File access will be checked once when the Agent first reads this design."
+      );
       setFigmaAgentFileName(data.fileName || "");
     } catch (error) {
       setFigmaAgentStatus("error");
@@ -281,6 +285,12 @@ export default function Home() {
         throw new Error(
           data.message || "AI request failed"
         );
+      }
+
+      if (data.figmaDesign) {
+        setFigmaAgentStatus("connected");
+        setFigmaAgentMessage("Figma design was read successfully and cached on this computer.");
+        setFigmaAgentFileName(data.figmaDesign.fileName || "");
       }
 
       setMessages([
@@ -612,12 +622,14 @@ export default function Home() {
                 {figmaEmbedUrl && (
                   <p className={"mt-1 break-words text-[11px] " + (figmaAgentStatus === "connected" ? "text-emerald-300" : figmaAgentStatus === "checking" ? "text-violet-300" : "text-amber-200")}>
                     {figmaAgentStatus === "connected"
-                      ? "Agent API connected · " + (figmaAgentFileName || figmaAgentMessage)
-                      : figmaAgentStatus === "checking"
-                        ? figmaAgentMessage
-                        : figmaAgentStatus === "error"
-                          ? "Preview only · " + figmaAgentMessage
-                          : "Agent API connection not checked"}
+                      ? "Agent API connected · cached " + (figmaAgentFileName || figmaAgentMessage)
+                      : figmaAgentStatus === "configured"
+                        ? "Agent token configured · " + (figmaAgentFileName || figmaAgentMessage)
+                        : figmaAgentStatus === "checking"
+                          ? figmaAgentMessage
+                          : figmaAgentStatus === "error"
+                            ? "Preview only · " + figmaAgentMessage
+                            : "Agent API connection not checked"}
                   </p>
                 )}
               </div>
