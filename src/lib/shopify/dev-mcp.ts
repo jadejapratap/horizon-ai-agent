@@ -421,9 +421,13 @@ export async function generateContentWithShopifyMcpTools(
     status.toolsDiscovered = connection.tools.length;
     status.discoveredTools = connection.tools.map((tool) => tool.name);
     status.validationToolsDiscovered = connection.tools
-      .filter((tool) => /validat|graphql.{0,20}schema|schema.{0,20}graphql/i.test(
-        tool.name + " " + (tool.description || "")
-      ))
+      .filter((tool) => {
+        const toolName = tool.name.toLowerCase();
+        const description = tool.description || "";
+        return /(^|[_-])validate([_-]|$)/i.test(toolName)
+          || /graphql[\\s\\S]{0,50}(?:validate|validation)/i.test(description)
+          || /(?:validate|validation)[\\s\\S]{0,50}graphql/i.test(description);
+      })
       .map((tool) => tool.name);
     console.info("SHOPIFY DEV MCP CONNECTED", {
       toolsDiscovered: status.toolsDiscovered,
