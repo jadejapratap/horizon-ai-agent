@@ -576,7 +576,13 @@ async function fetchFigmaDesignContext(
   }
 
   const heroAssetRoot = findNamedFigmaNode(root, "Button/Top") ?? root;
-  const imageUses = collectFigmaImageUses(heroAssetRoot);
+  const heroImageUses = collectFigmaImageUses(heroAssetRoot);
+  // Some Figma file-node responses keep component-instance children on the
+  // page tree. If the instance subtree is collapsed, fall back to the selected
+  // frame's visible image fills; the hero is the first top-level section.
+  const imageUses = heroImageUses.length > 0
+    ? heroImageUses
+    : collectFigmaImageUses(root);
   const assets = await downloadFigmaImageAssets(fileKey, imageUses);
 
   if (imageUses.length > 0 && assets.length === 0) {
