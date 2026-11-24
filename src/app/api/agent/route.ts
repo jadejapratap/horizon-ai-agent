@@ -15794,6 +15794,17 @@ RULES:
    can mark it UNVERIFIED. Never omit an explicitly requested negative
    verification test merely because the source evidence is unavailable.
 
+0A. USER-SPECIFIED CHECKLIST COMPLETENESS (MANDATORY):
+   If USER REQUEST contains labelled sections, bullets, sub-bullets, or a list
+   of named operations to verify, create a separate atomic claims-array entry
+   for EVERY independently testable item. Treat each sub-operation as its own
+   claim; do not silently collapse a section into one summary claim or omit
+   difficult items. Assign stable sequential IDs when the user did not provide
+   IDs. For any requested item whose owning file or exact evidence cannot be
+   established from the supplied source, include the item with its best-grounded
+   source path and evidence: [] so the backend marks it UNVERIFIED. The final
+   answer must account for every requested item as VERIFIED or UNVERIFIED.
+
 1. Use only source code provided in the context.
 2. Never invent file paths, settings, variables or relationships.
 3. EVERY factual statement about theme source code in the answer must have a matching
