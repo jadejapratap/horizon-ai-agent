@@ -1,3 +1,4 @@
+// v84.2: require the full variant-change guard, animation, and early-return sequence in quoted evidence.
 // v84.1: accepts camelCase quantity-selector claims, variant-change guard wording, and atomic initialized early-return evidence.
 // v84: verifies exact Add-to-Cart operation evidence, Component event-registration lifecycle, and sticky class/proxy claims.
 // v37: adds iterative explicit-only chunk-budget utilization and strict #updateScrollState evidence verification; preserves v36 scope isolation.
@@ -8339,8 +8340,7 @@ function supportsProductFormHandleSubmitClaim(
       const suppliedMethod = getComponentMethodFromSuppliedRange(segment, "handleSubmit");
       if (!suppliedMethod || !guardedAnimateReturnPattern.test(suppliedMethod)) return false;
       return evidenceItems.some((evidence) =>
-        animatePattern.test(evidence) &&
-        returnPattern.test(evidence) &&
+        guardedAnimateReturnPattern.test(evidence) &&
         evidenceMatchesSource(evidence, actualMethod) &&
         evidenceMatchesSource(evidence, suppliedMethod)
       );
