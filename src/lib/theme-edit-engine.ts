@@ -304,7 +304,32 @@ function stripLeadingJsonComment(content: string): string {
 
 function validateJsonContent(file: string, content: string): void {
   if (file.endsWith(".json")) {
-    JSON.parse(stripLeadingJsonComment(content));
+    const parsed = JSON.parse(stripLeadingJsonComment(content)) as unknown;
+
+    if (file === "templates/index.json" && parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const sections = (parsed as Record<string, unknown>).sections;
+      if (sections && typeof sections === "object" && !Array.isArray(sections)) {
+        for (const [sectionId, value] of Object.entries(sections as Record<string, unknown>)) {
+          if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+          const section = value as Record<string, unknown>;
+          if (section.type !== "hero" || !section.settings || typeof section.settings !== "object" || Array.isArray(section.settings)) continue;
+          const settings = section.settings as Record<string, unknown>;
+          const rawHeight = settings.section_height_custom;
+          const customHeight = typeof rawHeight === "number"
+            ? rawHeight
+            : typeof rawHeight === "string" && rawHeight.trim()
+              ? Number(rawHeight)
+              : NaN;
+          if (Number.isFinite(customHeight) && (customHeight < 0 || customHeight > 100)) {
+            throw new ThemeEditEngineError(
+              "Shopify validation: hero section '" + sectionId + "' has section_height_custom=" +
+                String(rawHeight) + ", but sections/hero.liquid allows only 0–100. No files were changed.",
+              422
+            );
+          }
+        }
+      }
+    }
     return;
   }
   if (file.endsWith(".liquid")) {
@@ -719,6 +744,7 @@ async function generateEditPlan(
         "When ORIGINAL FIGMA IMAGE ASSETS are listed, those original image files will be saved locally under themes/horizon/assets before the source patch is applied. Use the exact listed filenames and node names. Never use temporary Figma URLs. For the native hero section, use its image_1_asset and image_2_asset settings for these local files; do not put a theme asset filename into an image_picker setting. Preserve the Figma left/right image mapping and add meaningful alt text.",
         "Understand behavior by tracing the supplied Liquid, CSS, JavaScript, JSON, render calls, symbols, and dependencies. Do not choose a file based only on its filename.",
         "For homepage and landing-page requests, treat templates/index.json as the Shopify page-composition entrypoint. Inspect its existing section instances and order, preserve stable section/block IDs where practical, and make only grounded changes to the supplied JSON and its inspected section implementations.",
+        "The sections/hero.liquid schema caps section_height_custom at 100. Never place a value below 0 or above 100 in templates/index.json, even when the field is hidden by visible_if.",
         "Only edit existing source files included in SOURCE FILES RETRIEVED FOR THIS REQUEST, or create a new file inside an existing directory listed in EXISTING THEME DIRECTORIES.",
         "Never edit files outside themes/horizon. Never edit config/settings_data.json, locale files, credentials, environment files, or application/backend files.",
         "For an existing file, return create=false and one or more exact oldText/newText replacements. Every oldText must be copied byte-for-byte from the supplied source and be unique in the file at the time that operation is applied.",
