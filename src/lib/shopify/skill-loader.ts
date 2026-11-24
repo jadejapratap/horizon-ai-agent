@@ -95,12 +95,12 @@ const AGENT_PROFILES: Record<string, ShopifyAgentProfile> = {
 };
 
 export function resolveShopifyAgentProfile(prompt: string): ShopifyAgentProfile {
-  if (/\\b(?:test|testing|validate|validation|qa|quality assurance|regression|audit|lint)\\b/i.test(prompt)) return AGENT_PROFILES.qa;
-  if (/\\b(?:liquid|theme|section|snippet|template|figma|srs|responsive page|theme editor|add to cart|cart drawer)\\b/i.test(prompt)) return AGENT_PROFILES.theme;
-  if (/\\b(?:refund|refunds|cancel|cancellation|fulfillment|tracking|draft order|orders?)\\b/i.test(prompt)) return AGENT_PROFILES.orders;
-  if (/\\b(?:product|products|variant|variants|sku|barcode|collection|pricing|import products)\\b/i.test(prompt)) return AGENT_PROFILES.products;
-  if (/\\b(?:customer|customers|company|companies|b2b|address book)\\b/i.test(prompt)) return AGENT_PROFILES.customers;
-  if (/\\b(?:store settings?|locations?|shipping|delivery|navigation|menu|inventory settings|metafield definitions)\\b/i.test(prompt)) return AGENT_PROFILES.store;
+  if (/\b(?:test|testing|validate|validation|qa|quality assurance|regression|audit|lint)\b/i.test(prompt)) return AGENT_PROFILES.qa;
+  if (/\b(?:liquid|theme|section|snippet|template|figma|srs|responsive page|theme editor|add to cart|cart drawer)\b/i.test(prompt)) return AGENT_PROFILES.theme;
+  if (/\b(?:refund|refunds|cancel|cancellation|fulfillment|tracking|draft order|orders?)\b/i.test(prompt)) return AGENT_PROFILES.orders;
+  if (/\b(?:product|products|variant|variants|sku|barcode|collection|pricing|import products)\b/i.test(prompt)) return AGENT_PROFILES.products;
+  if (/\b(?:customer|customers|company|companies|b2b|address book)\b/i.test(prompt)) return AGENT_PROFILES.customers;
+  if (/\b(?:store settings?|locations?|shipping|delivery|navigation|menu|inventory settings|metafield definitions)\b/i.test(prompt)) return AGENT_PROFILES.store;
   return AGENT_PROFILES.knowledge;
 }
 
