@@ -638,6 +638,12 @@ async function fetchFigmaDesignContext(
   const imageUses = heroImageUses.length > 0
     ? heroImageUses
     : collectFigmaImageUses(root);
+  if (imageUses.length === 0 && String(heroAssetRoot.name || "").trim().toLowerCase() === "button/top") {
+    throw new FigmaConnectionError(
+      "Horizon AI found the Figma Button/Top hero frame but the REST response did not include its image fills. No text-only hero edit will be applied. Retry with the selected Button/Top frame link or check Figma file access.",
+      422
+    );
+  }
   const assets = await downloadFigmaImageAssets(fileKey, imageUses);
 
   if (imageUses.length > 0 && assets.length === 0) {
