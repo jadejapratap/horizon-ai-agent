@@ -25,7 +25,13 @@ type FigmaNode = {
   name?: string;
   type?: string;
   characters?: string;
-  style?: Record<string, unknown>;
+  style?: {
+    fontFamily?: string;
+    fontSize?: number;
+    fontWeight?: number | string;
+    lineHeightPx?: number;
+    letterSpacing?: number;
+  };
   size?: { x?: number; y?: number };
   absoluteBoundingBox?: { width?: number; height?: number };
   layoutMode?: string;
@@ -126,7 +132,7 @@ function nodeHeight(node: FigmaNode): number {
   return node.absoluteBoundingBox?.height ?? node.size?.y ?? 0;
 }
 
-function chooseHomepageFrame(document: FigmaNode, preferredPageName = ""): FigmaNode | null {
+function chooseHomepageFrame(document: FigmaNode): FigmaNode | null {
   const candidates: Array<{ node: FigmaNode; score: number }> = [];
   const visit = (node: FigmaNode, pageName: string, depth: number) => {
     if (depth > 3) return;
