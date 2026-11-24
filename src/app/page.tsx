@@ -14,6 +14,8 @@ import {
   Smartphone,
   Sparkles,
   User,
+  RefreshCw,
+  ExternalLink,
 } from "lucide-react";
 
 type ShopifyToolkitStatus = {
@@ -45,9 +47,55 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const [testSecret, setTestSecret] = useState("");
-  const [testRunning, setTestRunning] = useState(false);
-  const [testStatus, setTestStatus] = useState("");
+  const configuredPreviewUrl = process.env.NEXT_PUBLIC_SHOPIFY_THEME_PREVIEW_URL?.trim() || "";
+  const [previewInput, setPreviewInput] = useState(configuredPreviewUrl);
+  const [previewUrl, setPreviewUrl] = useState(() => {
+    if (!configuredPreviewUrl) return "";
+    try {
+      const parsed = new URL(configuredPreviewUrl);
+      const localHosts = ["localhost", "127.0.0.1", "[::1]"];
+      const isAllowedProtocol = parsed.protocol === "https:"
+        || (parsed.protocol === "http:" && localHosts.includes(parsed.hostname));
+      return isAllowedProtocol && !parsed.username && !parsed.password
+        ? parsed.toString()
+        : "";
+    } catch {
+      return "";
+    }
+  });
+  const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const [previewError, setPreviewError] = useState("");
+
+  function connectThemePreview() {
+    const value = previewInput.trim();
+    if (!value) {
+      setPreviewError("Paste the storefront preview URL first.");
+      return;
+    }
+
+    try {
+      const parsed = new URL(value);
+      const localHosts = ["localhost", "127.0.0.1", "[::1]"];
+      const isAllowedProtocol = parsed.protocol === "https:"
+        || (parsed.protocol === "http:" && localHosts.includes(parsed.hostname));
+      if (!isAllowedProtocol || parsed.username || parsed.password) {
+        throw new Error("Use an HTTPS storefront URL or a local Shopify CLI URL such as http://127.0.0.1:9292.");
+      }
+      if (parsed.origin === window.location.origin) {
+        throw new Error("Enter the Shopify storefront preview URL, not the Horizon AI application URL.");
+      }
+
+      setPreviewUrl(parsed.toString());
+      setPreviewError("");
+      setPreviewRevision((revision) => revision + 1);
+    } catch (error) {
+      setPreviewError(error instanceof Error
+        ? error.message
+        : "Enter a valid Shopify storefront preview URL.");
+    }
+  }
+
 
   // Load chat history
   useEffect(() => {
@@ -147,37 +195,6 @@ export default function Home() {
     }
   }
 
-  // Run the sticky-header diagnostic and publish its structured log to GitHub.
-  async function runStickyHeaderTest() {
-    if (!testSecret.trim() || testRunning) return;
-    setTestRunning(true);
-    setTestStatus("Running agent and publishing runtime log...");
-    try {
-      const response = await fetch("/api/test-runner", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret: testSecret, prompt: `Explain how the Horizon sticky header works. Trace how sections/header.liquid controls the sticky header setting, how assets/base.css handles sticky states, and how assets/header.js observes the header.
-
-Provide exact source evidence for every claim. Keep each claim atomic. Preserve the exact conditions, selectors, and operations in the answer. Do not make assumptions or include claims without verified source evidence.` }),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.success) throw new Error(data.error || `Test failed (HTTP ${response.status})`);
-      const summary = data.result?.evidenceSummary;
-      const coverage = data.result?.retrievalCoverage;
-      const details = [
-        `Sticky Header test completed. HTTP ${data.httpStatus}; duration ${Math.round(data.durationMs / 1000)}s.`,
-        summary ? `Evidence claims: ${summary.verified}/${summary.total} verified; ${summary.unverified} unverified.` : "",
-        coverage ? `Retrieval coverage: ${JSON.stringify(coverage)}` : "",
-        `GitHub log: ${data.githubLogUrl}`,
-      ].filter(Boolean).join("\\n");
-      setTestStatus(details);
-    } catch (error) {
-      setTestStatus(error instanceof Error ? error.message : "Test runner failed.");
-    } finally {
-      setTestRunning(false);
-    }
-  }
-
   // Start new chat
   function startNewProject() {
     setMessages([]);
@@ -262,36 +279,15 @@ Provide exact source evidence for every claim. Keep each claim atomic. Preserve 
 
         </header>
 
-        <div className="mx-8 mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
-          <div className="min-w-52 flex-1">
-            <p className="text-sm font-semibold text-violet-300">Runtime Test Runner</p>
-            <p className="text-xs text-gray-400">Run the Sticky Header test and publish its structured log to GitHub.</p>
-          </div>
-          <input
-            type="password"
-            value={testSecret}
-            onChange={(e) => setTestSecret(e.target.value)}
-            placeholder="Test runner secret"
-            autoComplete="off"
-            className="min-w-52 rounded-lg border border-white/10 bg-[#0c0d18] px-3 py-2 text-sm outline-none"
-          />
-          <button
-            onClick={runStickyHeaderTest}
-            disabled={!testSecret.trim() || testRunning}
-            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium disabled:opacity-40"
-          >
-            {testRunning ? "Running..." : "Run Sticky Header Test"}
-          </button>
-          {testStatus && <p className="w-full whitespace-pre-wrap break-words text-xs text-gray-300">{testStatus}</p>}
-        </div>
+
 
         {/* CHAT + PREVIEW */}
 
-        <div className="grid flex-1 grid-cols-2 gap-6 p-8">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 p-6 xl:grid-cols-2">
 
           {/* AI CHAT */}
 
-          <div className="flex flex-col rounded-2xl border border-white/10 bg-[#141525] p-6">
+          <div className="flex min-h-[620px] min-w-0 flex-col rounded-2xl border border-white/10 bg-[#141525] p-6">
 
             <div className="mb-6 flex items-center gap-3">
 
@@ -455,41 +451,124 @@ Provide exact source evidence for every claim. Keep each claim atomic. Preserve 
 
           {/* LIVE PREVIEW */}
 
-          <div className="rounded-2xl border border-white/10 bg-[#141525] p-6">
+          <div className="flex min-h-[620px] min-w-0 flex-col rounded-2xl border border-white/10 bg-[#141525] p-5">
 
-            <div className="mb-6 flex justify-between">
-
-              <h3 className="font-semibold">
-                Live Preview
-              </h3>
-
-              <div className="flex gap-4 text-gray-400">
-
-                <Monitor />
-
-                <Smartphone />
-
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="font-semibold">Live Preview</h3>
+                <p className="mt-1 truncate text-xs text-gray-400">
+                  {previewUrl ? `Connected · ${new URL(previewUrl).host}` : "No storefront preview connected"}
+                </p>
               </div>
 
+              <div className="flex items-center gap-2 text-gray-300">
+                <button
+                  type="button"
+                  onClick={() => setPreviewMode("desktop")}
+                  aria-label="Desktop preview"
+                  aria-pressed={previewMode === "desktop"}
+                  className={`rounded-lg p-2 transition-colors ${previewMode === "desktop" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10"}`}
+                >
+                  <Monitor size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewMode("mobile")}
+                  aria-label="Mobile preview"
+                  aria-pressed={previewMode === "mobile"}
+                  className={`rounded-lg p-2 transition-colors ${previewMode === "mobile" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10"}`}
+                >
+                  <Smartphone size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewError("");
+                    setPreviewRevision((revision) => revision + 1);
+                  }}
+                  disabled={!previewUrl}
+                  aria-label="Refresh theme preview"
+                  className="rounded-lg p-2 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <RefreshCw size={17} />
+                </button>
+                {previewUrl && (
+                  <a
+                    href={previewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Open storefront preview in a new tab"
+                    className="rounded-lg p-2 transition-colors hover:bg-white/10"
+                  >
+                    <ExternalLink size={17} />
+                  </a>
+                )}
+              </div>
             </div>
 
-            <div className="flex h-[75%] flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#0c0d18]">
-
-              <Code2
-                size={48}
-                className="mb-4 text-violet-400"
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                connectThemePreview();
+              }}
+              className="mb-3 flex gap-2"
+            >
+              <input
+                type="url"
+                value={previewInput}
+                onChange={(event) => setPreviewInput(event.target.value)}
+                placeholder="Paste Shopify theme preview URL (e.g. http://127.0.0.1:9292)"
+                aria-label="Shopify storefront preview URL"
+                className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#0c0d18] px-3 py-2 text-xs text-white outline-none transition-colors focus:border-violet-500/60"
               />
+              <button
+                type="submit"
+                className="shrink-0 rounded-lg bg-violet-600 px-3 py-2 text-xs font-medium transition-colors hover:bg-violet-500"
+              >
+                Load Preview
+              </button>
+            </form>
 
-              <h3 className="font-semibold">
-                Preview Workspace
-              </h3>
-
-              <p className="mt-2 text-sm text-gray-400">
-                Shopify theme preview will appear here.
+            {previewError && (
+              <p role="alert" className="mb-3 rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-2 text-xs text-red-200">
+                {previewError}
               </p>
+            )}
 
-            </div>
+            {previewUrl ? (
+              <div className="flex min-h-[460px] flex-1 items-start justify-center overflow-auto rounded-xl border border-white/15 bg-[#0c0d18] p-3">
+                <div
+                  className={`h-[calc(100vh-330px)] min-h-[430px] overflow-hidden rounded-lg bg-white shadow-2xl transition-[width] duration-300 ${previewMode === "mobile" ? "w-[390px] max-w-full" : "w-full"}`}
+                >
+                  <iframe
+                    key={`${previewUrl}:${previewRevision}`}
+                    src={previewUrl}
+                    title="Shopify storefront theme preview"
+                    className="h-full w-full border-0 bg-white"
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+                    onError={() => setPreviewError("The storefront preview could not be loaded. Check the URL and whether the preview host allows iframe embedding.")}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#0c0d18] p-7 text-center">
+                <Code2 size={44} className="mb-4 text-violet-400" />
+                <h3 className="font-semibold">Connect a real Shopify theme preview</h3>
+                <p className="mt-2 max-w-md text-sm text-gray-400">
+                  Start Shopify CLI preview for the theme in this repository, then paste the local preview URL above.
+                </p>
+                <code className="mt-5 max-w-full overflow-x-auto rounded-lg border border-white/10 bg-black/30 px-4 py-3 text-left text-xs text-violet-200">
+                  shopify theme dev --path themes/horizon --store your-store.myshopify.com
+                </code>
+                <p className="mt-4 max-w-md text-xs leading-5 text-gray-500">
+                  Shopify CLI authentication is required. Keep the CLI preview running while using Horizon AI. For a remote deployment, use an HTTPS preview URL reachable from the browser.
+                </p>
+              </div>
+            )}
 
+          </div>
           </div>
 
         </div>

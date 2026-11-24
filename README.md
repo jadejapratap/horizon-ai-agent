@@ -86,10 +86,20 @@ The following remain separate implementation phases and must not be assumed to w
 - Shopify app OAuth installation/callback, encrypted access-token storage, per-shop sessions, uninstall/revocation handling, and least-privilege scope approval.
 - Admin GraphQL operation clients for product, order, fulfillment/refund, customer/B2B company, inventory, shipping, store settings, navigation, and theme publish operations.
 - Explicit approval workflows, dry-run execution, audit storage, and role/permission checks for destructive or sensitive merchant operations.
-- Shopify CLI theme upload/preview/publish automation and a connected store preview.
+- Automated Shopify CLI upload/preview/publish and OAuth-connected store preview. The dashboard can embed a real preview URL started separately with Shopify CLI.
 - Figma API integration, SRS ingestion, spreadsheet import, and production QA agents.
 
 Do not put merchant access tokens into MCP process variables. Admin API access must be built separately using Shopify OAuth and the exact scopes required for each supported operation. Refunds, cancellations, deletions, sensitive settings, and publishing require explicit approval.
+
+## Dashboard Shopify theme preview
+
+The dashboard Live Preview embeds a real storefront URL; it does not fabricate a preview from Liquid source files. To preview this repository's local theme, authenticate Shopify CLI and run this command from the repository root:
+
+```bash
+shopify theme dev --path themes/horizon --store your-store.myshopify.com
+```
+
+Paste the local preview URL printed by Shopify CLI (commonly `http://127.0.0.1:9292`) into the Live Preview panel. Keep the CLI process running while viewing the dashboard. The app and the browser must be able to reach that preview URL. Alternatively, set `NEXT_PUBLIC_SHOPIFY_THEME_PREVIEW_URL` before starting or building the app. Only a storefront URL belongs in this public variable; never put Shopify access tokens or secrets in it. The current repository does not yet implement Shopify Admin OAuth or automatic theme-preview process management.
 
 ## Existing runtime test runner
 
