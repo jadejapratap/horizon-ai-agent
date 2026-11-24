@@ -9,6 +9,14 @@
 
 {% render 'price-styles' %}
 
+{%- style -%}
+  .product-badges__badge--rectangle.color-custom-badge-sale,
+  .color-custom-badge-sale {
+    background-color: #6c5ce7;
+    color: #ffffff;
+  }
+{%- endstyle -%}
+
 {%- liquid
   assign show_unit_price = show_unit_price | default: false
   assign show_sale_price_first = show_sale_price_first | default: false
