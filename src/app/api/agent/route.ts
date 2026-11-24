@@ -15344,8 +15344,11 @@ If no additional chunks are needed:
       "ADDITIONAL ON-DEMAND SOURCE CHUNKS (exact source ranges):",
       additionalSourceContext || "[No additional source chunks were retrieved.]",
       "",
-      "FILES INCLUDED IN THE SOURCE CONTEXT:",
-      JSON.stringify(includedSourceFilePaths),
+      "FILES INCLUDED IN GEMINI CONTEXT:",
+      JSON.stringify(filesIncludedInContext),
+      "",
+      "ADDITIONAL FILES RETRIEVED ON DEMAND:",
+      JSON.stringify(retrievalState.retrievedChunks.map((chunk) => chunk.file)),
       "",
       "RELEVANT VERIFIED DEPENDENCY GRAPH:",
       JSON.stringify(relevantDependencies.map((dependency) => ({
