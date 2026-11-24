@@ -453,7 +453,10 @@ function collectFigmaImageUses(root: FigmaNode): FigmaImageUse[] {
       });
     }
 
-    for (const child of node.children ?? []) stack.push(child);
+    const children = node.children ?? [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push(children[index]);
+    }
   }
 
   return [...byImageRef.values()];
