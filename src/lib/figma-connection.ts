@@ -7,6 +7,11 @@ export type FigmaDesignAsset = {
   fileName: string;
   nodeId: string;
   nodeName: string;
+  // The image fill can live on a nested instance/layer. Keep the owning node
+  // separate from the layout frame that assigns the image to a design slot.
+  frameNodeId: string;
+  frameNodeName: string;
+  heroSlot?: "left" | "right";
   imageRef: string;
   mimeType: string;
   width: number;
@@ -86,7 +91,7 @@ type ParsedFigmaUrl = {
 };
 
 type FigmaCacheRecord = {
-  version: 2;
+  version: 3;
   savedAt: number;
   context: FigmaDesignContext;
 };
@@ -120,6 +125,9 @@ function isFigmaDesignContext(value: unknown): value is FigmaDesignContext {
       return typeof entry.fileName === "string" &&
         typeof entry.nodeId === "string" &&
         typeof entry.nodeName === "string" &&
+        typeof entry.frameNodeId === "string" &&
+        typeof entry.frameNodeName === "string" &&
+        (entry.heroSlot === undefined || entry.heroSlot === "left" || entry.heroSlot === "right") &&
         typeof entry.imageRef === "string" &&
         typeof entry.mimeType === "string" &&
         typeof entry.width === "number" &&
@@ -174,7 +182,7 @@ async function readCachedFigmaDesignContext(
   try {
     const raw = await readFile(getFigmaCachePath(fileKey, nodeId), "utf8");
     const record = JSON.parse(raw) as FigmaCacheRecord;
-    if (record.version !== 2 || !isFigmaDesignContext(record.context)) return null;
+    if (record.version !== 3 || !isFigmaDesignContext(record.context)) return null;
     figmaContextMemoryCache.set(key, record.context);
     return record.context;
   } catch (error) {
@@ -196,7 +204,7 @@ async function writeCachedFigmaDesignContext(
   await mkdir(FIGMA_CACHE_DIRECTORY, { recursive: true });
   const cachePath = getFigmaCachePath(fileKey, nodeId);
   const temporaryPath = cachePath + "." + process.pid + "." + Date.now() + ".tmp";
-  const record: FigmaCacheRecord = { version: 2, savedAt: Date.now(), context };
+  const record: FigmaCacheRecord = { version: 3, savedAt: Date.now(), context };
   await writeFile(temporaryPath, JSON.stringify(record), "utf8");
   await rename(temporaryPath, cachePath);
 }
@@ -406,6 +414,9 @@ function summarizeNodeTree(root: FigmaNode): string {
 type FigmaImageUse = {
   nodeId: string;
   nodeName: string;
+  frameNodeId: string;
+  frameNodeName: string;
+  heroSlot?: "left" | "right";
   imageRef: string;
   width: number;
   height: number;
@@ -424,7 +435,29 @@ function findNamedFigmaNode(root: FigmaNode, targetName: string): FigmaNode | nu
   return null;
 }
 
-function collectFigmaImageUses(root: FigmaNode): FigmaImageUse[] {
+function normalizeFigmaNodeId(value: string): string {
+  return value.replace(/-/g, ":");
+}
+
+function findFigmaNodeById(root: FigmaNode, targetNodeId: string): FigmaNode | null {
+  const target = normalizeFigmaNodeId(targetNodeId);
+  const stack: FigmaNode[] = [root];
+  let visited = 0;
+  while (stack.length > 0 && visited < 12000) {
+    const node = stack.pop()!;
+    visited += 1;
+    if (typeof node.id === "string" && normalizeFigmaNodeId(node.id) === target) return node;
+    for (const child of node.children ?? []) stack.push(child);
+  }
+  return null;
+}
+
+function collectFigmaImageUses(
+  root: FigmaNode,
+  frameNode: FigmaNode = root,
+  heroSlot?: "left" | "right"
+): FigmaImageUse[] {
+  if (!frameNode.id) return [];
   const byImageRef = new Map<string, FigmaImageUse>();
   const stack: FigmaNode[] = [root];
   let visited = 0;
@@ -445,11 +478,16 @@ function collectFigmaImageUses(root: FigmaNode): FigmaImageUse[] {
 
       if (!node.id || byImageRef.has(fill.imageRef)) continue;
       byImageRef.set(fill.imageRef, {
+        // nodeId is the layer that owns the actual IMAGE fill. frameNodeId is
+        // the surrounding Figma layout frame (the semantic image slot).
         nodeId: node.id,
         nodeName: node.name || "Figma image",
+        frameNodeId: frameNode.id,
+        frameNodeName: frameNode.name || "Figma image frame",
+        heroSlot,
         imageRef: fill.imageRef,
-        width: Math.round(nodeWidth(node)),
-        height: Math.round(nodeHeight(node)),
+        width: Math.round(nodeWidth(frameNode)),
+        height: Math.round(nodeHeight(frameNode)),
       });
     }
 
@@ -566,6 +604,9 @@ async function downloadFigmaImageAssets(
         fileName: "figma-" + nodeToken + "-" + refToken + "." + extension,
         nodeId: use.nodeId,
         nodeName: use.nodeName,
+        frameNodeId: use.frameNodeId,
+        frameNodeName: use.frameNodeName,
+        heroSlot: use.heroSlot,
         imageRef: use.imageRef,
         mimeType,
         width: use.width,
@@ -695,13 +736,69 @@ async function fetchFigmaDesignContext(
   }
 
   const heroAssetRoot = findNamedFigmaNode(root, "Button/Top") ?? root;
-  const heroImageUses = collectFigmaImageUses(heroAssetRoot);
-  // Some Figma file-node responses keep component-instance children on the
-  // page tree. If the instance subtree is collapsed, fall back to the selected
-  // frame's visible image fills; the hero is the first top-level section.
+
+  // Resolve the two semantic image slots before collecting fills. The actual
+  // IMAGE fill may be several descendant layers below its frame (for example,
+  // the left photo currently belongs to I129:24037, inside frame 108:13297).
+  // Never infer the slot from the fill-owner node ID.
+  const leftHeroFrame =
+    findFigmaNodeById(heroAssetRoot, "108:13297") ??
+    findNamedFigmaNode(heroAssetRoot, "frm/top/left");
+  const rightHeroFrame =
+    findFigmaNodeById(heroAssetRoot, "108:13272") ??
+    findNamedFigmaNode(heroAssetRoot, "Button/Top/right");
+
+  const hasExplicitHeroSlotFrames = Boolean(leftHeroFrame || rightHeroFrame);
+  const heroSlotImageUses = [
+    ...(leftHeroFrame
+      ? collectFigmaImageUses(leftHeroFrame, leftHeroFrame, "left")
+      : []),
+    ...(rightHeroFrame
+      ? collectFigmaImageUses(rightHeroFrame, rightHeroFrame, "right")
+      : []),
+  ];
+
+  // When the two named slots exist, keep only fills collected inside those
+  // frames. Do not fall back to unscoped descendants if one slot is missing;
+  // the edit engine must fail closed rather than guess which photo is which.
+  const heroImageUses = hasExplicitHeroSlotFrames
+    ? heroSlotImageUses
+    : collectFigmaImageUses(heroAssetRoot, heroAssetRoot);
   const imageUses = heroImageUses.length > 0
     ? heroImageUses
-    : collectFigmaImageUses(root);
+    : hasExplicitHeroSlotFrames
+      ? []
+      : collectFigmaImageUses(root, root);
+
+  console.info("HORIZON FIGMA HERO SLOT FRAME DISCOVERY", {
+    heroAssetRoot: {
+      nodeId: heroAssetRoot.id || null,
+      nodeName: heroAssetRoot.name || null,
+    },
+    left: leftHeroFrame
+      ? {
+          nodeId: leftHeroFrame.id || null,
+          nodeName: leftHeroFrame.name || null,
+          width: Math.round(nodeWidth(leftHeroFrame)),
+          height: Math.round(nodeHeight(leftHeroFrame)),
+        }
+      : null,
+    right: rightHeroFrame
+      ? {
+          nodeId: rightHeroFrame.id || null,
+          nodeName: rightHeroFrame.name || null,
+          width: Math.round(nodeWidth(rightHeroFrame)),
+          height: Math.round(nodeHeight(rightHeroFrame)),
+        }
+      : null,
+    imageUses: imageUses.map((use) => ({
+      imageNodeId: use.nodeId,
+      imageNodeName: use.nodeName,
+      frameNodeId: use.frameNodeId,
+      frameNodeName: use.frameNodeName,
+      heroSlot: use.heroSlot || null,
+    })),
+  });
   if (imageUses.length === 0 && String(heroAssetRoot.name || "").trim().toLowerCase() === "button/top") {
     throw new FigmaConnectionError(
       "Horizon AI found the Figma Button/Top hero frame but the REST response did not include its image fills. No text-only hero edit will be applied. Retry with the selected Button/Top frame link or check Figma file access.",
