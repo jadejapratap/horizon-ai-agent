@@ -374,7 +374,8 @@ async function callMcpToolWithRetry(
 
 export async function generateContentWithShopifyMcpTools(
   request: GeminiRequest,
-  generateContent: GenerateFunction
+  generateContent: GenerateFunction,
+  toolContext?: string
 ): Promise<{ response: any; status: McpStatus }> {
   const enabled = process.env.SHOPIFY_DEV_MCP_ENABLED === "true";
   const requiredToolCall = explicitlyRequestsShopifyMcp(request);
@@ -477,13 +478,31 @@ export async function generateContentWithShopifyMcpTools(
   delete toolCallConfig.tools;
   delete toolCallConfig.toolConfig;
 
-  let contents = Array.isArray(request.contents)
-    ? [...request.contents]
-    : [request.contents];
+  const compactTaskContext = (toolContext || collectRequestText(request.contents).join("\\n"))
+    .trim()
+    .slice(0, 12000);
+  // MCP tool selection/search should not resend the full theme source bundle on
+  // every function-calling round. The full original context is retained for
+  // Gemini's final reasoning pass below.
+  let toolPhaseContents: any[] = [{
+    role: "user",
+    parts: [{
+      text: [
+        "HORIZON SHOPIFY MCP TASK",
+        "Use only discovered Shopify Dev MCP tools. Do not invent tool names or tool results.",
+        "Call documentation search when it is relevant. Do not repeat the same tool with identical arguments.",
+        "Only invoke schema or validation tools when the user's task actually requires them.",
+        "",
+        compactTaskContext,
+      ].join("\\n"),
+    }],
+  }];
+  const toolExecutionResults: Array<{ name: string; isError: boolean; output: string }> = [];
+  const toolResultCache = new Map<string, { isError: boolean; output: string }>();
 
   const buildToolCallingRequest = (mode: "ANY" | "AUTO") => ({
     ...request,
-    contents,
+    contents: toolPhaseContents,
     config: {
       ...toolCallConfig,
       tools: [{ functionDeclarations: declarations }],
@@ -496,9 +515,34 @@ export async function generateContentWithShopifyMcpTools(
     delete finalConfig.tools;
     delete finalConfig.toolConfig;
 
+    const originalContents = Array.isArray(request.contents)
+      ? [...request.contents]
+      : [request.contents];
+    if (toolExecutionResults.length > 0) {
+      const transcript = toolExecutionResults.map((item, index) => ({
+        step: index + 1,
+        tool: item.name,
+        isError: item.isError,
+        output: item.output,
+      }));
+      const transcriptText = JSON.stringify(transcript);
+      originalContents.push({
+        role: "user",
+        parts: [{
+          text: [
+            "ACTUAL SHOPIFY DEV MCP TOOL RESULTS",
+            "The following outputs came from MCP tool executions in this request. Use them as evidence in your final reasoning.",
+            transcriptText.length > 18000
+              ? transcriptText.slice(0, 18000) + "\\n[Combined MCP results truncated by Horizon Agent.]"
+              : transcriptText,
+          ].join("\\n"),
+        }],
+      });
+    }
+
     const finalResponse = await generateContent({
       ...request,
-      contents,
+      contents: originalContents,
       config: finalConfig,
     });
 
@@ -506,6 +550,8 @@ export async function generateContentWithShopifyMcpTools(
       reason,
       structuredOutputRequested,
       callsMade: status.callsMade,
+      transcriptEntries: toolExecutionResults.length,
+      toolPhaseContextCharacters: compactTaskContext.length,
     });
     console.info("SHOPIFY DEV MCP STATUS", status);
     return { response: finalResponse, status };
@@ -531,7 +577,7 @@ export async function generateContentWithShopifyMcpTools(
     }
 
     const modelContent = response?.candidates?.[0]?.content;
-    if (modelContent) contents.push(modelContent);
+    if (modelContent) toolPhaseContents.push(modelContent);
 
     const functionResponses: Array<Record<string, any>> = [];
     for (const call of calls) {
@@ -558,6 +604,22 @@ export async function generateContentWithShopifyMcpTools(
         continue;
       }
 
+      const cacheKey = actualName + ":" + JSON.stringify(call.args || {});
+      const cachedResult = toolResultCache.get(cacheKey);
+      if (cachedResult) {
+        console.info("SHOPIFY DEV MCP DUPLICATE CALL REUSED", { tool: actualName });
+        functionResponses.push({
+          functionResponse: {
+            ...(call.id ? { id: call.id } : {}),
+            name: call.name,
+            response: cachedResult.isError
+              ? { error: cachedResult.output }
+              : { output: cachedResult.output },
+          },
+        });
+        continue;
+      }
+
       status.callsMade += 1;
       const started = Date.now();
       try {
@@ -569,6 +631,9 @@ export async function generateContentWithShopifyMcpTools(
         );
         const durationMs = Date.now() - started;
         const isError = Boolean(result?.isError);
+        const output = makeMcpOutput(result);
+        toolResultCache.set(cacheKey, { isError, output });
+        toolExecutionResults.push({ name: actualName, isError, output });
         status.toolExecutions.push({ name: actualName, isError, durationMs });
         console.info("SHOPIFY DEV MCP TOOL COMPLETED", {
           tool: actualName,
@@ -580,14 +645,16 @@ export async function generateContentWithShopifyMcpTools(
             ...(call.id ? { id: call.id } : {}),
             name: call.name,
             response: result?.isError
-              ? { error: makeMcpOutput(result) }
-              : { output: makeMcpOutput(result) },
+              ? { error: output }
+              : { output },
           },
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         status.lastError = message.slice(0, 500);
         const durationMs = Date.now() - started;
+        toolResultCache.set(cacheKey, { isError: true, output: status.lastError });
+        toolExecutionResults.push({ name: actualName, isError: true, output: status.lastError });
         status.toolExecutions.push({ name: actualName, isError: true, durationMs });
         console.error("SHOPIFY DEV MCP TOOL FAILED", {
           tool: actualName,
@@ -604,7 +671,7 @@ export async function generateContentWithShopifyMcpTools(
       }
     }
 
-    contents.push({ role: "user", parts: functionResponses });
+    toolPhaseContents.push({ role: "user", parts: functionResponses });
 
     // Only the first request is forced to call a tool. After the MCP results
     // are returned, AUTO lets Gemini decide whether another tool is needed.
