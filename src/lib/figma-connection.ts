@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 export type FigmaDesignContext = {
   fileName: string;
@@ -12,11 +14,28 @@ export type FigmaDesignContext = {
 
 export class FigmaConnectionError extends Error {
   status: number;
+  retryAfterSeconds?: number;
+  planTier?: string;
+  rateLimitType?: string;
+  upgradeLink?: string;
 
-  constructor(message: string, status = 502) {
+  constructor(
+    message: string,
+    status = 502,
+    details?: {
+      retryAfterSeconds?: number;
+      planTier?: string;
+      rateLimitType?: string;
+      upgradeLink?: string;
+    }
+  ) {
     super(message);
     this.name = "FigmaConnectionError";
     this.status = status;
+    this.retryAfterSeconds = details?.retryAfterSeconds;
+    this.planTier = details?.planTier;
+    this.rateLimitType = details?.rateLimitType;
+    this.upgradeLink = details?.upgradeLink;
   }
 }
 
@@ -52,6 +71,74 @@ type ParsedFigmaUrl = {
   fileKey: string;
   nodeId: string | null;
 };
+
+type FigmaCacheRecord = {
+  version: 1;
+  savedAt: number;
+  context: FigmaDesignContext;
+};
+
+const FIGMA_CACHE_DIRECTORY = path.join(process.cwd(), ".horizon-cache", "figma");
+const figmaContextMemoryCache = new Map<string, FigmaDesignContext>();
+const figmaContextLoadsInFlight = new Map<string, Promise<FigmaDesignContext>>();
+
+function getFigmaCacheKey(fileKey: string, nodeId: string | null): string {
+  return fileKey + "-" + (nodeId ? nodeId.replace(/:/g, "-") : "auto");
+}
+
+function getFigmaCachePath(fileKey: string, nodeId: string | null): string {
+  return path.join(FIGMA_CACHE_DIRECTORY, getFigmaCacheKey(fileKey, nodeId) + ".json");
+}
+
+function isFigmaDesignContext(value: unknown): value is FigmaDesignContext {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.fileName === "string" &&
+    typeof item.fileKey === "string" &&
+    typeof item.nodeId === "string" &&
+    typeof item.nodeName === "string" &&
+    typeof item.summary === "string" &&
+    typeof item.imageData === "string" &&
+    typeof item.imageMimeType === "string";
+}
+
+async function readCachedFigmaDesignContext(
+  fileKey: string,
+  nodeId: string | null
+): Promise<FigmaDesignContext | null> {
+  const key = getFigmaCacheKey(fileKey, nodeId);
+  const inMemory = figmaContextMemoryCache.get(key);
+  if (inMemory) return inMemory;
+
+  try {
+    const raw = await readFile(getFigmaCachePath(fileKey, nodeId), "utf8");
+    const record = JSON.parse(raw) as FigmaCacheRecord;
+    if (record.version !== 1 || !isFigmaDesignContext(record.context)) return null;
+    figmaContextMemoryCache.set(key, record.context);
+    return record.context;
+  } catch (error) {
+    const code = error && typeof error === "object"
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code !== "ENOENT") {
+      console.warn("Could not read the local Figma design cache:", error);
+    }
+    return null;
+  }
+}
+
+async function writeCachedFigmaDesignContext(
+  fileKey: string,
+  nodeId: string | null,
+  context: FigmaDesignContext
+): Promise<void> {
+  await mkdir(FIGMA_CACHE_DIRECTORY, { recursive: true });
+  const cachePath = getFigmaCachePath(fileKey, nodeId);
+  const temporaryPath = cachePath + "." + process.pid + "." + Date.now() + ".tmp";
+  const record: FigmaCacheRecord = { version: 1, savedAt: Date.now(), context };
+  await writeFile(temporaryPath, JSON.stringify(record), "utf8");
+  await rename(temporaryPath, cachePath);
+}
 
 function getFigmaToken(): string {
   const token = process.env.FIGMA_ACCESS_TOKEN?.trim();
@@ -120,7 +207,34 @@ async function figmaJson<T>(endpoint: string): Promise<T> {
       throw new FigmaConnectionError("Figma could not find this file. Check the share URL and confirm the token's account has access to it.", 404);
     }
     if (response.status === 429) {
-      throw new FigmaConnectionError("Figma API rate limit reached. Wait briefly and try connecting again.", 429);
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterValue = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+      const retryAfterSeconds = Number.isFinite(retryAfterValue) && retryAfterValue > 0
+        ? Math.ceil(retryAfterValue)
+        : undefined;
+      const planTier = response.headers.get("x-figma-plan-tier") || undefined;
+      const rateLimitType = response.headers.get("x-figma-rate-limit-type") || undefined;
+      const upgradeLink = response.headers.get("x-figma-upgrade-link") || undefined;
+      const details = [
+        "Figma REST API rate limit reached.",
+        retryAfterSeconds
+          ? "Figma says to retry after " + retryAfterSeconds + " seconds."
+          : "Figma did not provide a short retry delay; this may be a monthly seat/plan limit.",
+        planTier ? "File plan: " + planTier + "." : "",
+        rateLimitType === "low"
+          ? "Figma reports a low-rate seat class (View/Collab)."
+          : rateLimitType === "high"
+            ? "Figma reports a high-rate seat class (Dev/Full)."
+            : "",
+        upgradeLink ? "Review Figma seat/plan limits: " + upgradeLink : "",
+        "Horizon AI will cache a successful design read locally so later edits do not repeatedly call the Figma API.",
+      ].filter(Boolean).join(" ");
+      throw new FigmaConnectionError(details, 429, {
+        retryAfterSeconds,
+        planTier,
+        rateLimitType,
+        upgradeLink,
+      });
     }
     throw new FigmaConnectionError(
       "Figma API request failed with HTTP " + response.status + (detail ? ": " + detail : "."),
@@ -228,24 +342,52 @@ function summarizeNodeTree(root: FigmaNode): string {
   return lines.join("\n").slice(0, 26000);
 }
 
-export async function verifyFigmaConnection(value: string): Promise<{ fileName: string; fileKey: string }> {
-  const { fileKey } = parseFigmaDesignUrl(value);
-  const file = await figmaJson<{ name?: string; document?: FigmaNode }>("/files/" + fileKey + "?depth=2");
-  if (!file.document) {
-    throw new FigmaConnectionError("Figma returned file metadata but no readable design document.", 502);
+function getFigmaFileNameFromUrl(value: string): string {
+  try {
+    const lastSegment = new URL(value).pathname.split("/").filter(Boolean).at(-1) || "";
+    return decodeURIComponent(lastSegment).replace(/[-_]+/g, " ").trim() || "Figma design";
+  } catch {
+    return "Figma design";
   }
-  return { fileName: file.name || "Figma design", fileKey };
 }
 
-export async function loadFigmaDesignContext(value: string): Promise<FigmaDesignContext> {
-  const { fileKey, nodeId: requestedNodeId } = parseFigmaDesignUrl(value);
-  const file = await figmaJson<{ name?: string; document?: FigmaNode }>("/files/" + fileKey + "?depth=2");
-  if (!file.document) {
-    throw new FigmaConnectionError("Figma returned no design document for this file.", 502);
-  }
+export async function verifyFigmaConnection(
+  value: string
+): Promise<{ fileName: string; fileKey: string; cached: boolean }> {
+  const { fileKey, nodeId } = parseFigmaDesignUrl(value);
+  getFigmaToken();
 
+  // This endpoint is intentionally local-only. It confirms configuration and
+  // checks whether the design is already cached; it does not spend a Tier 1
+  // Figma REST request just to paint the dashboard's connection badge.
+  const cachedContext = await readCachedFigmaDesignContext(fileKey, nodeId);
+  return {
+    fileName: cachedContext?.fileName || getFigmaFileNameFromUrl(value),
+    fileKey,
+    cached: Boolean(cachedContext),
+  };
+}
+
+async function fetchFigmaDesignContext(
+  value: string,
+  parsed: ParsedFigmaUrl
+): Promise<FigmaDesignContext> {
+  getFigmaToken();
+  const { fileKey, nodeId: requestedNodeId } = parsed;
+  let fileName = getFigmaFileNameFromUrl(value);
   let targetNodeId = requestedNodeId;
+
+  // Only fetch the full file tree when the URL does not identify a frame.
+  // A frame-specific URL already gives us the exact node ID and avoids one
+  // additional Tier 1 GET file request.
   if (!targetNodeId) {
+    const file = await figmaJson<{ name?: string; document?: FigmaNode }>(
+      "/files/" + fileKey + "?depth=2"
+    );
+    if (!file.document) {
+      throw new FigmaConnectionError("Figma returned no design document for this file.", 502);
+    }
+    fileName = file.name || fileName;
     const selected = chooseHomepageFrame(file.document);
     if (!selected?.id) {
       throw new FigmaConnectionError("Figma file is accessible, but no homepage-sized frame was found. Copy a link directly to the homepage frame (Share/Copy link with the frame selected) and load that link.", 422);
@@ -282,7 +424,7 @@ export async function loadFigmaDesignContext(value: string): Promise<FigmaDesign
   }
 
   return {
-    fileName: file.name || "Figma design",
+    fileName,
     fileKey,
     nodeId: targetNodeId,
     nodeName: root.name || "Homepage frame",
@@ -290,4 +432,38 @@ export async function loadFigmaDesignContext(value: string): Promise<FigmaDesign
     imageData: imageBuffer.toString("base64"),
     imageMimeType: imageResponseBody.headers.get("content-type")?.split(";")[0] || "image/png",
   };
+}
+
+export async function loadFigmaDesignContext(value: string): Promise<FigmaDesignContext> {
+  const parsed = parseFigmaDesignUrl(value);
+  const key = getFigmaCacheKey(parsed.fileKey, parsed.nodeId);
+  const cached = await readCachedFigmaDesignContext(parsed.fileKey, parsed.nodeId);
+  if (cached) {
+    console.info("HORIZON FIGMA CONTEXT CACHE HIT", {
+      fileKey: parsed.fileKey,
+      nodeId: cached.nodeId,
+    });
+    return cached;
+  }
+
+  const existingLoad = figmaContextLoadsInFlight.get(key);
+  if (existingLoad) return existingLoad;
+
+  const loadPromise = (async () => {
+    const context = await fetchFigmaDesignContext(value, parsed);
+    await writeCachedFigmaDesignContext(parsed.fileKey, parsed.nodeId, context);
+    figmaContextMemoryCache.set(key, context);
+    console.info("HORIZON FIGMA CONTEXT CACHED LOCALLY", {
+      fileKey: context.fileKey,
+      nodeId: context.nodeId,
+    });
+    return context;
+  })();
+
+  figmaContextLoadsInFlight.set(key, loadPromise);
+  try {
+    return await loadPromise;
+  } finally {
+    figmaContextLoadsInFlight.delete(key);
+  }
 }
