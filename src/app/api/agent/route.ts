@@ -13335,31 +13335,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (!explicitOnly && searchResults.length === 0) {
-      return NextResponse.json({
-        success: true,
-        message:
-          "I could not find relevant source files in the Horizon theme for this request.",
-        claims: [],
-        evidenceSummary: {
-          total: 0,
-          verified: 0,
-          unverified: 0,
-        },
-        filesAnalyzed: [],
-        filesIncludedInContext: [],
-        filesSkippedFromContext: [],
-        dependencyGraph: [],
-        relevantDependencies: [],
-        verificationSummary: {
-          total: 0,
-          verified: 0,
-          unverified: 0,
-          relevant: 0,
-        },
-      });
-    }
-
     const selectedFiles = new Map<string, ThemeFile>();
 
     const isProductCardIntent =
