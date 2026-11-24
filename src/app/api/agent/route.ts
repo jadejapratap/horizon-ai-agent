@@ -42,6 +42,10 @@ import {
   isThemeEditRequest,
   ThemeEditEngineError,
 } from "@/lib/theme-edit-engine";
+import {
+  FigmaConnectionError,
+  loadFigmaDesignContext,
+} from "@/lib/figma-connection";
 
 export const maxDuration = 180;
 
@@ -13980,6 +13984,7 @@ export async function POST(request: NextRequest) {
     const history = Array.isArray(body.history)
       ? body.history
       : [];
+    const figmaUrl = typeof body.figmaUrl === "string" ? body.figmaUrl.trim() : "";
 
     if (
       !prompt ||
@@ -13996,10 +14001,40 @@ export async function POST(request: NextRequest) {
     }
 
     // Explicit storefront change requests use the writable local theme editor.
-    // Knowledge and source-explanation requests continue through the read-only verifier.
+    // Homepage / Figma design implementation requests also load the authenticated
+    // Figma frame so Gemini receives both the layer hierarchy and actual screenshot.
     if (isThemeEditRequest(prompt)) {
+      let figmaContext = null;
+      const shouldUseFigma =
+        Boolean(figmaUrl) &&
+        /\b(figma|design|reference|homepage|home page|redesign|recreate|replicate|match|based on)\b/i.test(prompt);
+
+      if (shouldUseFigma) {
+        try {
+          figmaContext = await loadFigmaDesignContext(figmaUrl);
+          console.info("HORIZON FIGMA DESIGN CONTEXT LOADED", {
+            fileName: figmaContext.fileName,
+            nodeName: figmaContext.nodeName,
+            nodeId: figmaContext.nodeId,
+            summaryCharacters: figmaContext.summary.length,
+            screenshotBytes: Math.floor(figmaContext.imageData.length * 0.75),
+          });
+        } catch (error) {
+          const status = error instanceof FigmaConnectionError ? error.status : 502;
+          const message = error instanceof Error ? error.message : "Figma design could not be loaded.";
+          console.error("HORIZON FIGMA DESIGN CONTEXT FAILED:", message);
+          return NextResponse.json({
+            success: false,
+            error: message,
+            message,
+            figmaConnection: { connected: false },
+            themeEdit: { applied: false, files: [] },
+          }, { status });
+        }
+      }
+
       try {
-        const themeEdit = await executeThemeEditRequest(prompt, history);
+        const themeEdit = await executeThemeEditRequest(prompt, history, figmaContext ?? undefined);
         const changedFiles = themeEdit.files.map((file) =>
           "- " + file.path + " — " + file.operations + " operation(s): " + file.reasons.join("; ")
         );
@@ -14018,6 +14053,13 @@ export async function POST(request: NextRequest) {
           success: true,
           message,
           themeEdit,
+          figmaDesign: figmaContext
+            ? {
+                fileName: figmaContext.fileName,
+                nodeName: figmaContext.nodeName,
+                nodeId: figmaContext.nodeId,
+              }
+            : null,
           filesAnalyzed: themeEdit.files.map((file) => file.path),
           filesChanged: themeEdit.files.map((file) => file.path),
           evidenceSummary: { total: 0, verified: 0, unverified: 0 },
