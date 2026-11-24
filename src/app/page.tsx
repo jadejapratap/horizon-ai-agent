@@ -66,6 +66,27 @@ export default function Home() {
   const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
   const [previewRevision, setPreviewRevision] = useState(0);
   const [previewError, setPreviewError] = useState("");
+  const isLocalCliPreview = previewUrl
+    ? ["127.0.0.1", "localhost", "[::1]"].includes(new URL(previewUrl).hostname)
+    : false;
+
+  function openThemePreviewWindow() {
+    if (!previewUrl) return;
+
+    const isMobile = previewMode === "mobile";
+    const width = isMobile
+      ? 390
+      : Math.min(1440, Math.max(1024, window.screen.availWidth - 80));
+    const height = isMobile
+      ? 844
+      : Math.min(960, Math.max(700, window.screen.availHeight - 80));
+
+    window.open(
+      previewUrl,
+      "horizon-shopify-theme-preview",
+      `popup=yes,width=${width},height=${height},resizable=yes,scrollbars=yes`
+    );
+  }
 
   function connectThemePreview() {
     const value = previewInput.trim();
@@ -457,7 +478,9 @@ export default function Home() {
               <div className="min-w-0">
                 <h3 className="font-semibold">Live Preview</h3>
                 <p className="mt-1 truncate text-xs text-gray-400">
-                  {previewUrl ? `Connected · ${new URL(previewUrl).host}` : "No storefront preview connected"}
+                  {previewUrl
+                    ? `${isLocalCliPreview ? "Local CLI preview" : "Preview URL selected"} · ${new URL(previewUrl).host}`
+                    : "No storefront preview connected"}
                 </p>
               </div>
 
@@ -484,7 +507,11 @@ export default function Home() {
                   type="button"
                   onClick={() => {
                     setPreviewError("");
-                    setPreviewRevision((revision) => revision + 1);
+                    if (isLocalCliPreview) {
+                      openThemePreviewWindow();
+                    } else {
+                      setPreviewRevision((revision) => revision + 1);
+                    }
                   }}
                   disabled={!previewUrl}
                   aria-label="Refresh theme preview"
@@ -536,22 +563,46 @@ export default function Home() {
             )}
 
             {previewUrl ? (
-              <div className="flex min-h-[460px] flex-1 items-start justify-center overflow-auto rounded-xl border border-white/15 bg-[#0c0d18] p-3">
-                <div
-                  className={`h-[calc(100vh-330px)] min-h-[430px] overflow-hidden rounded-lg bg-white shadow-2xl transition-[width] duration-300 ${previewMode === "mobile" ? "w-[390px] max-w-full" : "w-full"}`}
-                >
-                  <iframe
-                    key={`${previewUrl}:${previewRevision}`}
-                    src={previewUrl}
-                    title="Shopify storefront theme preview"
-                    className="h-full w-full border-0 bg-white"
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
-                    onError={() => setPreviewError("The storefront preview could not be loaded. Check the URL and whether the preview host allows iframe embedding.")}
-                  />
+              isLocalCliPreview ? (
+                <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center rounded-xl border border-white/15 bg-[#0c0d18] p-7 text-center">
+                  <Monitor size={42} className="mb-4 text-violet-400" />
+                  <h3 className="font-semibold">Open your Shopify CLI preview</h3>
+                  <p className="mt-2 max-w-lg text-sm leading-6 text-gray-400">
+                    Shopify CLI serves the real storefront locally, but the store can block it from being embedded inside another website. Open the preview directly in Chrome instead of showing a blank iframe.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={openThemePreviewWindow}
+                    className="mt-5 inline-flex items-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold transition-colors hover:bg-violet-500"
+                  >
+                    <ExternalLink size={17} />
+                    Open {previewMode === "mobile" ? "Mobile" : "Desktop"} Preview
+                  </button>
+                  <p className="mt-4 max-w-md text-xs leading-5 text-gray-500">
+                    Desktop and Mobile choose the preview window size. Keep the Shopify CLI terminal running to retain hot reload while editing theme files.
+                  </p>
                 </div>
-              </div>
+              ) : (
+                <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center overflow-auto rounded-xl border border-white/15 bg-[#0c0d18] p-3">
+                  <div
+                    className={`h-[calc(100vh-360px)] min-h-[430px] overflow-hidden rounded-lg bg-white shadow-2xl transition-[width] duration-300 ${previewMode === "mobile" ? "w-[390px] max-w-full" : "w-full"}`}
+                  >
+                    <iframe
+                      key={`${previewUrl}:${previewRevision}`}
+                      src={previewUrl}
+                      title="Shopify storefront theme preview"
+                      className="h-full w-full border-0 bg-white"
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+                      onError={() => setPreviewError("The storefront preview could not be loaded. Open it in a new tab to check whether the storefront blocks iframe embedding.")}
+                    />
+                  </div>
+                  <p className="mt-3 text-center text-xs text-gray-500">
+                    Preview not visible? Use the Open in New Tab icon above. Some Shopify storefronts block iframe embedding.
+                  </p>
+                </div>
+              )
             ) : (
               <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#0c0d18] p-7 text-center">
                 <Code2 size={44} className="mb-4 text-violet-400" />
