@@ -212,6 +212,9 @@ async function discoverSourceContext(prompt: string): Promise<{ files: SourceFil
   const requiredHomepageFiles = /\b(homepage|home page|landing page|landing desktop|storefront home)\b/i.test(prompt)
     ? new Set(["templates/index.json"])
     : new Set<string>();
+  if (/\b(hero|banner)\b/i.test(prompt)) {
+    requiredHomepageFiles.add("sections/hero.liquid");
+  }
 
   const results = await Promise.all(manifest.map(async (relativePath) => {
     const fullPath = path.resolve(root, relativePath);
@@ -219,10 +222,10 @@ async function discoverSourceContext(prompt: string): Promise<{ files: SourceFil
       const metadata = await stat(fullPath);
       if (!metadata.isFile() || metadata.size > 250000) return null;
       const content = await readFile(fullPath, "utf8");
-      const isRequiredHomepageFile = requiredHomepageFiles.has(relativePath);
+      const isRequiredSourceFile = requiredHomepageFiles.has(relativePath);
       const score = scoreThemeFile(prompt.toLowerCase(), relativePath, content, terms) +
-        (isRequiredHomepageFile ? 1000 : 0);
-      if (score <= 0 && !isRequiredHomepageFile) return null;
+        (isRequiredSourceFile ? 1000 : 0);
+      if (score <= 0 && !isRequiredSourceFile) return null;
       return {
         path: relativePath,
         fullPath,
