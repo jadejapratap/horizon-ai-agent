@@ -14,7 +14,8 @@
     "next": "16.4.6",
     "openai": "^7.59.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "@modelcontextprotocol/sdk": "1.32.2"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "4.3.3",

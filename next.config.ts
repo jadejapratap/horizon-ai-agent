@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
       "./themes/horizon/**/*.json",
       "./themes/horizon/**/*.js",
       "./themes/horizon/**/*.css",
+      "./shopify-toolkit/skills/shopify/**/*.md",
     ],
   },
   outputFileTracingExcludes: {

@@ -31,6 +31,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { readFile, readdir, stat } from "fs/promises";
 import path from "path";
+import { loadShopifySkillContext, resolveShopifyAgentProfile } from "@/lib/shopify/skill-loader";
+import { generateContentWithShopifyMcpTools } from "@/lib/shopify/dev-mcp";
+
+export const runtime = "nodejs";
+export const maxDuration = 180;
 
 // --------------------------------------------------
 // CONFIGURATION
@@ -13246,6 +13251,90 @@ export async function POST(request: NextRequest) {
     // Explicit-only mode does not call broad semantic search at all.
     const searchResults = explicitOnly ? [] : await searchTheme(prompt);
 
+    // Shopify development questions that do not map to a local Horizon theme
+    // file still use the same Gemini agent, enriched with the official Shopify
+    // AI Toolkit skill and dynamically discovered Shopify Dev MCP tools.
+    if (!explicitOnly && searchResults.length === 0) {
+      const shopifySkillBundle = await loadShopifySkillContext(prompt);
+      const shopifyAgentProfile = resolveShopifyAgentProfile(prompt);
+      const knowledgeHistory = history
+        .filter(
+          (message: any) =>
+            message &&
+            typeof message.content === "string" &&
+            ["user", "assistant", "model"].includes(message.role)
+        )
+        .slice(-8)
+        .map((message: any) => ({
+          role: message.role === "assistant" ? "model" : message.role,
+          parts: [{ text: message.content.slice(0, 12000) }],
+        }));
+
+      const knowledgeResult = await generateContentWithShopifyMcpTools(
+        {
+          model: MODEL,
+          contents: [
+            ...knowledgeHistory,
+            {
+              role: "user",
+              parts: [{
+                text: [
+                  "You are Horizon AI, the existing Gemini-based Shopify development agent.",
+                  "Use the official Shopify AI Toolkit topic instructions and references below.",
+                  "Use Shopify Dev MCP tools for current documentation, schemas, and validation when available.",
+                  "Do not state code was validated unless a validator tool returned a successful result.",
+                  "Do not claim to have accessed or changed a merchant store. Dev MCP is a developer documentation and validation service, not Admin API OAuth.",
+                  "If live MCP tools are unavailable, disclose that current documentation lookup or validation could not be performed.",
+                  "",
+                  "USER REQUEST:",
+                  prompt,
+                  "",
+                  "ACTIVE SHOPIFY SPECIALIST PROFILE:",
+                  shopifyAgentProfile.name,
+                  shopifyAgentProfile.instructions,
+                  "OFFICIAL SHOPIFY AI TOOLKIT SKILL CONTEXT:",
+                  shopifySkillBundle.context,
+                ].join("\n"),
+              }],
+            },
+          ],
+          config: {
+            systemInstruction: [
+              "Answer the user's Shopify development request using the provided official skill references.",
+              "Prefer exact Shopify API names, supported values, and version-aware guidance.",
+              "When code is requested, use an available Shopify Dev MCP validation tool before claiming correctness.",
+              "Keep unsupported or unverified details explicit.",
+            ].join("\n"),
+          },
+        },
+        generateContentWithRetry
+      );
+
+      const knowledgeAnswer =
+        knowledgeResult.response?.text?.trim() ||
+        "Gemini did not return a text response.";
+
+      return NextResponse.json({
+        success: true,
+        message: knowledgeAnswer,
+        claims: [],
+        evidenceSummary: { total: 0, verified: 0, unverified: 0 },
+        filesAnalyzed: [],
+        filesIncludedInContext: [],
+        filesSkippedFromContext: [],
+        dependencyGraph: [],
+        relevantDependencies: [],
+        verificationSummary: { total: 0, verified: 0, unverified: 0, relevant: 0 },
+        shopifyToolkit: {
+          agentProfile: shopifyAgentProfile.id,
+          skillVersion: shopifySkillBundle.version,
+          topics: shopifySkillBundle.topics,
+          references: shopifySkillBundle.references,
+          mcp: knowledgeResult.status,
+        },
+      });
+    }
+
     if (!explicitOnly && searchResults.length === 0) {
       return NextResponse.json({
         success: true,
@@ -15041,10 +15130,34 @@ STRICT COVERAGE RULES:
     // STEP 13: Final Gemini response
     // -------------------------------------
 
-    const response =
-      await generateContentWithRetry({
+    const shopifySkillBundle = await loadShopifySkillContext(prompt);
+    const shopifyAgentProfile = resolveShopifyAgentProfile(prompt);
+    const finalContents: any[] = [
+      ...contents,
+      {
+        role: "user",
+        parts: [{
+          text: [
+            "ACTIVE SHOPIFY SPECIALIST PROFILE: " + shopifyAgentProfile.name,
+            shopifyAgentProfile.instructions,
+            "OFFICIAL SHOPIFY AI TOOLKIT CONTEXT",
+            "Selected topics: " + shopifySkillBundle.topics.join(", "),
+            "Reference files: " + shopifySkillBundle.references.join(", "),
+            shopifySkillBundle.context,
+            "",
+            "HORIZON AGENT ADAPTATION:",
+            "Use dynamically exposed Shopify Dev MCP Gemini functions for current docs/schema lookup and supported validation.",
+            "Do not claim validation unless a validation tool actually returned success.",
+            "The Dev MCP server is for developer resources and code validation; it does not grant Shopify Admin API access or mutate merchant stores.",
+          ].join("\n"),
+        }],
+      },
+    ];
+
+    const finalGenerationResult =
+      await generateContentWithShopifyMcpTools({
         model: MODEL,
-        contents,
+        contents: finalContents,
         config: {
           responseMimeType: "application/json",
 
@@ -15609,7 +15722,10 @@ that can be checked against actual source files.
 If no source evidence is available, return an empty claims array.
 `,
         },
-      });
+      }, generateContentWithRetry);
+
+    const response = finalGenerationResult.response;
+    const shopifyMcpStatus = finalGenerationResult.status;
 
     // -------------------------------------
     // STEP 14: Parse Gemini response
@@ -15949,6 +16065,13 @@ If no source evidence is available, return an empty claims array.
 
     return NextResponse.json({
       success: true,
+      shopifyToolkit: {
+        agentProfile: shopifyAgentProfile.id,
+        skillVersion: shopifySkillBundle.version,
+        topics: shopifySkillBundle.topics,
+        references: shopifySkillBundle.references,
+        mcp: shopifyMcpStatus,
+      },
       explicitOnly,
       explicitFileAllowlist: explicitOnly ? [...(explicitFileAllowlist ?? [])] : [],
 
