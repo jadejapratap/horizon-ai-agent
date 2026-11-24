@@ -848,6 +848,190 @@ async function prepareChanges(plan: EditPlan, sourceFiles: SourceFile[], directo
   return prepared;
 }
 
+async function prepareFigmaHeroTemplateChange(
+  sourceFiles: SourceFile[],
+  figmaContext: FigmaDesignContext
+): Promise<PreparedChange> {
+  const templateSource = sourceFiles.find(
+    (file) => file.path === "templates/index.json" && file.complete
+  );
+  if (!templateSource) {
+    throw new ThemeEditEngineError(
+      "Figma hero image mapping requires the complete templates/index.json source. No theme files were changed.",
+      422
+    );
+  }
+
+  const heroSource = sourceFiles.find((file) => file.path === "sections/hero.liquid");
+  if (
+    !heroSource ||
+    !heroSource.content.includes('"id": "image_1_asset"') ||
+    !heroSource.content.includes('"id": "image_2_asset"') ||
+    !heroSource.content.includes('"id": "image_1_width"') ||
+    !heroSource.content.includes("section.settings.image_1_asset | asset_url") ||
+    !heroSource.content.includes("section.settings.image_2_asset | asset_url")
+  ) {
+    throw new ThemeEditEngineError(
+      "The inspected hero section does not expose both local image asset settings and asset_url rendering. No theme files were changed.",
+      422
+    );
+  }
+
+  const normalizeFigmaNodeId = (value: string) => value.replace(/-/g, ":");
+  const leftAsset = figmaContext.assets.find(
+    (asset) => normalizeFigmaNodeId(asset.nodeId) === "108:13297"
+  );
+  const rightAsset = figmaContext.assets.find(
+    (asset) => normalizeFigmaNodeId(asset.nodeId) === "108:13272"
+  );
+
+  if (!leftAsset || !rightAsset || leftAsset.fileName === rightAsset.fileName) {
+    throw new ThemeEditEngineError(
+      "Horizon could not uniquely match both original Figma hero images by their exact source nodes (108:13297 and 108:13272). No theme files were changed. Available image nodes: " +
+        figmaContext.assets.map((asset) => asset.nodeId + " (" + asset.nodeName + ")").join(", "),
+      422
+    );
+  }
+
+  if (
+    !Number.isFinite(leftAsset.width) ||
+    !Number.isFinite(rightAsset.width) ||
+    leftAsset.width <= 0 ||
+    rightAsset.width <= 0
+  ) {
+    throw new ThemeEditEngineError(
+      "Figma did not provide valid widths for the left and right hero image frames. No theme files were changed.",
+      422
+    );
+  }
+
+  const image1Width = Math.round(
+    (leftAsset.width / (leftAsset.width + rightAsset.width)) * 100
+  );
+  if (image1Width < 20 || image1Width > 80) {
+    throw new ThemeEditEngineError(
+      "The original Figma hero image proportions (" + image1Width + "% left) are outside the supported 20–80% hero setting range. No theme files were changed.",
+      422
+    );
+  }
+
+  const target = await resolveSafeThemeTarget("templates/index.json", false);
+  const currentContent = await readFile(target.fullPath, "utf8");
+  const currentHash = createHash("sha256").update(currentContent).digest("hex");
+  if (currentHash !== templateSource.sha256) {
+    throw new ThemeEditEngineError(
+      "The source changed after inspection: templates/index.json. Re-run the request so the deterministic Figma image mapping uses the latest file.",
+      409
+    );
+  }
+
+  const headerMatch = currentContent.match(/^\uFEFF?\s*\/\*[\s\S]*?\*\/\s*/);
+  const header = headerMatch?.[0] ?? "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(currentContent.slice(header.length));
+  } catch {
+    throw new ThemeEditEngineError(
+      "templates/index.json is not valid JSON after its Shopify header comment. No theme files were changed.",
+      422
+    );
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ThemeEditEngineError("The homepage template JSON has an invalid root object. No theme files were changed.", 422);
+  }
+
+  const template = parsed as Record<string, unknown>;
+  const sections = template.sections;
+  if (!sections || typeof sections !== "object" || Array.isArray(sections)) {
+    throw new ThemeEditEngineError("The homepage template has no valid sections object. No theme files were changed.", 422);
+  }
+
+  const heroSections = Object.entries(sections as Record<string, unknown>).filter(
+    ([, section]) =>
+      Boolean(section) &&
+      typeof section === "object" &&
+      !Array.isArray(section) &&
+      (section as Record<string, unknown>).type === "hero"
+  );
+  if (heroSections.length !== 1) {
+    throw new ThemeEditEngineError(
+      "Expected exactly one hero section in templates/index.json for deterministic Figma image mapping, but found " + heroSections.length + ". No theme files were changed.",
+      422
+    );
+  }
+
+  const [heroSectionId, heroSectionValue] = heroSections[0];
+  const heroSection = heroSectionValue as Record<string, unknown>;
+  const rawSettings = heroSection.settings;
+  if (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings)) {
+    throw new ThemeEditEngineError(
+      "The homepage hero section '" + heroSectionId + "' has no valid settings object. No theme files were changed.",
+      422
+    );
+  }
+
+  const settings = rawSettings as Record<string, unknown>;
+  const previousValues = {
+    image1: settings.image_1_asset,
+    image2: settings.image_2_asset,
+    image1Alt: settings.image_1_asset_alt,
+    image2Alt: settings.image_2_asset_alt,
+    image1Width: settings.image_1_width,
+  };
+
+  settings.media_type_1 = "image";
+  settings.media_type_2 = "image";
+  settings.image_1_asset = leftAsset.fileName;
+  settings.image_2_asset = rightAsset.fileName;
+  settings.image_1_asset_alt = "Original Figma hero image — left";
+  settings.image_2_asset_alt = "Original Figma hero image — right";
+  settings.image_1_width = image1Width;
+
+  const nextContent =
+    header +
+    JSON.stringify(parsed, null, 2) +
+    (currentContent.endsWith("\n") ? "\n" : "");
+
+  validateEditedContent("templates/index.json", nextContent);
+  if (nextContent === currentContent) {
+    throw new ThemeEditEngineError(
+      "The exact original Figma hero asset filenames are already connected in templates/index.json. No JSON change is required.",
+      422
+    );
+  }
+
+  console.info("HORIZON FIGMA HERO TEMPLATE MAPPED", {
+    sectionId: heroSectionId,
+    left: {
+      nodeId: leftAsset.nodeId,
+      fileName: leftAsset.fileName,
+      width: leftAsset.width,
+    },
+    right: {
+      nodeId: rightAsset.nodeId,
+      fileName: rightAsset.fileName,
+      width: rightAsset.width,
+    },
+    image1Width,
+    previousValues,
+  });
+
+  return {
+    path: "templates/index.json",
+    fullPath: target.fullPath,
+    originalContent: currentContent,
+    nextContent,
+    operations: 5,
+    reasons: [
+      "Connect original Figma left image node 108:13297 to image_1_asset",
+      "Connect original Figma right image node 108:13272 to image_2_asset",
+      "Set hero image width ratio from the original Figma frame widths",
+      "Preserve existing homepage sections, hero blocks, copy and overlay settings",
+    ],
+  };
+}
+
 function buildEditResponse(
   summary: string,
   files: PreparedChange[],
@@ -918,49 +1102,82 @@ export async function executeThemeEditRequest(
     });
 
     let prepared: PreparedChange[];
-    try {
-      prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
-    } catch (error) {
-      const mismatchPath = error instanceof ThemeEditEngineError
-        ? error.message.match(/^Patch did not match the current source in (.+?)\. The source may have changed;/)?.[1]
-        : undefined;
-      const completeSource = mismatchPath
-        ? sourceContext.files.find((file) => file.path === mismatchPath && file.complete)
-        : undefined;
+    const isFigmaHeroAssetRequest =
+      Boolean(figmaContext) &&
+      /\b(hero|banner)\b/i.test(prompt) &&
+      /\b(figma|original|image|images|asset|assets|import|download)\b/i.test(prompt);
 
-      // A single repair pass is safe only when the exact complete file was
-      // supplied to Gemini. Re-prompt from that immutable source context;
-      // never relax exact-match validation or write a partial patch.
-      if (!mismatchPath || !completeSource) throw error;
-
-      console.warn("HORIZON THEME EDIT PATCH REPAIR RETRY", {
-        file: mismatchPath,
-        sourceCharacters: completeSource.content.length,
-      });
-      const repairPrompt = [
-        prompt,
-        "",
-        "PATCH REPAIR REQUIREMENT:",
-        "The previous edit plan was rejected before any files were written because its oldText did not exactly occur in " + mismatchPath + ".",
-        "Discard the previous patch operations and generate a fresh complete edit plan.",
-        "For the failed file, copy each oldText byte-for-byte from the complete source supplied in SOURCE FILES RETRIEVED FOR THIS REQUEST. Use the shortest unique exact anchor that safely identifies the intended JSON setting. Do not reconstruct, normalize, paraphrase, or guess source text.",
-        "Preserve the Shopify header comment, all unrelated section and block settings, valid JSON, and stable IDs.",
-        "Do not edit any file that is absent from the supplied source context. If an exact patch cannot be formed safely, return changes=[] and explain why.",
-      ].join("\n");
-
-      plan = await generateEditPlan(
-        repairPrompt,
-        history,
+    if (isFigmaHeroAssetRequest && figmaContext) {
+      // The image slots are tied to exact Figma node IDs. Build the homepage
+      // JSON structurally instead of asking Gemini to reproduce a long
+      // byte-exact Shopify JSON anchor. All other proposed file edits retain
+      // the normal source-hash and exact-match validation.
+      const nonTemplateChanges = plan.changes.filter(
+        (change) =>
+          typeof change.path !== "string" ||
+          normalizeThemePath(change.path).toLowerCase() !== "templates/index.json"
+      );
+      const otherPrepared = nonTemplateChanges.length > 0
+        ? await prepareChanges(
+            { ...plan, changes: nonTemplateChanges },
+            sourceContext.files,
+            sourceContext.directories
+          )
+        : [];
+      const deterministicHeroTemplate = await prepareFigmaHeroTemplateChange(
         sourceContext.files,
-        sourceContext.manifest,
-        sourceContext.directories,
         figmaContext
       );
-      console.info("HORIZON THEME EDIT REPAIRED PLAN", {
-        summary: plan.summary,
-        files: plan.changes.map((change) => ({ path: change.path, create: change.create, operations: change.edits?.length ?? 0 })),
+      prepared = [...otherPrepared, deterministicHeroTemplate];
+      console.info("HORIZON FIGMA HERO JSON PREPARED", {
+        file: deterministicHeroTemplate.path,
+        operations: deterministicHeroTemplate.operations,
       });
-      prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
+    } else {
+      try {
+        prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
+      } catch (error) {
+        const mismatchPath = error instanceof ThemeEditEngineError
+          ? error.message.match(/^Patch did not match the current source in (.+?)\\. The source may have changed;/)?.[1]
+          : undefined;
+        const completeSource = mismatchPath
+          ? sourceContext.files.find((file) => file.path === mismatchPath && file.complete)
+          : undefined;
+
+        // A single repair pass is safe only when the exact complete file was
+        // supplied to Gemini. Re-prompt from that immutable source context;
+        // never relax exact-match validation or write a partial patch.
+        if (!mismatchPath || !completeSource) throw error;
+
+        console.warn("HORIZON THEME EDIT PATCH REPAIR RETRY", {
+          file: mismatchPath,
+          sourceCharacters: completeSource.content.length,
+        });
+        const repairPrompt = [
+          prompt,
+          "",
+          "PATCH REPAIR REQUIREMENT:",
+          "The previous edit plan was rejected before any files were written because its oldText did not exactly occur in " + mismatchPath + ".",
+          "Discard the previous patch operations and generate a fresh complete edit plan.",
+          "For the failed file, copy each oldText byte-for-byte from the complete source supplied in SOURCE FILES RETRIEVED FOR THIS REQUEST. Use the shortest unique exact anchor that safely identifies the intended JSON setting. Do not reconstruct, normalize, paraphrase, or guess source text.",
+          "Preserve the Shopify header comment, all unrelated section and block settings, valid JSON, and stable IDs.",
+          "Do not edit any file that is absent from the supplied source context. If an exact patch cannot be formed safely, return changes=[] and explain why.",
+        ].join("\\n");
+
+        plan = await generateEditPlan(
+          repairPrompt,
+          history,
+          sourceContext.files,
+          sourceContext.manifest,
+          sourceContext.directories,
+          figmaContext
+        );
+        console.info("HORIZON THEME EDIT REPAIRED PLAN", {
+          summary: plan.summary,
+          files: plan.changes.map((change) => ({ path: change.path, create: change.create, operations: change.edits?.length ?? 0 })),
+        });
+        prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
+      }
     }
 
     const persistedFigmaAssets = await persistFigmaImageAssets(figmaContext);
