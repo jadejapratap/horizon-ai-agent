@@ -34,7 +34,6 @@ import path from "path";
 import { loadShopifySkillContext, resolveShopifyAgentProfile } from "@/lib/shopify/skill-loader";
 import { generateContentWithShopifyMcpTools } from "@/lib/shopify/dev-mcp";
 
-export const runtime = "nodejs";
 export const maxDuration = 180;
 
 // --------------------------------------------------
