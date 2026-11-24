@@ -7694,7 +7694,7 @@ function supportsProductFormHandleSubmitClaim(
 
   if (
     claimsBeginningRecommendation &&
-    !/^\s*handleSubmit\s*\(\s*event\s*\)\s*\{\s*event\.preventDefault\s*\(\s*\)\s*;/s.test(actualMethod)
+    !/^\s*handleSubmit\s*\(\s*event\s*\)\s*\{\s*event\.preventDefault\s*\(\s*\)\s*;/.test(actualMethod)
   ) return false;
 
   return evidenceItems.some((evidence) => {
