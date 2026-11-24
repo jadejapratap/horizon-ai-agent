@@ -10,7 +10,6 @@ import {
   Send,
   Paperclip,
   Code2,
-  Figma,
   Sparkles,
   User,
   RefreshCw,
@@ -314,7 +313,7 @@ export default function Home() {
             onClick={() => document.getElementById("figma-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" })}
             className="flex w-full items-center gap-3 text-left hover:text-white"
           >
-            <Figma />
+            <Code2 />
             Figma Designs
           </button>
 
@@ -550,7 +549,7 @@ export default function Home() {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <Figma size={19} className="text-violet-300" />
+                  <Code2 size={19} className="text-violet-300" />
                   <h3 className="font-semibold">Figma Designs</h3>
                 </div>
                 <p className="mt-1 truncate text-xs text-gray-400">
@@ -647,7 +646,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#0c0d18] p-7 text-center">
-                <Figma size={46} className="mb-4 text-violet-400" />
+                <Code2 size={46} className="mb-4 text-violet-400" />
                 <h3 className="font-semibold">Connect your Figma workspace</h3>
                 <p className="mt-2 max-w-md text-sm leading-6 text-gray-400">
                   Paste a Figma share link to open a live design, interactive prototype, FigJam board, or Slides file here.
