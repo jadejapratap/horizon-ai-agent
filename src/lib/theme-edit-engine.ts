@@ -933,8 +933,8 @@ async function prepareFigmaHeroTemplateChange(
     );
   }
 
-  const leftAsset = leftAssets[0];
-  const rightAsset = rightAssets[0];
+  const leftAsset = leftAssets[0]!;
+  const rightAsset = rightAssets[0]!;
 
   if (
     !Number.isFinite(leftAsset.width) ||
