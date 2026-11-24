@@ -533,7 +533,7 @@ export async function generateContentWithShopifyMcpTools(
             "ACTUAL SHOPIFY DEV MCP TOOL RESULTS",
             "The following outputs came from MCP tool executions in this request. Use them as evidence in your final reasoning.",
             transcriptText.length > 18000
-              ? transcriptText.slice(0, 18000) + "\\n[Combined MCP results truncated by Horizon Agent.]"
+              ? transcriptText.slice(0, 18000) + "\n[Combined MCP results truncated by Horizon Agent.]"
               : transcriptText,
           ].join("\n"),
         }],
