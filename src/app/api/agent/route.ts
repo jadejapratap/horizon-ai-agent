@@ -1574,12 +1574,16 @@ function getArchitectureRootFiles(prompt: string): string[] {
       "assets/product-form.js",
       "assets/component.js"
     );
-    if (/\bsticky\b/i.test(prompt)) roots.push("assets/sticky-add-to-cart.js");
-    if (/\bsticky\b/i.test(prompt)) roots.push("assets/sticky-add-to-cart.js");
+    if (/\bsticky\b/i.test(prompt)) {
+      roots.push("assets/sticky-add-to-cart.js");
+    }
   }
 
   if (domains.includes("sticky-header")) {
-    roots.push("sections/header.liquid", "assets/base.css");
+    roots.push(
+      "sections/header.liquid",
+      "assets/base.css"
+    );
   } else if (domains.includes("header")) {
     roots.push(
       "sections/header.liquid",
@@ -1591,7 +1595,11 @@ function getArchitectureRootFiles(prompt: string): string[] {
   }
 
   if (domains.includes("pricing")) {
-    roots.push("snippets/price.liquid", "snippets/price-styles.liquid", "snippets/unit-price.liquid");
+    roots.push(
+      "snippets/price.liquid",
+      "snippets/price-styles.liquid",
+      "snippets/unit-price.liquid"
+    );
   }
 
   if (isProductCardArchitectureIntent(prompt)) {
