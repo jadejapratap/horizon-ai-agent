@@ -4673,6 +4673,7 @@ function allocateChunkRequestBudgets(
       file: item.request.file,
       start_offset: item.startOffset,
       max_chars: item.allocated,
+      must_retrieve: item.mustRetrieve || undefined,
     }));
 }
 
