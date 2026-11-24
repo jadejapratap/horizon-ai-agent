@@ -60,6 +60,12 @@ const MAX_ON_DEMAND_FILES = 5;
 const MAX_ON_DEMAND_FILE_SIZE = 26000;
 const MAX_CHUNK_SIZE = 8000;
 
+// Keep conversation context useful without replaying entire historical
+// answers and source excerpts on every Gemini request.
+const MAX_HISTORY_MESSAGES = 4;
+const MAX_HISTORY_MESSAGE_CHARS = 1800;
+const MAX_HISTORY_TOTAL_CHARS = 6000;
+
 
 const MIN_DEPENDENCY_SCORE = 15;
 
@@ -253,10 +259,103 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function buildBoundedGeminiHistory(
+  history: any[] = [],
+  enabled = true
+): any[] {
+  if (!enabled || !Array.isArray(history)) return [];
+
+  const eligibleMessages = history
+    .filter(
+      (message: any) =>
+        message &&
+        typeof message.content === "string" &&
+        ["user", "assistant", "model"].includes(message.role)
+    )
+    .slice(-MAX_HISTORY_MESSAGES);
+
+  let remainingChars = MAX_HISTORY_TOTAL_CHARS;
+  const boundedHistory: any[] = [];
+
+  for (const message of eligibleMessages) {
+    if (remainingChars <= 0) break;
+
+    const originalText = message.content.trim();
+    if (!originalText) continue;
+
+    const limit = Math.min(MAX_HISTORY_MESSAGE_CHARS, remainingChars);
+    let content = originalText;
+
+    if (content.length > limit) {
+      const marker = "\n[...older conversation content omitted...]\n";
+      const usableChars = Math.max(0, limit - marker.length);
+      const headChars = Math.ceil(usableChars * 0.7);
+      const tailChars = Math.max(0, usableChars - headChars);
+      content = content.slice(0, headChars) +
+        marker +
+        (tailChars > 0 ? content.slice(-tailChars) : "");
+    }
+
+    if (content.length > remainingChars) {
+      content = content.slice(0, remainingChars);
+    }
+    remainingChars -= content.length;
+
+    boundedHistory.push({
+      role: message.role === "assistant" ? "model" : message.role,
+      parts: [{ text: content }],
+    });
+  }
+
+  return boundedHistory;
+}
+
+function countGeminiTextCharacters(value: any): number {
+  if (typeof value === "string") return value.length;
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (total, item) => total + countGeminiTextCharacters(item),
+      0
+    );
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value).reduce(
+      (total: number, item: any) => total + countGeminiTextCharacters(item),
+      0
+    );
+  }
+  return 0;
+}
+
+function getGeminiRetryDelayMs(
+  error: unknown,
+  fallbackDelayMs: number
+): number {
+  const message =
+    error instanceof Error ? error.message : String(error);
+  const retryInfo = message.match(
+    /retryDelay["']?\s*:\s*["'](\d+(?:\.\d+)?)s["']/i
+  );
+
+  if (!retryInfo) return fallbackDelayMs;
+
+  const providerDelayMs = Math.ceil(Number(retryInfo[1]) * 1000) + 250;
+  return Math.min(60000, Math.max(fallbackDelayMs, providerDelayMs));
+}
+
 async function generateContentWithRetry(
   request: GeminiRequest
 ): Promise<any> {
   let lastError: unknown;
+
+  console.info("GEMINI REQUEST SIZE", {
+    model: request.model,
+    contentsCharacters: countGeminiTextCharacters(request.contents),
+    systemInstructionCharacters: countGeminiTextCharacters(
+      request.config?.systemInstruction
+    ),
+    totalTextCharacters: countGeminiTextCharacters(request),
+  });
 
   for (
     let attempt = 1;
@@ -294,9 +393,10 @@ async function generateContentWithRetry(
         break;
       }
 
-      const delay =
+      const fallbackDelay =
         GEMINI_RETRY_BASE_DELAY *
         Math.pow(2, attempt - 1);
+      const delay = getGeminiRetryDelayMs(error, fallbackDelay);
 
       console.log(
         `Retrying Gemini request in ${delay}ms`
@@ -13357,18 +13457,7 @@ export async function POST(request: NextRequest) {
         unavailableFiles: shopifySkillBundle.unavailableFiles,
         contextCharacters: shopifySkillBundle.context.length,
       });
-      const knowledgeHistory = history
-        .filter(
-          (message: any) =>
-            message &&
-            typeof message.content === "string" &&
-            ["user", "assistant", "model"].includes(message.role)
-        )
-        .slice(-8)
-        .map((message: any) => ({
-          role: message.role === "assistant" ? "model" : message.role,
-          parts: [{ text: message.content.slice(0, 12000) }],
-        }));
+      const knowledgeHistory = buildBoundedGeminiHistory(history);
 
       const knowledgeResult = await generateContentWithShopifyMcpTools(
         {
@@ -14116,27 +14205,10 @@ export async function POST(request: NextRequest) {
     // STEP 11: Prepare Gemini history
     // -------------------------------------
 
-    const validHistory = (explicitOnly ? [] : history)
-      .filter(
-        (message: any) =>
-          message &&
-          typeof message.content === "string" &&
-          ["user", "assistant", "model"].includes(
-            message.role
-          )
-      )
-      .slice(-10)
-      .map((message: any) => ({
-        role:
-          message.role === "assistant"
-            ? "model"
-            : message.role,
-        parts: [
-          {
-            text: message.content,
-          },
-        ],
-      }));
+    const validHistory = buildBoundedGeminiHistory(
+      history,
+      !explicitOnly
+    );
 
     const availableThemeFiles = new Set(
       themeFileManifest
@@ -14308,11 +14380,53 @@ Use only the selected file source text supplied above as evidence.
     console.log("\n========== COMPLETE PLANNER FILE MANIFEST ==========");
     console.log(JSON.stringify(plannerManifest, null, 2));
 
-    // The planner receives exact lengths for every loaded file,
-    // including files skipped entirely from initial context.
+    // The planner only chooses missing source ranges. It does not need the
+    // full theme source, prior assistant answers, or the final-analysis payload.
+    // The exact source remains reserved for the final reasoning/evidence pass.
+    const plannerDependencyEdges = relevantDependencies
+      .filter((dependency) => dependency.verified)
+      .slice(0, 50)
+      .map((dependency) => ({
+        from: dependency.from,
+        to: dependency.to,
+        relationship: dependency.relationship,
+      }));
+
+    const plannerContents: any[] = [{
+      role: "user",
+      parts: [{
+        text: [
+          "USER REQUEST:",
+          prompt,
+          "",
+          "FILES INCLUDED IN INITIAL SOURCE CONTEXT:",
+          JSON.stringify(filesIncludedInContext),
+          "",
+          "FILES SKIPPED FROM INITIAL SOURCE CONTEXT:",
+          JSON.stringify(filesSkippedFromContext),
+          "",
+          "RELEVANT VERIFIED DEPENDENCY EDGES:",
+          JSON.stringify(plannerDependencyEdges),
+          "",
+          "PLANNER TASK:",
+          "Use the exact file lengths and retrieved ranges in the system manifest to request only additional source ranges needed for this request. The final analysis model will receive the actual source excerpts separately.",
+        ].join("\n"),
+      }],
+    }];
+
+    console.info("GEMINI PLANNER CONTEXT REDUCED", {
+      originalContentsCharacters: countGeminiTextCharacters(contents),
+      plannerContentsCharacters: countGeminiTextCharacters(plannerContents),
+      sourceAndHistoryCharactersOmitted: Math.max(
+        0,
+        countGeminiTextCharacters(contents) -
+          countGeminiTextCharacters(plannerContents)
+      ),
+    });
+
     const planningResponse = await generateContentWithRetry({
       model: MODEL,
-      contents,
+      contents: plannerContents,
       config: {
         responseMimeType: "application/json",
 
@@ -14338,14 +14452,15 @@ Use only the selected file source text supplied above as evidence.
         systemInstruction: `
 You are a Shopify Horizon Theme source-code analyst.
 
-Analyze the user's request and the supplied theme context.
+Analyze the user's request and the supplied retrieval manifest.
 
 Your task is ONLY to identify which additional source chunks
-are required to provide a fully verified answer.
+are required to provide a fully verified answer. The actual source
+code is intentionally not included in this planning phase.
 
 Rules:
 
-1. Check which relevant source ranges are missing from GEMINI CONTEXT.
+1. Check which relevant source ranges are missing from the initial retrieved ranges.
 2. Request only chunks that are genuinely needed.
 3. Use exact file paths from AVAILABLE THEME FILE PATHS.
 4. Never invent file paths.
