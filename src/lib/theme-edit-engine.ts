@@ -906,13 +906,58 @@ export async function executeThemeEditRequest(
       selectedFiles: sourceContext.files.map((file) => ({ path: file.path, score: file.score, complete: file.complete, sourceCharacters: file.excerpt.length })),
     });
 
-    const plan = await generateEditPlan(prompt, history, sourceContext.files, sourceContext.manifest, sourceContext.directories, figmaContext);
+    let plan = await generateEditPlan(prompt, history, sourceContext.files, sourceContext.manifest, sourceContext.directories, figmaContext);
     console.info("HORIZON THEME EDIT PLAN", {
       summary: plan.summary,
       files: plan.changes.map((change) => ({ path: change.path, create: change.create, operations: change.edits?.length ?? 0 })),
     });
 
-    const prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
+    let prepared: PreparedChange[];
+    try {
+      prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
+    } catch (error) {
+      const mismatchPath = error instanceof ThemeEditEngineError
+        ? error.message.match(/^Patch did not match the current source in (.+?)\\. The source may have changed;/)?.[1]
+        : undefined;
+      const completeSource = mismatchPath
+        ? sourceContext.files.find((file) => file.path === mismatchPath && file.complete)
+        : undefined;
+
+      // A single repair pass is safe only when the exact complete file was
+      // supplied to Gemini. Re-prompt from that immutable source context;
+      // never relax exact-match validation or write a partial patch.
+      if (!mismatchPath || !completeSource) throw error;
+
+      console.warn("HORIZON THEME EDIT PATCH REPAIR RETRY", {
+        file: mismatchPath,
+        sourceCharacters: completeSource.content.length,
+      });
+      const repairPrompt = [
+        prompt,
+        "",
+        "PATCH REPAIR REQUIREMENT:",
+        "The previous edit plan was rejected before any files were written because its oldText did not exactly occur in " + mismatchPath + ".",
+        "Discard the previous patch operations and generate a fresh complete edit plan.",
+        "For the failed file, copy each oldText byte-for-byte from the complete source supplied in SOURCE FILES RETRIEVED FOR THIS REQUEST. Use the shortest unique exact anchor that safely identifies the intended JSON setting. Do not reconstruct, normalize, paraphrase, or guess source text.",
+        "Preserve the Shopify header comment, all unrelated section and block settings, valid JSON, and stable IDs.",
+        "Do not edit any file that is absent from the supplied source context. If an exact patch cannot be formed safely, return changes=[] and explain why.",
+      ].join("\\n");
+
+      plan = await generateEditPlan(
+        repairPrompt,
+        history,
+        sourceContext.files,
+        sourceContext.manifest,
+        sourceContext.directories,
+        figmaContext
+      );
+      console.info("HORIZON THEME EDIT REPAIRED PLAN", {
+        summary: plan.summary,
+        files: plan.changes.map((change) => ({ path: change.path, create: change.create, operations: change.edits?.length ?? 0 })),
+      });
+      prepared = await prepareChanges(plan, sourceContext.files, sourceContext.directories);
+    }
+
     const persistedFigmaAssets = await persistFigmaImageAssets(figmaContext);
     try {
       await applyPreparedChanges(prepared);
