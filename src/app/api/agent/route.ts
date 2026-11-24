@@ -1,3 +1,4 @@
+// v84.1: accepts camelCase quantity-selector claims, variant-change guard wording, and atomic initialized early-return evidence.
 // v84: verifies exact Add-to-Cart operation evidence, Component event-registration lifecycle, and sticky class/proxy claims.
 // v37: adds iterative explicit-only chunk-budget utilization and strict #updateScrollState evidence verification; preserves v36 scope isolation.
 // v50: verifies product-page quantity-break branch scope from contiguous source context and authorizes explicit verified caller-to-target render claims without requiring the caller path in the sentence.
@@ -8240,8 +8241,8 @@ function supportsAddToCartHandleClickClaim(
   const claimsClosestForm = /closest\s+form/.test(text) || /this\.closest\s*\(\s*['"]form['"]\s*\)/i.test(text);
   const claimsClosestProductForm = /closest\s+product[-\s]?form[-\s]?component/.test(text);
   const claimsQuantitySelectorReference =
-    /quantity\s+selector/.test(text) &&
-    /product\s+form|reference|refs?/.test(text);
+    (/\bquantity\s+selector\b|\bquantityselector\b/.test(text)) &&
+    (/product\s+form|productform|reference|refs?/.test(text));
   const claimsAvailability = /quantityselector\?\.canaddtocart|availability\s+check/.test(text);
   const claimsQuantityInvocation = /quantityselector\.canaddtocart\s*\(/.test(text) || /actual\s+quantityselector/.test(text);
   const claimsValidationResultGuard = /validation\.canadd|canadd\s+guard/.test(text);
@@ -8306,11 +8307,13 @@ function supportsProductFormHandleSubmitClaim(
     /\bdefines?\b.{0,60}\bhandlesubmit\b/i.test(text) ||
     /\bhandlesubmit\b.{0,30}\bmethod\b/i.test(text);
   const claimsPreventDefault = /preventdefault/.test(text);
-  const claimsVariantGuard = /variant\s+change|variantchangeinprogress/.test(text);
-  const claimsQueue = /\bqueue\b|\bqueued\b|addtocartqueue/.test(text);
+  const claimsVariantGuard = /variant[-\s]?change|variantchangeinprogress/.test(text);
+  const claimsQueue = /\bqueues?\b|\bqueued\b|addtocartqueue/.test(text);
   const claimsQueuedItem = /createqueuedaddtocartitem/.test(text);
   const claimsAnimation = /animateaddtocart/.test(text);
-  const claimsGuardedBranch = /guarded\s+branch|inside\s+(?:that\s+)?guard|within\s+(?:that\s+)?guard/.test(text);
+  const claimsGuardedBranch =
+    /guarded\s+branch|inside\s+(?:that\s+)?guard|within\s+(?:that\s+)?guard/.test(text) ||
+    /inside\s+(?:the\s+)?variant[-\s]?change\s+guard/.test(text);
   const claimsReturn = /\breturn\b/.test(text);
   const claimsProcess = /#?processaddtocart/.test(text);
 
@@ -8347,7 +8350,7 @@ function supportsProductFormHandleSubmitClaim(
     requiredParts.push(returnPattern);
   }
 
-  const claimsQueueCondition = /\bwhen\b.{0,70}\bvariant\s+change\b|\bif\b.{0,50}\bvariant\s+change\b/i.test(text);
+  const claimsQueueCondition = /\bwhen\b.{0,70}\bvariant[-\s]?change\b|\bif\b.{0,50}\bvariant[-\s]?change\b/i.test(text);
   if (claimsQueueCondition) requiredParts.push(variantGuardPattern, queuePushPattern);
 
   const claimsPostGuardHandoff =
@@ -8828,7 +8831,7 @@ function supportsComponentInitializedRegistrationGuardClaim(
     file !== "assets/component.js" ||
     !/registereventlisteners/.test(text) ||
     !/initialized/.test(text) ||
-    !/guard|duplicate|registration/.test(text)
+    !/guard|duplicate|registration|returns?\s+(?:immediately\s+)?early|early\s+return/.test(text)
   ) return false;
 
   const declarationPattern = /let\s+initialized\s*=\s*false\s*;/;
@@ -8851,8 +8854,9 @@ function supportsComponentInitializedRegistrationGuardClaim(
     segment.includes("function registerEventListeners") &&
     guardPattern.test(segment) &&
     evidenceItems.some((evidence) =>
+      declarationPattern.test(evidence) &&
       guardPattern.test(evidence) &&
-      evidenceMatchesSource(evidence, actualRegistration) &&
+      evidenceMatchesSource(evidence, actualSource) &&
       evidenceMatchesSource(evidence, segment)
     )
   );
