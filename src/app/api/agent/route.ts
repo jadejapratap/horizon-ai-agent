@@ -606,7 +606,7 @@ function resolveExplicitFileRequest(
   }
 
   return {
-    enabled: true,
+    enabled,
     detectedPaths: [...detected],
     canonicalPaths: [...canonicalPaths],
     invalidPaths,
