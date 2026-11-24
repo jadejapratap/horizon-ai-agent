@@ -152,7 +152,7 @@ export default function Home() {
       }
 
       setFigmaAgentStatus("connected");
-      setFigmaAgentMessage("Agent can read this Figma file and its design layers.");
+      setFigmaAgentMessage("Agent API can read this Figma Design file.");
       setFigmaAgentFileName(data.fileName || "");
     } catch (error) {
       setFigmaAgentStatus("error");
