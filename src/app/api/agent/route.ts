@@ -14028,6 +14028,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           success: false,
           error: error instanceof Error ? error.message : "Theme edit failed.",
+          message: error instanceof Error ? error.message : "Theme edit failed.",
           themeEdit: { applied: false, files: [] },
         }, { status });
       }
