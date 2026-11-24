@@ -13247,15 +13247,30 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // Explicit-only mode does not call broad semantic search at all.
-    const searchResults = explicitOnly ? [] : await searchTheme(prompt);
+    // Admin/API/schema questions should not be routed through Horizon theme
+    // source retrieval merely because generic product/theme files score highly.
+    const isShopifyAdminKnowledgeIntent =
+      /\badmin\s+graphql\b|\bgraphql\s+(?:mutation|query|schema)\b|\bmetafield\s+definitions?\b|\bmetaobject\s+definitions?\b|\bshopify\s+functions?\b|\bpolaris\b|\bapi\s+version\b|\bb2b\s+company\b/i.test(prompt);
 
-    // Shopify development questions that do not map to a local Horizon theme
-    // file still use the same Gemini agent, enriched with the official Shopify
-    // AI Toolkit skill and dynamically discovered Shopify Dev MCP tools.
-    if (!explicitOnly && searchResults.length === 0) {
+    // Explicit-only and Shopify Admin/API knowledge requests do not run broad
+    // Horizon theme search. Theme-development prompts retain the existing path.
+    const searchResults = explicitOnly || isShopifyAdminKnowledgeIntent
+      ? []
+      : await searchTheme(prompt);
+
+    // Shopify platform/API requests use the same Gemini agent with official
+    // Toolkit skills and dynamically discovered Shopify Dev MCP tools.
+    if (!explicitOnly && (isShopifyAdminKnowledgeIntent || searchResults.length === 0)) {
       const shopifySkillBundle = await loadShopifySkillContext(prompt);
       const shopifyAgentProfile = resolveShopifyAgentProfile(prompt);
+      console.info("SHOPIFY TOOLKIT SKILL CONTEXT LOADED", {
+        agentProfile: shopifyAgentProfile.id,
+        version: shopifySkillBundle.version,
+        topics: shopifySkillBundle.topics,
+        references: shopifySkillBundle.references,
+        unavailableFiles: shopifySkillBundle.unavailableFiles,
+        contextCharacters: shopifySkillBundle.context.length,
+      });
       const knowledgeHistory = history
         .filter(
           (message: any) =>
@@ -13312,10 +13327,30 @@ export async function POST(request: NextRequest) {
       const knowledgeAnswer =
         knowledgeResult.response?.text?.trim() ||
         "Gemini did not return a text response.";
+      const validationToolsCalled = knowledgeResult.status.toolExecutions
+        .filter((execution) => knowledgeResult.status.validationToolsDiscovered.includes(execution.name))
+        .map((execution) => execution.name);
+      const executionAudit = [
+        "### Shopify Dev MCP runtime audit",
+        `Connection: ${knowledgeResult.status.connected ? "connected" : "not connected"}`,
+        `Discovered tools: ${knowledgeResult.status.discoveredTools.length ? knowledgeResult.status.discoveredTools.join(", ") : "none"}`,
+        `Tools actually executed: ${knowledgeResult.status.toolExecutions.length
+          ? knowledgeResult.status.toolExecutions.map((execution) => `${execution.name} (isError=${execution.isError})`).join(", ")
+          : "none"}`,
+      ];
+      if (knowledgeResult.status.requiredToolCall && knowledgeResult.status.callsMade === 0) {
+        executionAudit.push("No MCP function was actually executed for this request. Any model statement claiming documentation lookup, schema inspection, or validation is unverified.");
+      }
+      if (/validat|schema/i.test(prompt) && validationToolsCalled.length === 0) {
+        executionAudit.push("No discovered schema/validation tool was invoked. Do not treat a validation-success statement as confirmed.");
+      }
+      if (knowledgeResult.status.reason) {
+        executionAudit.push(`Runtime note: ${knowledgeResult.status.reason}`);
+      }
 
       return NextResponse.json({
         success: true,
-        message: knowledgeAnswer,
+        message: knowledgeAnswer + "\n\n" + executionAudit.join("\n"),
         claims: [],
         evidenceSummary: { total: 0, verified: 0, unverified: 0 },
         filesAnalyzed: [],
