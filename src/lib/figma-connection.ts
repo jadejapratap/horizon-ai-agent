@@ -147,10 +147,11 @@ async function readLegacyFigmaDesignContext(
   try {
     const raw = await readFile(getFigmaCachePath(fileKey, nodeId), "utf8");
     const record = JSON.parse(raw) as { version?: number; context?: unknown };
-    if (record.version !== 1 || !isLegacyFigmaDesignContext(record.context)) return null;
-    if (record.context.fileKey !== fileKey) return null;
-    if (nodeId && record.context.nodeId !== nodeId) return null;
-    return record.context;
+    const legacyContext = record.context;
+    if (record.version !== 1 || !isLegacyFigmaDesignContext(legacyContext)) return null;
+    if (legacyContext.fileKey !== fileKey) return null;
+    if (nodeId && legacyContext.nodeId !== nodeId) return null;
+    return legacyContext;
   } catch (error) {
     const code = error && typeof error === "object"
       ? (error as NodeJS.ErrnoException).code
