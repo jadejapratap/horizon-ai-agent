@@ -1,6 +1,18 @@
+import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+export type FigmaDesignAsset = {
+  fileName: string;
+  nodeId: string;
+  nodeName: string;
+  imageRef: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  imageData: string;
+};
 
 export type FigmaDesignContext = {
   fileName: string;
@@ -10,6 +22,7 @@ export type FigmaDesignContext = {
   summary: string;
   imageData: string;
   imageMimeType: string;
+  assets: FigmaDesignAsset[];
 };
 
 export class FigmaConnectionError extends Error {
@@ -73,7 +86,7 @@ type ParsedFigmaUrl = {
 };
 
 type FigmaCacheRecord = {
-  version: 1;
+  version: 2;
   savedAt: number;
   context: FigmaDesignContext;
 };
@@ -99,7 +112,20 @@ function isFigmaDesignContext(value: unknown): value is FigmaDesignContext {
     typeof item.nodeName === "string" &&
     typeof item.summary === "string" &&
     typeof item.imageData === "string" &&
-    typeof item.imageMimeType === "string";
+    typeof item.imageMimeType === "string" &&
+    Array.isArray(item.assets) &&
+    item.assets.every((asset) => {
+      if (!asset || typeof asset !== "object") return false;
+      const entry = asset as Record<string, unknown>;
+      return typeof entry.fileName === "string" &&
+        typeof entry.nodeId === "string" &&
+        typeof entry.nodeName === "string" &&
+        typeof entry.imageRef === "string" &&
+        typeof entry.mimeType === "string" &&
+        typeof entry.width === "number" &&
+        typeof entry.height === "number" &&
+        typeof entry.imageData === "string";
+    });
 }
 
 async function readCachedFigmaDesignContext(
@@ -113,7 +139,7 @@ async function readCachedFigmaDesignContext(
   try {
     const raw = await readFile(getFigmaCachePath(fileKey, nodeId), "utf8");
     const record = JSON.parse(raw) as FigmaCacheRecord;
-    if (record.version !== 1 || !isFigmaDesignContext(record.context)) return null;
+    if (record.version !== 2 || !isFigmaDesignContext(record.context)) return null;
     figmaContextMemoryCache.set(key, record.context);
     return record.context;
   } catch (error) {
@@ -342,6 +368,132 @@ function summarizeNodeTree(root: FigmaNode): string {
   return lines.join("\n").slice(0, 26000);
 }
 
+type FigmaImageUse = {
+  nodeId: string;
+  nodeName: string;
+  imageRef: string;
+  width: number;
+  height: number;
+};
+
+function findNamedFigmaNode(root: FigmaNode, targetName: string): FigmaNode | null {
+  const target = targetName.trim().toLowerCase();
+  const stack: FigmaNode[] = [root];
+  let visited = 0;
+  while (stack.length > 0 && visited < 12000) {
+    const node = stack.pop()!;
+    visited += 1;
+    if (String(node.name || "").trim().toLowerCase() === target) return node;
+    for (const child of node.children ?? []) stack.push(child);
+  }
+  return null;
+}
+
+function collectFigmaImageUses(root: FigmaNode): FigmaImageUse[] {
+  const byImageRef = new Map<string, FigmaImageUse>();
+  const stack: FigmaNode[] = [root];
+  let visited = 0;
+
+  while (stack.length > 0 && visited < 12000) {
+    const node = stack.pop()!;
+    visited += 1;
+    for (const fill of node.fills ?? []) {
+      if (
+        fill.type !== "IMAGE" ||
+        typeof fill.imageRef !== "string" ||
+        !fill.imageRef ||
+        fill.visible === false ||
+        (typeof fill.opacity === "number" && fill.opacity <= 0)
+      ) {
+        continue;
+      }
+
+      if (!node.id || byImageRef.has(fill.imageRef)) continue;
+      byImageRef.set(fill.imageRef, {
+        nodeId: node.id,
+        nodeName: node.name || "Figma image",
+        imageRef: fill.imageRef,
+        width: Math.round(nodeWidth(node)),
+        height: Math.round(nodeHeight(node)),
+      });
+    }
+
+    for (const child of node.children ?? []) stack.push(child);
+  }
+
+  return [...byImageRef.values()];
+}
+
+function getImageExtension(mimeType: string, imageUrl: string): string | null {
+  const mime = mimeType.toLowerCase().split(";")[0].trim();
+  if (mime === "image/png") return "png";
+  if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
+  if (mime === "image/webp") return "webp";
+  if (mime === "image/gif") return "gif";
+  if (mime === "image/svg+xml") return "svg";
+
+  try {
+    const extension = path.extname(new URL(imageUrl).pathname).toLowerCase().replace(".", "");
+    return ["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(extension)
+      ? (extension === "jpeg" ? "jpg" : extension)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function downloadFigmaImageAssets(
+  fileKey: string,
+  imageUses: FigmaImageUse[]
+): Promise<FigmaDesignAsset[]> {
+  if (imageUses.length === 0) return [];
+
+  // This is Figma's Tier 2 image-fills endpoint. It returns temporary source
+  // URLs for the imageRef values found on the selected frame's image fills.
+  const fillResponse = await figmaJson<{ images?: Record<string, string> }>(
+    "/files/" + fileKey + "/images"
+  );
+  const imageUrls = fillResponse.images ?? {};
+  const selectedUses = imageUses.slice(0, 8);
+  const assets: FigmaDesignAsset[] = [];
+  let totalBytes = 0;
+
+  for (const use of selectedUses) {
+    const imageUrl = imageUrls[use.imageRef];
+    if (!imageUrl) continue;
+
+    const response = await fetch(imageUrl, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!response.ok) continue;
+
+    const mimeType = response.headers.get("content-type")?.split(";")[0].trim() || "application/octet-stream";
+    const extension = getImageExtension(mimeType, imageUrl);
+    if (!extension) continue;
+
+    const imageBuffer = Buffer.from(await response.arrayBuffer());
+    if (imageBuffer.length === 0 || imageBuffer.length > 8 * 1024 * 1024) continue;
+    if (totalBytes + imageBuffer.length > 20 * 1024 * 1024) break;
+    totalBytes += imageBuffer.length;
+
+    const nodeToken = use.nodeId.replace(/[^0-9]/g, "-").replace(/-+/g, "-");
+    const refToken = createHash("sha256").update(use.imageRef).digest("hex").slice(0, 10);
+    assets.push({
+      fileName: "figma-" + nodeToken + "-" + refToken + "." + extension,
+      nodeId: use.nodeId,
+      nodeName: use.nodeName,
+      imageRef: use.imageRef,
+      mimeType,
+      width: use.width,
+      height: use.height,
+      imageData: imageBuffer.toString("base64"),
+    });
+  }
+
+  return assets;
+}
+
 function getFigmaFileNameFromUrl(value: string): string {
   try {
     const lastSegment = new URL(value).pathname.split("/").filter(Boolean).at(-1) || "";
@@ -423,6 +575,25 @@ async function fetchFigmaDesignContext(
     throw new FigmaConnectionError("The homepage screenshot is empty or exceeds the 7 MB design-context limit. Link a smaller homepage frame and try again.", 413);
   }
 
+  const heroAssetRoot = findNamedFigmaNode(root, "Button/Top") ?? root;
+  const imageUses = collectFigmaImageUses(heroAssetRoot);
+  const assets = await downloadFigmaImageAssets(fileKey, imageUses);
+
+  if (imageUses.length > 0 && assets.length === 0) {
+    throw new FigmaConnectionError(
+      "The Figma hero contains image fills, but Horizon AI could not download the original image assets. Check the file_content:read scope and retry after any Figma API limit resets.",
+      502
+    );
+  }
+
+  console.info("HORIZON FIGMA IMAGE ASSETS DOWNLOADED", {
+    fileKey,
+    heroFrame: heroAssetRoot.name || root.name || "Homepage frame",
+    imageFillsFound: imageUses.length,
+    imageAssetsDownloaded: assets.length,
+    imageBytes: assets.reduce((total, asset) => total + Math.floor(asset.imageData.length * 0.75), 0),
+  });
+
   return {
     fileName,
     fileKey,
@@ -431,6 +602,7 @@ async function fetchFigmaDesignContext(
     summary: summarizeNodeTree(root),
     imageData: imageBuffer.toString("base64"),
     imageMimeType: imageResponseBody.headers.get("content-type")?.split(";")[0] || "image/png",
+    assets,
   };
 }
 
