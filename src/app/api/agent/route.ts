@@ -3498,6 +3498,7 @@ function getCoverageFilePriority(
       "assets/sticky-add-to-cart.js": 5600,
       "sections/product-information.liquid": 5400,
       "snippets/add-to-cart-button.liquid": 5300,
+      "blocks/buy-buttons.liquid": 5200,
     };
     return exact[file] ?? 0;
   }
@@ -4201,6 +4202,12 @@ function buildBackendCoverageRequests(
         if (buttonBinding >= 0) {
           startOffset = Math.max(0, buttonBinding - 800);
           requestedEndOffset = Math.min(file.totalLength, buttonBinding + 1200);
+        }
+      } else if (normalizedFile === "blocks/buy-buttons.liquid") {
+        const submitBinding = source.indexOf('on:submit="/handleSubmit"');
+        if (submitBinding >= 0) {
+          startOffset = Math.max(0, submitBinding - 1200);
+          requestedEndOffset = Math.min(file.totalLength, submitBinding + 1400);
         }
       }
     }
@@ -7823,6 +7830,45 @@ function supportsProductFormSubmitBindingClaim(
     sourceSegments.some((segment) => bindingPattern.test(segment));
 }
 
+function supportsProductFormValidationRecommendationClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/product-form.js" ||
+    !/productformcomponent/.test(text) ||
+    !/handlesubmit/.test(text) ||
+    !/validation|validate/.test(text) ||
+    !/recommend|safest|edit location|place the check/.test(text) ||
+    /addtocartcomponent/.test(text)
+  ) return false;
+
+  const actualMethod = getComponentClassMethodSource(
+    actualSource, "ProductFormComponent", "handleSubmit"
+  );
+  if (!actualMethod) return false;
+
+  const requiredParts = [
+    /handleSubmit\s*\(\s*event\s*\)/,
+    /event\.preventDefault\s*\(\s*\)/,
+    /this\.#variantChangeInProgress/,
+    /this\.#addToCartQueue\.push\s*\(/,
+    /this\.#processAddToCart\s*\(/,
+  ];
+  const orderIsCorrect =
+    actualMethod.indexOf("event.preventDefault()") >= 0 &&
+    actualMethod.indexOf("event.preventDefault()") <
+      actualMethod.indexOf("this.#variantChangeInProgress") &&
+    actualMethod.indexOf("this.#variantChangeInProgress") <
+      actualMethod.indexOf("this.#processAddToCart(");
+
+  if (!orderIsCorrect) return false;
+  return exactEvidencePartsMatchScope(
+    evidenceItems, actualMethod, sourceSegments, requiredParts
+  );
+}
+
 function supportsProductFormProcessOperationClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
@@ -7888,6 +7934,59 @@ function supportsThemeImportMapMappingClaim(
   );
 }
 
+function supportsComponentDocumentListenerClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/component.js" ||
+    !/document/.test(text) ||
+    !/event/.test(text) ||
+    !/listener|register/.test(text)
+  ) return false;
+
+  const pattern = /document\.addEventListener\s*\(\s*eventName\s*,/;
+  if (!pattern.test(actualSource)) return false;
+  return evidenceItems.some((evidence) =>
+    pattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+  );
+}
+
+function supportsComponentCallbackInvocationClaim(
+  claim: string, file: string, evidenceItems: string[],
+  sourceSegments: string[], actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/component.js" ||
+    !/callback/.test(text) ||
+    !/call|invok|execut/.test(text)
+  ) return false;
+
+  const pattern = /callback\.call\s*\(\s*instance\s*,\s*\.\.\.args\s*\)/;
+  const registerStart = actualSource.indexOf("function registerEventListeners");
+  const callbackAt = registerStart >= 0
+    ? actualSource.indexOf("callback.call", registerStart)
+    : -1;
+  if (
+    registerStart < 0 ||
+    callbackAt < registerStart ||
+    !pattern.test(actualSource.slice(callbackAt, callbackAt + 200))
+  ) return false;
+
+  return evidenceItems.some((evidence) =>
+    pattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      segment.includes("function registerEventListeners") &&
+      evidenceMatchesSource(evidence, segment)
+    )
+  );
+}
+
 function supportsComponentDocumentDispatcherClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
@@ -7926,6 +8025,21 @@ function supportsComponentDocumentDispatcherClaim(
   );
 }
 
+function getStickyAddToCartHandlerSource(source: string): string | null {
+  const classPattern =
+    /class\s+StickyAddToCartComponent\s+extends\s+Component\s*\{/;
+  const classMatch = classPattern.exec(source);
+  if (!classMatch) return null;
+
+  const classTail = source.slice(classMatch.index + classMatch[0].length);
+  const classEnd = /\n\}/.exec(classTail);
+  const classBody = classEnd ? classTail.slice(0, classEnd.index) : classTail;
+  const handlerPattern =
+    /(^|\n)([ \t]{2})handleAddToCartClick\s*=\s*async\s*\(\s*\)\s*=>\s*\{[\s\S]*?\n\2\};/m;
+  const handlerMatch = handlerPattern.exec(classBody);
+  return handlerMatch ? handlerMatch[0].replace(/^\n/, "") : null;
+}
+
 function supportsStickyAddToCartProxyClaim(
   claim: string, file: string, evidenceItems: string[],
   sourceSegments: string[], actualSource: string
@@ -7936,24 +8050,29 @@ function supportsStickyAddToCartProxyClaim(
     !/handleaddtocartclick/.test(text)
   ) return false;
 
-  const handlerStart = actualSource.indexOf("handleAddToCartClick");
-  const proxyClick = handlerStart >= 0
-    ? actualSource.indexOf("targetAddToCartButton.click", handlerStart)
-    : -1;
-  if (handlerStart < 0 || proxyClick < handlerStart) return false;
+  const actualHandler = getStickyAddToCartHandlerSource(actualSource);
+  if (!actualHandler) return false;
 
-  const handlerScope = actualSource.slice(handlerStart, proxyClick + 120);
-  const requiredParts = [
-    /handleAddToCartClick/,
-    /targetAddToCartButton\.click\s*\(/,
-  ];
-  if (/proxy|puppet|target button|clicks the target/i.test(text)) {
-    if (!/dataset\.puppet/.test(handlerScope)) return false;
-    requiredParts.push(/dataset\.puppet/);
+  const signaturePattern =
+    /handleAddToCartClick\s*=\s*async\s*\(\s*\)\s*=>\s*\{/;
+  const proxyPattern = /this\.#targetAddToCartButton\.click\s*\(\s*\)/;
+  const claimsPuppet = /puppet|dataset/.test(text);
+  const requiredParts: RegExp[] = [signaturePattern, proxyPattern];
+
+  if (claimsPuppet) {
+    if (!/this\.#targetAddToCartButton\.dataset\.puppet\s*=/.test(actualHandler)) {
+      return false;
+    }
+    requiredParts.push(/this\.#targetAddToCartButton\.dataset\.puppet\s*=/);
   }
 
+  const handlerAvailableInSentContext = sourceSegments.some((segment) =>
+    getStickyAddToCartHandlerSource(segment) !== null
+  );
+  if (!handlerAvailableInSentContext) return false;
+
   return exactEvidencePartsMatchScope(
-    evidenceItems, handlerScope, sourceSegments, requiredParts
+    evidenceItems, actualHandler, sourceSegments, requiredParts
   );
 }
 
@@ -7990,21 +8109,27 @@ function supportsAddToCartButtonBindingClaim(
   if (
     file !== "snippets/add-to-cart-button.liquid" ||
     !/button/.test(text) ||
-    !/submit/.test(text)
+    !/submit/.test(text) ||
+    !/handleclick|click/.test(text)
   ) return false;
 
-  const buttonPattern =
-    /<button\b[\s\S]{0,500}?type\s*=\s*(["'])submit\1[\s\S]{0,500}?on:click\s*=\s*(["'])\/handleClick\2[\s\S]{0,500}?>/i;
+  const buttonPattern = /<button\b[\s\S]{0,500}?type\s*=\s*(["'])submit\1[\s\S]{0,500}?on:click\s*=\s*(["'])\/handleClick\2/i;
+  const typePattern = /type\s*=\s*(["'])submit\1/i;
+  const clickPattern = /on:click\s*=\s*(["'])\/handleClick\1/i;
   if (!buttonPattern.test(actualSource)) return false;
 
-  return evidenceItems.some((evidence) =>
-    buttonPattern.test(evidence) &&
+  const hasType = evidenceItems.some((evidence) =>
+    typePattern.test(evidence) &&
     evidenceMatchesSource(evidence, actualSource) &&
-    sourceSegments.some((segment) =>
-      buttonPattern.test(segment) &&
-      evidenceMatchesSource(evidence, segment)
-    )
+    sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
   );
+  const hasClick = evidenceItems.some((evidence) =>
+    clickPattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) => evidenceMatchesSource(evidence, segment))
+  );
+  return hasType && hasClick &&
+    sourceSegments.some((segment) => buttonPattern.test(segment));
 }
 
 function supportsAddToCartSuperConnectedCallbackClaim(
@@ -10929,6 +11054,18 @@ async function verifyAnswerClaim(
           supportsComponentDocumentDispatcherClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedComponentDocumentListener =
+          supportsComponentDocumentListenerClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
+        const verifiedComponentCallbackInvocation =
+          supportsComponentCallbackInvocationClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
+        const verifiedProductFormValidationRecommendation =
+          supportsProductFormValidationRecommendationClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedStickyAddToCartProxy =
           supportsStickyAddToCartProxyClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -10990,6 +11127,9 @@ async function verifyAnswerClaim(
           verifiedProductFormProcessOperation ||
           verifiedThemeImportMapMapping ||
           verifiedComponentDocumentDispatcher ||
+          verifiedComponentDocumentListener ||
+          verifiedComponentCallbackInvocation ||
+          verifiedProductFormValidationRecommendation ||
           verifiedStickyAddToCartProxy ||
           verifiedStickyProductInformationBinding ||
           verifiedAddToCartButtonBinding ||
@@ -11222,6 +11362,9 @@ async function verifyAnswerClaim(
           verifiedProductFormProcessOperation ||
           verifiedThemeImportMapMapping ||
           verifiedComponentDocumentDispatcher ||
+          verifiedComponentDocumentListener ||
+          verifiedComponentCallbackInvocation ||
+          verifiedProductFormValidationRecommendation ||
           verifiedStickyAddToCartProxy ||
           verifiedStickyProductInformationBinding ||
           verifiedAddToCartButtonBinding ||
@@ -14838,6 +14981,30 @@ or implementation details.
     (p) For the validation recommendation, cite the handleSubmit signature,
         preventDefault, and the following queue/process handoff. Label the
         proposed guard as a recommendation, never as an existing behavior.
+    (q) For the standard Add to Cart button, cite type="submit" and
+        on:click="/handleClick" as separate exact excerpts from the same
+        <button> element. Do not omit either attribute.
+    (r) For document dispatch, make separate atomic claims for the
+        document.addEventListener registration and callback.call invocation;
+        each claim must quote its own exact operation. Do not merge them unless
+        both exact excerpts are included in the same claim.
+    (s) For sticky proxy behavior, quote the handleAddToCartClick arrow-handler
+        signature, the target-button assignment to productForm.querySelector,
+        the dataset.puppet assignment, and the target button click as separate
+        exact excerpts. Do not call it the standard button unless the target
+        selector/ref relationship is also cited.
+    (t) For custom validation, recommend exactly one edit location:
+        ProductFormComponent.handleSubmit in assets/product-form.js. Place the
+        proposed guard immediately after event.preventDefault() and before
+        variant-queue/process branching. Do not recommend AddToCartComponent
+        handleClick as an alternative; that click handler is not the central
+        form-submission gate. Cite the handleSubmit signature, preventDefault,
+        queue guard, queue push, and process handoff.
+    (u) Do not make a combined claim that merely says both classes/methods are
+        housed in the same file. Describe each handler in its own atomic claim.
+    (v) Include separate atomic #processAddToCart claims for FormData creation,
+        CartLinesUpdateEvent creation/dispatch, and the final cart_add_url fetch.
+        For every operation, cite the #processAddToCart signature and operation.
 
 The answer field should contain a practical explanation for the user.
 
