@@ -15276,11 +15276,6 @@ If no additional chunks are needed:
       ].join("\n"))
       .join("\n\n");
 
-    const includedSourceFilePaths = Array.from(new Set([
-      ...filesIncludedInContext,
-      ...retrievalState.retrievedChunks.map((chunk) => chunk.file),
-    ]));
-
     const dependencyCallerAllowlist = explicitOnly
       ? [...(explicitFileAllowlist ?? [])]
       : sourceCoverageManifest
