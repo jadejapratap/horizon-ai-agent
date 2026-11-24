@@ -128,6 +128,40 @@ function isFigmaDesignContext(value: unknown): value is FigmaDesignContext {
     });
 }
 
+function isLegacyFigmaDesignContext(value: unknown): value is Omit<FigmaDesignContext, "assets"> {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.fileName === "string" &&
+    typeof item.fileKey === "string" &&
+    typeof item.nodeId === "string" &&
+    typeof item.nodeName === "string" &&
+    typeof item.summary === "string" &&
+    typeof item.imageData === "string" &&
+    typeof item.imageMimeType === "string";
+}
+
+async function readLegacyFigmaDesignContext(
+  fileKey: string,
+  nodeId: string | null
+): Promise<Omit<FigmaDesignContext, "assets"> | null> {
+  try {
+    const raw = await readFile(getFigmaCachePath(fileKey, nodeId), "utf8");
+    const record = JSON.parse(raw) as { version?: number; context?: unknown };
+    if (record.version !== 1 || !isLegacyFigmaDesignContext(record.context)) return null;
+    if (record.context.fileKey !== fileKey) return null;
+    if (nodeId && record.context.nodeId !== nodeId) return null;
+    return record.context;
+  } catch (error) {
+    const code = error && typeof error === "object"
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code !== "ENOENT") {
+      console.warn("Could not read the legacy local Figma cache:", error);
+    }
+    return null;
+  }
+}
+
 async function readCachedFigmaDesignContext(
   fileKey: string,
   nodeId: string | null
@@ -522,7 +556,8 @@ export async function verifyFigmaConnection(
 
 async function fetchFigmaDesignContext(
   value: string,
-  parsed: ParsedFigmaUrl
+  parsed: ParsedFigmaUrl,
+  legacyContext?: Omit<FigmaDesignContext, "assets">
 ): Promise<FigmaDesignContext> {
   getFigmaToken();
   const { fileKey, nodeId: requestedNodeId } = parsed;
@@ -555,22 +590,38 @@ async function fetchFigmaDesignContext(
     throw new FigmaConnectionError("Figma could not read the selected homepage frame. Select the main homepage frame and copy its link again.", 422);
   }
 
-  const imageResponse = await figmaJson<{ images?: Record<string, string | null> }>(
-    "/images/" + fileKey + "?ids=" + encodeURIComponent(targetNodeId) + "&format=png&scale=0.8"
-  );
-  const imageUrl = imageResponse.images?.[targetNodeId];
-  if (!imageUrl) {
-    throw new FigmaConnectionError("Figma returned the homepage layers but could not export a screenshot for the selected frame.", 422);
+  let imageBuffer: Buffer;
+  let imageMimeType: string;
+  if (
+    legacyContext &&
+    legacyContext.fileKey === fileKey &&
+    legacyContext.nodeId === targetNodeId &&
+    legacyContext.imageData
+  ) {
+    // Reuse the previously exported screenshot while upgrading an older cache
+    // record with original image fills. This avoids another Tier 1 GET images call.
+    imageBuffer = Buffer.from(legacyContext.imageData, "base64");
+    imageMimeType = legacyContext.imageMimeType;
+  } else {
+    const imageResponse = await figmaJson<{ images?: Record<string, string | null> }>(
+      "/images/" + fileKey + "?ids=" + encodeURIComponent(targetNodeId) + "&format=png&scale=0.8"
+    );
+    const imageUrl = imageResponse.images?.[targetNodeId];
+    if (!imageUrl) {
+      throw new FigmaConnectionError("Figma returned the homepage layers but could not export a screenshot for the selected frame.", 422);
+    }
+
+    const imageResponseBody = await fetch(imageUrl, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!imageResponseBody.ok) {
+      throw new FigmaConnectionError("Figma's temporary screenshot URL could not be downloaded. Refresh the design and try again.", 502);
+    }
+    imageBuffer = Buffer.from(await imageResponseBody.arrayBuffer());
+    imageMimeType = imageResponseBody.headers.get("content-type")?.split(";")[0] || "image/png";
   }
 
-  const imageResponseBody = await fetch(imageUrl, {
-    cache: "no-store",
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!imageResponseBody.ok) {
-    throw new FigmaConnectionError("Figma's temporary screenshot URL could not be downloaded. Refresh the design and try again.", 502);
-  }
-  const imageBuffer = Buffer.from(await imageResponseBody.arrayBuffer());
   if (imageBuffer.byteLength === 0 || imageBuffer.byteLength > 7 * 1024 * 1024) {
     throw new FigmaConnectionError("The homepage screenshot is empty or exceeds the 7 MB design-context limit. Link a smaller homepage frame and try again.", 413);
   }
@@ -607,7 +658,7 @@ async function fetchFigmaDesignContext(
     nodeName: root.name || "Homepage frame",
     summary: summarizeNodeTree(root),
     imageData: imageBuffer.toString("base64"),
-    imageMimeType: imageResponseBody.headers.get("content-type")?.split(";")[0] || "image/png",
+    imageMimeType,
     assets,
   };
 }
@@ -624,11 +675,19 @@ export async function loadFigmaDesignContext(value: string): Promise<FigmaDesign
     return cached;
   }
 
+  const legacyContext = await readLegacyFigmaDesignContext(parsed.fileKey, parsed.nodeId);
+  if (legacyContext) {
+    console.info("HORIZON FIGMA LEGACY CACHE FOUND; refreshing original image fills", {
+      fileKey: parsed.fileKey,
+      nodeId: legacyContext.nodeId,
+    });
+  }
+
   const existingLoad = figmaContextLoadsInFlight.get(key);
   if (existingLoad) return existingLoad;
 
   const loadPromise = (async () => {
-    const context = await fetchFigmaDesignContext(value, parsed);
+    const context = await fetchFigmaDesignContext(value, parsed, legacyContext);
     await writeCachedFigmaDesignContext(parsed.fileKey, parsed.nodeId, context);
     figmaContextMemoryCache.set(key, context);
     console.info("HORIZON FIGMA CONTEXT CACHED LOCALLY", {
