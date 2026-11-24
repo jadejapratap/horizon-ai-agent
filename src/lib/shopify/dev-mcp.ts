@@ -478,7 +478,7 @@ export async function generateContentWithShopifyMcpTools(
   delete toolCallConfig.tools;
   delete toolCallConfig.toolConfig;
 
-  const compactTaskContext = (toolContext || collectRequestText(request.contents).join("\\n"))
+  const compactTaskContext = (toolContext || collectRequestText(request.contents).join("\n"))
     .trim()
     .slice(0, 12000);
   // MCP tool selection/search should not resend the full theme source bundle on
@@ -494,7 +494,7 @@ export async function generateContentWithShopifyMcpTools(
         "Only invoke schema or validation tools when the user's task actually requires them.",
         "",
         compactTaskContext,
-      ].join("\\n"),
+      ].join("\n"),
     }],
   }];
   const toolExecutionResults: Array<{ name: string; isError: boolean; output: string }> = [];
@@ -535,7 +535,7 @@ export async function generateContentWithShopifyMcpTools(
             transcriptText.length > 18000
               ? transcriptText.slice(0, 18000) + "\\n[Combined MCP results truncated by Horizon Agent.]"
               : transcriptText,
-          ].join("\\n"),
+          ].join("\n"),
         }],
       });
     }
