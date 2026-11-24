@@ -47,6 +47,10 @@ const MAX_GEMINI_TOOL_DECLARATIONS = 32;
 const MAX_MCP_CALLS_PER_REQUEST = 6;
 const MAX_TOOL_ROUNDS = 3;
 const DEFAULT_TOOL_TIMEOUT_MS = 20000;
+// A cold npx launch may need time to download and initialize the server.
+// Keep a 60-second floor even when an older .env.local still says 15000.
+const DEFAULT_CONNECT_TIMEOUT_MS = 60000;
+const MAX_CONNECT_TIMEOUT_MS = 120000;
 const MAX_TOOL_RESULT_CHARS = 24000;
 
 const runtimeGlobal = globalThis as typeof globalThis & {
@@ -125,6 +129,19 @@ function buildToolAliases(tools: McpToolInfo[]): {
   return { aliases, aliasByToolName };
 }
 
+function getMcpConnectTimeoutMs(): number {
+  const configured = Number(
+    process.env.SHOPIFY_DEV_MCP_CONNECT_TIMEOUT_MS || DEFAULT_CONNECT_TIMEOUT_MS
+  );
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_CONNECT_TIMEOUT_MS;
+  }
+  return Math.min(
+    MAX_CONNECT_TIMEOUT_MS,
+    Math.max(DEFAULT_CONNECT_TIMEOUT_MS, configured)
+  );
+}
+
 async function refreshMcpTools(connection: McpConnection, timeoutMs: number): Promise<void> {
   const discovered = await withTimeout(
     connection.client.listTools(),
@@ -139,6 +156,8 @@ async function refreshMcpTools(connection: McpConnection, timeoutMs: number): Pr
 
 async function createMcpConnection(): Promise<McpConnection> {
   const command = getServerCommand();
+  const timeoutMs = getMcpConnectTimeoutMs();
+  const startedAt = Date.now();
   const transport = new StdioClientTransport({
     ...command,
     env: safeChildEnvironment(),
@@ -149,17 +168,55 @@ async function createMcpConnection(): Promise<McpConnection> {
     version: "0.1.0",
   });
 
-  await client.connect(transport);
-  const discovered = await client.listTools();
-  const tools = (discovered.tools ?? []) as McpToolInfo[];
-  const mapped = buildToolAliases(tools);
+  console.info("SHOPIFY DEV MCP STARTING", {
+    command: command.command,
+    args: command.args,
+    connectTimeoutMs: timeoutMs,
+  });
 
-  return {
-    client,
-    tools,
-    aliases: mapped.aliases,
-    aliasByToolName: mapped.aliasByToolName,
-  };
+  try {
+    await withTimeout(
+      client.connect(transport),
+      timeoutMs,
+      "Shopify Dev MCP initialize handshake"
+    );
+    console.info("SHOPIFY DEV MCP INITIALIZED", {
+      durationMs: Date.now() - startedAt,
+    });
+
+    const discovered = await withTimeout(
+      client.listTools(),
+      timeoutMs,
+      "Shopify Dev MCP initial tool discovery"
+    );
+    const tools = (discovered.tools ?? []) as McpToolInfo[];
+    const mapped = buildToolAliases(tools);
+
+    console.info("SHOPIFY DEV MCP INITIAL TOOLS DISCOVERED", {
+      durationMs: Date.now() - startedAt,
+      toolsDiscovered: tools.length,
+      tools: tools.map((tool) => tool.name),
+    });
+
+    return {
+      client,
+      tools,
+      aliases: mapped.aliases,
+      aliasByToolName: mapped.aliasByToolName,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("SHOPIFY DEV MCP STARTUP FAILED", {
+      durationMs: Date.now() - startedAt,
+      error: message.slice(0, 500),
+    });
+    try {
+      await withTimeout(transport.close(), 2000, "Shopify Dev MCP process cleanup");
+    } catch {
+      // Preserve the original startup error; cleanup is best-effort.
+    }
+    throw error;
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -185,11 +242,7 @@ async function getMcpConnection(): Promise<McpConnection> {
       throw error;
     });
   }
-  return withTimeout(
-    runtimeGlobal.__horizonShopifyMcpConnection,
-    Number(process.env.SHOPIFY_DEV_MCP_CONNECT_TIMEOUT_MS || 15000),
-    "Shopify Dev MCP connection"
-  );
+  return runtimeGlobal.__horizonShopifyMcpConnection;
 }
 
 function toGeminiFunctionName(toolName: string): string {
@@ -270,7 +323,7 @@ function explicitlyRequestsShopifyMcp(request: GeminiRequest): boolean {
   const requestText = collectRequestText(request.contents).join("\n");
   const marker = requestText.lastIndexOf("USER REQUEST:");
   const userRequest = marker >= 0 ? requestText.slice(marker + "USER REQUEST:".length) : requestText;
-  return /\b(?:use|call|invoke|run|execute)\s+(?:the\s+)?shopify dev mcp\b/i.test(userRequest)
+  return /\b(?:use|using|call|invoke|run|execute|test|verify|check|connect(?:\s+to)?|discover)\b.{0,80}\bshopify dev mcp\b/i.test(userRequest)
     || /\b(?:call|invoke|run|execute)\s+(?:an?\s+)?mcp tool\b/i.test(userRequest);
 }
 
@@ -362,7 +415,7 @@ export async function generateContentWithShopifyMcpTools(
     connection = await getMcpConnection();
     await refreshMcpTools(
       connection,
-      Number(process.env.SHOPIFY_DEV_MCP_CONNECT_TIMEOUT_MS || 15000)
+      getMcpConnectTimeoutMs()
     );
     status.connected = true;
     status.toolsDiscovered = connection.tools.length;
