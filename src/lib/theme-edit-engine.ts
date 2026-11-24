@@ -684,14 +684,14 @@ export function isThemeEditRequest(prompt: string): boolean {
   if (!value) return false;
   if (/^(?:how|why|what|where|when|which|explain|describe|analyze|analyse|review|inspect|find|show me|tell me how|can you explain|could you explain)\b/i.test(value)) return false;
 
-  const action = "(?:add|create|build|implement|change|modify|update|remove|delete|replace|rework|redesign|restyle|style|fix|make|display|hide|show|enable|disable|insert|adjust|move|increase|decrease)";
+  const action = "(?:add|create|build|implement|change|modify|update|remove|delete|replace|rework|redesign|recreate|replicate|restyle|style|fix|make|display|hide|show|enable|disable|insert|adjust|move|increase|decrease)";
   const directRequest = new RegExp(
     "^(?:please\\s+)?" +
     "(?:" + action + "\\b|(?:can|could)\\s+you\\s+(?:please\\s+)?" + action + "\\b|i\\s+(?:want|need)\\s+you\\s+to\\s+" + action + "\\b)",
     "i"
   ).test(value);
   const actionAfterFeature = new RegExp(
-    "\\b(?:product cards?|product grid|theme|storefront|header|footer|collection page|cart drawer|product page|navigation|menu|section|snippet|price|logo|button|banner)\\b[\\s\\S]{0,140}\\b" + action + "\\b",
+    "\\b(?:product cards?|product grid|theme|storefront|homepage|home page|figma design|header|footer|collection page|cart drawer|product page|navigation|menu|section|snippet|price|logo|button|banner)\\b[\\s\\S]{0,140}\\b" + action + "\\b",
     "i"
   ).test(value);
   const gujaratiAction = /(?:ઉમેરો|ઉમેર|બદલો|દૂર કરો|દેખાડો|છુપાવો|બનાવો)/.test(value);
