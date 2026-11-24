@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local Figma design context cache (screenshots + layer data)
+/.horizon-cache/
