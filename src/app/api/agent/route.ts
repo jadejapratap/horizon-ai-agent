@@ -15266,75 +15266,44 @@ If no additional chunks are needed:
       });
     }
 
-    if (retrievalState.retrievedChunks.length > 0) {
-      const chunksSection = retrievalState.retrievedChunks
-        .map((chunk) => {
-          return `=== ${chunk.file} [range ${chunk.startOffset}-${chunk.endOffset} of ${chunk.totalLength}] ===
-hasMore: ${chunk.hasMore}
-isComplete: ${chunk.isComplete}
+    const additionalSourceContext = retrievalState.retrievedChunks
+      .map((chunk) => [
+        `=== ${chunk.file} [range ${chunk.startOffset}-${chunk.endOffset} of ${chunk.totalLength}] ===`,
+        `hasMore: ${chunk.hasMore}`,
+        `isComplete: ${chunk.isComplete}`,
+        "",
+        chunk.content,
+      ].join("\n"))
+      .join("\n\n");
 
-${chunk.content}
-`;
-        })
-        .join("\n");
+    const includedSourceFilePaths = Array.from(new Set([
+      ...filesIncludedInContext,
+      ...retrievalState.retrievedChunks.map((chunk) => chunk.file),
+    ]));
 
-      const lastUserPart = contents[contents.length - 1].parts[0];
-      lastUserPart.text += `
-
-ADDITIONAL ON-DEMAND SOURCE CHUNKS:
-
-${chunksSection}
-
-UPDATED VERIFIED DEPENDENCY GRAPH:
-
-${JSON.stringify(relevantDependencies, null, 2)}
-
-FILES INCLUDED IN GEMINI CONTEXT:
-${JSON.stringify(filesIncludedInContext, null, 2)}
-
-FILES SKIPPED FROM CONTEXT:
-${JSON.stringify(filesSkippedFromContext, null, 2)}
-
-IMPORTANT:
-- The chunks above are the ONLY additional source content available.
-- Files listed in the initial context remain valid.
-- Files NOT in the initial context and NOT in these chunks are NOT available.
-- Do not claim that a file was fully analyzed if only a chunk was retrieved.
-- Do not make any claims about the internal API implementation,
-  architecture, or budget management — you cannot see the server code.
-- Only use the exact source content above as evidence.
-`;
-    }
-
-    // Always give Gemini the backend-calculated source coverage so it
-    // cannot describe a partial chunk as a complete file analysis.
-    const finalUserTextPart = contents[contents.length - 1].parts[0];
     const dependencyCallerAllowlist = explicitOnly
-      ? []
+      ? [...(explicitFileAllowlist ?? [])]
       : sourceCoverageManifest
           .filter((entry) => entry.includedCharacters > 0)
           .map((entry) => entry.file);
 
-    finalUserTextPart.text += `
-
-SOURCE COVERAGE STATUS (calculated from the exact source ranges supplied):
-${JSON.stringify(sourceCoverageManifest, null, 2)}
-
-DEPENDENCY CLAIM CALLER ALLOWLIST:
-${JSON.stringify(dependencyCallerAllowlist, null, 2)}
-Only files in this allowlist may be used as the \"file\" caller for a dependency claim.
-Do not create dependency claims from graph edges whose caller file is absent from this allowlist,
-even if that file appears in the dependency graph or recursive-loading list.
-
-STRICT COVERAGE RULES:
-- A file is COMPLETE only when its complete flag is true above.
-- If complete is false, describe it only as partial/incomplete and state the supplied ranges when relevant.
-- For every partial file discussed, explicitly state that its full implementation cannot be determined from the supplied ranges; do not imply an exhaustive summary or infer that behavior is absent from unseen ranges.
-- Never say that full/complete source was available or fully analyzed unless complete is true.
-- A file absent from this coverage list was not supplied to you as source content.
-- Do not infer completeness from a file path appearing in a dependency graph, manifest, or search result.
-`;
-
+    const compactCoverageContext = [
+      "SOURCE COVERAGE STATUS (calculated from the exact source ranges supplied):",
+      JSON.stringify(sourceCoverageManifest),
+      "",
+      "DEPENDENCY CLAIM CALLER ALLOWLIST:",
+      JSON.stringify(dependencyCallerAllowlist),
+      "Only files in this allowlist may be used as the file caller for a dependency claim.",
+      "Do not create dependency claims from graph edges whose caller file is absent from this allowlist.",
+      "",
+      "STRICT COVERAGE RULES:",
+      "- A file is COMPLETE only when its complete flag is true above.",
+      "- If complete is false, describe it only as partial/incomplete and state supplied ranges when relevant.",
+      "- For every partial file discussed, explicitly state that its full implementation cannot be determined from the supplied ranges.",
+      "- Never say that full/complete source was available unless complete is true.",
+      "- A file absent from this coverage list was not supplied as source content.",
+      "- Do not infer completeness from a dependency graph, manifest, or search result.",
+    ].join("\n");
     // -------------------------------------
     // Final retrieval summary
     // -------------------------------------
@@ -15365,8 +15334,43 @@ STRICT COVERAGE RULES:
 
     const shopifySkillBundle = await loadShopifySkillContext(prompt);
     const shopifyAgentProfile = resolveShopifyAgentProfile(prompt);
+    const compactThemeSourcePacket = [
+      "USER REQUEST:",
+      prompt,
+      "",
+      "HORIZON THEME SOURCE CODE (exact initial source ranges):",
+      themeContext,
+      "",
+      "ADDITIONAL ON-DEMAND SOURCE CHUNKS (exact source ranges):",
+      additionalSourceContext || "[No additional source chunks were retrieved.]",
+      "",
+      "FILES INCLUDED IN THE SOURCE CONTEXT:",
+      JSON.stringify(includedSourceFilePaths),
+      "",
+      "RELEVANT VERIFIED DEPENDENCY GRAPH:",
+      JSON.stringify(relevantDependencies.map((dependency) => ({
+        from: dependency.from,
+        to: dependency.to,
+        relationship: dependency.relationship,
+        verified: dependency.verified,
+      }))),
+      "",
+      "VERIFICATION SUMMARY:",
+      `${verifiedCount} of ${verifiedDependencies.length} dependencies verified.`,
+      "",
+      explicitOnly
+        ? "EXPLICIT-ONLY FILE SCOPE (MANDATORY): " + JSON.stringify([...(explicitFileAllowlist ?? [])])
+        : "Use only the exact source files and ranges included in this context.",
+      "",
+      compactCoverageContext,
+    ].join("\n");
+
     const finalContents: any[] = [
-      ...contents,
+      ...validHistory,
+      {
+        role: "user",
+        parts: [{ text: compactThemeSourcePacket }],
+      },
       {
         role: "user",
         parts: [{
@@ -15386,6 +15390,17 @@ STRICT COVERAGE RULES:
         }],
       },
     ];
+
+    console.info("GEMINI FINAL CONTEXT BREAKDOWN", {
+      historyCharacters: countGeminiTextCharacters(validHistory),
+      initialThemeSourceCharacters: themeContext.length,
+      additionalSourceCharacters: additionalSourceContext.length,
+      dependencyGraphCharacters: JSON.stringify(relevantDependencies).length,
+      sourceCoverageCharacters: JSON.stringify(sourceCoverageManifest).length,
+      skillContextCharacters: shopifySkillBundle.context.length,
+      profileInstructionCharacters: shopifyAgentProfile.instructions.length,
+      finalContentsCharacters: countGeminiTextCharacters(finalContents),
+    });
 
     const finalGenerationResult =
       await generateContentWithShopifyMcpTools({
