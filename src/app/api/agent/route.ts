@@ -7873,9 +7873,11 @@ function supportsThemeImportMapMappingClaim(
   let mappingPattern: RegExp | null = null;
 
   if (text.includes("@theme/product-form")) {
-    mappingPattern = /["']@theme\/product-form["']\s*:\s*["'][^"']*product-form\.js[^"']*["']/;
+    mappingPattern =
+      /"@theme\/product-form"\s*:\s*"\{\{\s*'product-form\.js'\s*\|\s*asset_url\s*\}\}"/;
   } else if (text.includes("@theme/component")) {
-    mappingPattern = /["']@theme\/component["']\s*:\s*["'][^"']*component\.js[^"']*["']/;
+    mappingPattern =
+      /"@theme\/component"\s*:\s*"\{\{\s*'component\.js'\s*\|\s*asset_url\s*\}\}"/;
   }
   if (!mappingPattern || !mappingPattern.test(actualSource)) return false;
 
