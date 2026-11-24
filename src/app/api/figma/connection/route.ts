@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FigmaConnectionError, verifyFigmaConnection } from "@/lib/figma-connection";
 
-export const runtime = "nodejs";
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => null);
