@@ -4100,6 +4100,110 @@ function buildBackendCoverageRequests(
     return [];
   }
 
+  // Add-to-Cart's controller has two distinct source regions: the button
+  // validity/quantity click handler near the top of product-form.js, and the
+  // submit + cart-request lifecycle farther down. Fetch both exact windows.
+  // These are two chunks from one unique file, so they consume one file slot.
+  if (domains.includes("add-to-cart")) {
+    const productFormPath = "assets/product-form.js";
+    const productFormManifest = manifestFiles.find(
+      (file) =>
+        normalizePath(file.file) === productFormPath &&
+        file.hasMore &&
+        file.totalLength > 0
+    );
+    const productFormSource = fullContents.get(productFormPath);
+
+    if (
+      productFormManifest &&
+      productFormSource &&
+      !selectedFiles.has(productFormPath)
+    ) {
+      const retrievedRanges = productFormManifest.retrievedRanges ?? [];
+      const rangeIsAvailable = (startOffset: number, endOffset: number) =>
+        startOffset >= 0 &&
+        endOffset > startOffset &&
+        endOffset <= productFormSource.length &&
+        !retrievedRanges.some((range) =>
+          range.startOffset < endOffset && range.endOffset > startOffset
+        );
+
+      const clickMatch = /\n  handleClick\s*\(\s*event\s*\)\s*\{/.exec(productFormSource);
+      const clickNextMethod = clickMatch
+        ? productFormSource.indexOf("\n  #preloadImage", clickMatch.index + clickMatch[0].length)
+        : -1;
+
+      if (clickMatch && clickNextMethod > clickMatch.index) {
+        const startOffset = Math.max(0, clickMatch.index - 350);
+        const endOffset = Math.min(productFormSource.length, clickNextMethod + 250);
+        if (
+          endOffset - startOffset <= MAX_CHUNK_SIZE &&
+          rangeIsAvailable(startOffset, endOffset)
+        ) {
+          selected.push({
+            file: productFormPath,
+            start_offset: startOffset,
+            max_chars: endOffset - startOffset,
+          });
+        }
+      }
+
+      const submitMatch = /\n  handleSubmit\s*\(\s*event\s*\)\s*\{/.exec(productFormSource);
+      const processMatch = submitMatch
+        ? /\n  #processAddToCart\s*\([^)]*\)\s*\{/.exec(
+            productFormSource.slice(submitMatch.index)
+          )
+        : null;
+      const processStart = submitMatch && processMatch
+        ? submitMatch.index + processMatch.index
+        : -1;
+      const cartFetchPattern = /fetch\s*\(\s*Theme\.routes\.cart_add_url\s*,/g;
+      let cartFetchMatch: RegExpExecArray | null = null;
+
+      if (processStart >= 0) {
+        cartFetchPattern.lastIndex = processStart;
+        cartFetchMatch = cartFetchPattern.exec(productFormSource);
+      }
+
+      if (submitMatch && processStart > submitMatch.index && cartFetchMatch) {
+        const startOffset = Math.max(0, submitMatch.index - 350);
+        const endOffset = Math.min(productFormSource.length, cartFetchMatch.index + 1400);
+        if (
+          endOffset - startOffset <= MAX_CHUNK_SIZE &&
+          rangeIsAvailable(startOffset, endOffset)
+        ) {
+          selected.push({
+            file: productFormPath,
+            start_offset: startOffset,
+            max_chars: endOffset - startOffset,
+          });
+        } else {
+          console.warn("ADD-TO-CART PRODUCT-FORM METHOD WINDOW UNAVAILABLE:", {
+            startOffset,
+            endOffset,
+            requestedCharacters: endOffset - startOffset,
+            maxChunkSize: MAX_CHUNK_SIZE,
+            overlapsRetrievedRange: retrievedRanges.some((range) =>
+              range.startOffset < endOffset && range.endOffset > startOffset
+            ),
+          });
+        }
+      }
+
+      if (selected.some((request) => request.file === productFormPath)) {
+        selectedFiles.add(productFormPath);
+      }
+
+      console.log("ADD-TO-CART PRODUCT-FORM TARGET RANGES:", selected
+        .filter((request) => request.file === productFormPath)
+        .map((request) => ({
+          file: request.file,
+          startOffset: request.start_offset,
+          maxChars: request.max_chars,
+        })));
+    }
+  }
+
   const makeDomainCandidates = (domain: CoverageDomain) =>
     manifestFiles
       .filter((file) => {
@@ -4237,7 +4341,7 @@ function buildBackendCoverageRequests(
   // First pass: guarantee a relevant additional source file for every
   // detected architecture area, even when the planner focuses on only one.
   for (const domain of domains) {
-    if (selected.length >= requestLimit) break;
+    if (selectedFiles.size >= requestLimit) break;
     const candidate = makeDomainCandidates(domain)[0];
     if (candidate) addCandidate(candidate);
   }
@@ -4246,10 +4350,10 @@ function buildBackendCoverageRequests(
   // spending every slot on Header when the request also asks about Pricing.
   if (domains.length > 0) {
     let madeProgress = true;
-    while (selected.length < requestLimit && madeProgress) {
+    while (selectedFiles.size < requestLimit && madeProgress) {
       madeProgress = false;
       for (const domain of domains) {
-        if (selected.length >= requestLimit) break;
+        if (selectedFiles.size >= requestLimit) break;
         const candidate = makeDomainCandidates(domain)[0];
         if (candidate && addCandidate(candidate)) madeProgress = true;
       }
@@ -4269,7 +4373,7 @@ function buildBackendCoverageRequests(
       });
 
     for (const candidate of fallbackCandidates) {
-      if (selected.length >= requestLimit) break;
+      if (selectedFiles.size >= requestLimit) break;
       addCandidate(candidate);
     }
   }
@@ -7715,14 +7819,9 @@ function supportsProductFormHandleSubmitClaim(
   const text = claim.toLowerCase();
   if (
     file !== "assets/product-form.js" ||
-    !/\bproductformcomponent\b/.test(text) ||
     !/\bhandlesubmit\b/.test(text)
   ) return false;
 
-  // Anchor every atomic assertion to the actual class method. A claim about
-  // the signature must quote the signature; a claim about one operation must
-  // quote that operation from inside this method. Do not force unrelated
-  // operations into every separate atomic claim.
   const actualMethod = getComponentClassMethodSource(
     actualSource, "ProductFormComponent", "handleSubmit"
   );
@@ -7743,7 +7842,9 @@ function supportsProductFormHandleSubmitClaim(
 
   const requiredParts: RegExp[] = [];
   const claimsSignature =
-    /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text);
+    /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text) ||
+    /\bdefines?\b.{0,60}\bhandlesubmit\b/i.test(text) ||
+    /\bhandlesubmit\b.{0,30}\bmethod\b/i.test(text);
   const claimsPreventDefault = /preventdefault/.test(text);
   const claimsVariantGuard =
     /variant\s+change|variantchangeinprogress/.test(text);
@@ -7756,9 +7857,6 @@ function supportsProductFormHandleSubmitClaim(
   if (claimsQueue) requiredParts.push(queuePushPattern);
   if (claimsProcess) requiredParts.push(processPattern);
 
-  // Preserve branch qualifiers: a queue claim that says "when the variant
-  // changes" must also cite the guard; an "otherwise/not in progress" handoff
-  // must cite the actual else-to-process sequence.
   const claimsQueueCondition =
     /\bwhen\b.{0,70}\bvariant\s+change\b|\bif\b.{0,50}\bvariant\s+change\b/i.test(text);
   if (claimsQueueCondition) {
@@ -7914,7 +8012,6 @@ function supportsProductFormProcessOperationClaim(
   const text = claim.toLowerCase();
   if (
     file !== "assets/product-form.js" ||
-    !/productformcomponent/.test(text) ||
     !/#?processaddtocart/.test(text)
   ) return false;
 
@@ -7923,25 +8020,39 @@ function supportsProductFormProcessOperationClaim(
   );
   if (!actualMethod) return false;
 
-  const requiredParts: RegExp[] = [/#processAddToCart\s*\(/];
+  const signaturePattern = /#processAddToCart\s*\(/;
+  const requiredParts: RegExp[] = [signaturePattern];
   const claimsFormData = /\bformdata\b/i.test(text);
   const claimsCartEvent = /\bcartlinesupdateevent\b/i.test(text);
+  const claimsCartFetch =
+    /\bfetch\b/i.test(text) ||
+    /theme\.routes\.cart_add_url/i.test(text);
 
   if (claimsFormData) {
-    if (!/new FormData\s*\(\s*form\s*\)/.test(actualMethod)) return false;
-    requiredParts.push(/new FormData\s*\(\s*form\s*\)/);
+    const formDataPattern = /new FormData\s*\(\s*form\s*\)/;
+    if (!formDataPattern.test(actualMethod)) return false;
+    requiredParts.push(formDataPattern);
   }
 
   if (claimsCartEvent) {
+    const createPromisePattern = /CartLinesUpdateEvent\.createPromise\s*\(/;
+    const dispatchPattern = /this\.dispatchEvent\s*\(/;
     if (
-      !/CartLinesUpdateEvent\.createPromise\s*\(/.test(actualMethod) ||
-      !/this\.dispatchEvent\s*\(/.test(actualMethod)
+      !createPromisePattern.test(actualMethod) ||
+      !dispatchPattern.test(actualMethod)
     ) return false;
-    requiredParts.push(/CartLinesUpdateEvent\.createPromise\s*\(/);
-    requiredParts.push(/this\.dispatchEvent\s*\(/);
+    requiredParts.push(createPromisePattern);
+    requiredParts.push(dispatchPattern);
   }
 
-  if (!claimsFormData && !claimsCartEvent) return false;
+  if (claimsCartFetch) {
+    const fetchPattern = /fetch\s*\(\s*Theme\.routes\.cart_add_url\s*,/;
+    if (!fetchPattern.test(actualMethod)) return false;
+    requiredParts.push(fetchPattern);
+  }
+
+  if (!claimsFormData && !claimsCartEvent && !claimsCartFetch) return false;
+
   return exactEvidencePartsMatchScope(
     evidenceItems, actualMethod, sourceSegments, requiredParts
   );
@@ -8058,6 +8169,77 @@ function supportsComponentCallbackInvocationClaim(
     sourceSegments.some((segment) =>
       segment.includes("function registerEventListeners") &&
       evidenceMatchesSource(evidence, segment)
+    )
+  );
+}
+
+function supportsComponentAttributeParsingClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/component.js" ||
+    !/attribute|on:/.test(text) ||
+    !/parse|read|getattribute|split/.test(text)
+  ) return false;
+
+  const registerStart = actualSource.indexOf("function registerEventListeners");
+  if (registerStart < 0) return false;
+  const actualRegistration = actualSource.slice(registerStart);
+
+  const attributePattern = /const attribute = \`on:\$\{eventName\}\`;/;
+  const getAttributePattern =
+    /const value = element\.getAttribute\(attribute\)\s*\?\?\s*'';/;
+  const splitPattern =
+    /let \[selector,\s*method\] = value\.split\(['"]\/['"]\);/;
+
+  if (
+    !attributePattern.test(actualRegistration) ||
+    !getAttributePattern.test(actualRegistration) ||
+    !splitPattern.test(actualRegistration)
+  ) return false;
+
+  return exactEvidencePartsMatchScope(
+    evidenceItems,
+    actualRegistration,
+    sourceSegments,
+    [attributePattern, getAttributePattern, splitPattern]
+  );
+}
+
+function supportsComponentInstanceResolutionClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "assets/component.js" ||
+    !/\binstance\b/.test(text) ||
+    !/resolv|closest|selector|component/.test(text)
+  ) return false;
+
+  const registerStart = actualSource.indexOf("function registerEventListeners");
+  if (registerStart < 0) return false;
+  const actualRegistration = actualSource.slice(registerStart);
+  const instancePattern =
+    /const instance = selector[\s\S]{0,260}?getClosestComponent\(element\);/;
+
+  if (!instancePattern.test(actualRegistration)) return false;
+
+  return evidenceItems.some((evidence) =>
+    instancePattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      segment.includes("function registerEventListeners") &&
+      evidenceMatchesSource(evidence, segment) &&
+      instancePattern.test(segment)
     )
   );
 }
@@ -11183,6 +11365,14 @@ async function verifyAnswerClaim(
           supportsThemeImportMapMappingClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedComponentAttributeParsing =
+          supportsComponentAttributeParsingClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
+        const verifiedComponentInstanceResolution =
+          supportsComponentInstanceResolutionClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedComponentDocumentDispatcher =
           supportsComponentDocumentDispatcherClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -11263,6 +11453,8 @@ async function verifyAnswerClaim(
           verifiedProductFormSubmitBinding ||
           verifiedProductFormProcessOperation ||
           verifiedThemeImportMapMapping ||
+          verifiedComponentAttributeParsing ||
+          verifiedComponentInstanceResolution ||
           verifiedComponentDocumentDispatcher ||
           verifiedComponentDocumentListener ||
           verifiedComponentCallbackInvocation ||
@@ -11379,6 +11571,12 @@ async function verifyAnswerClaim(
           );
         const claimTextLower = claim.claim.toLowerCase();
         const requiresSpecializedEvidence =
+          (/addtocartcomponent/i.test(claimTextLower) &&
+            /handleclick/i.test(claimTextLower)) ||
+          (/#?processaddtocart/i.test(claimTextLower) &&
+            /formdata|cartlinesupdateevent|cart_add_url|fetch/i.test(claimTextLower)) ||
+          (/productformcomponent/i.test(claimTextLower) &&
+            /handlesubmit/i.test(claimTextLower)) ||
           (/^\s*the\s+standard\s+add\s+to\s+cart\s+button/i.test(claimTextLower) &&
             /type\s*=\s*["']submit|on:click|handleclick/i.test(claimTextLower)) ||
           (/productformcomponent/i.test(claimTextLower) &&
@@ -15211,6 +15409,15 @@ or implementation details.
          claims: method signature, preventDefault, variant guard, queue push,
          and process handoff. A branch qualifier belongs only on a claim whose
          evidence also quotes the corresponding branch and operation.
+    (ac) For ProductFormComponent.handleSubmit and #processAddToCart, include
+         the method signature as its own evidence item and the relevant
+         operation as a separate evidence item. If the method range is missing
+         from Gemini context, request the exact source range; never quote an
+         unseen offset or omit the method signature.
+    (ad) Create one explicit recommendation claim for the proposed custom
+         validation guard. It must say "recommendation" and must not imply
+         validation already exists. Ground it in the submit signature,
+         preventDefault, variant guard, queue push, and process handoff.
 
 The answer field should contain a practical explanation for the user.
 
