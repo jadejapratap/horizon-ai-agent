@@ -7605,6 +7605,62 @@ function supportsQrErrorCorrectionLevelsClaim(
   );
 }
 
+function supportsAddToCartSnippetWrapperClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "snippets/add-to-cart-button.liquid" ||
+    !/add-to-cart-component/.test(text) ||
+    !/element|wrapper|component/.test(text)
+  ) return false;
+
+  const openingTag = /<add-to-cart-component\\b/i;
+  const closingTag = /<\\/add-to-cart-component\\s*>/i;
+  if (!openingTag.test(actualSource) || !closingTag.test(actualSource)) return false;
+
+  return evidenceItems.some((evidence) =>
+    openingTag.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      openingTag.test(segment) && evidenceMatchesSource(evidence, segment)
+    )
+  );
+}
+
+function supportsConditionalStickyAddToCartElementClaim(
+  claim: string,
+  file: string,
+  evidenceItems: string[],
+  sourceSegments: string[],
+  actualSource: string
+): boolean {
+  const text = claim.toLowerCase();
+  if (
+    file !== "sections/product-information.liquid" ||
+    !/sticky-add-to-cart/.test(text) ||
+    !/enable_sticky_add_to_cart/.test(text) ||
+    !/if|when|conditional|true/.test(text)
+  ) return false;
+
+  const conditionalElementPattern =
+    /{%-?\\s*if\\s+section\\.settings\\.enable_sticky_add_to_cart\\s*%}[\\s\\S]{0,1500}<sticky-add-to-cart\\b/i;
+  if (!conditionalElementPattern.test(actualSource)) return false;
+
+  return evidenceItems.some((evidence) =>
+    conditionalElementPattern.test(evidence) &&
+    evidenceMatchesSource(evidence, actualSource) &&
+    sourceSegments.some((segment) =>
+      conditionalElementPattern.test(segment) &&
+      evidenceMatchesSource(evidence, segment)
+    )
+  );
+}
+
 function supportsRegisteredAddToCartCustomElementClaim(
   claim: string, file: string, evidenceItems: string[], sourceSegments: string[], actualSource: string
 ): boolean {
@@ -8182,7 +8238,13 @@ function supportsProductFormProcessOperationClaim(
     requiredParts.push(fetchPattern);
   }
 
-  if (!claimsFormData && !claimsCartEvent && !claimsCartFetch) return false;
+  if (!claimsFormData && !claimsCartEvent && !claimsCartFetch) {
+    const isMethodDeclarationClaim =
+      /defines?|declares?|method|signature/.test(text);
+    return isMethodDeclarationClaim && exactEvidencePartsMatchScope(
+      evidenceItems, actualMethod, sourceSegments, requiredParts
+    );
+  }
 
   return exactEvidencePartsMatchScope(
     evidenceItems, actualMethod, sourceSegments, requiredParts
@@ -8479,6 +8541,17 @@ function supportsStickyAddToCartProxyClaim(
   }
 
   if (requiredParts.length === 0) return false;
+
+  const signatureOnlyClaim = claimsSignature && !claimsPuppet && !claimsClick;
+  if (signatureOnlyClaim) {
+    const signatureAvailableInSentContext = sourceSegments.some((segment) =>
+      signaturePattern.test(segment)
+    );
+    if (!signatureAvailableInSentContext) return false;
+    return exactEvidencePartsMatchScope(
+      evidenceItems, actualHandler, sourceSegments, [signaturePattern]
+    );
+  }
 
   const handlerAvailableInSentContext = sourceSegments.some((segment) =>
     getStickyAddToCartHandlerSource(segment, false) !== null
@@ -11496,6 +11569,14 @@ async function verifyAnswerClaim(
           supportsQrModeConstantsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedQrErrorCorrectionLevels =
           supportsQrErrorCorrectionLevelsClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
+        const verifiedAddToCartSnippetWrapper =
+          supportsAddToCartSnippetWrapperClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
+        const verifiedConditionalStickyAddToCartElement =
+          supportsConditionalStickyAddToCartElementClaim(
+            claim.claim, file, evidenceItems, sourceSegments, actualSource
+          );
         const verifiedAddToCartCustomElement =
           supportsRegisteredAddToCartCustomElementClaim(claim.claim, file, evidenceItems, sourceSegments, actualSource);
         const verifiedAddToCartHandleClick =
@@ -11603,6 +11684,8 @@ async function verifyAnswerClaim(
           verifiedBodyColorBackgroundVariables ||
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
+          verifiedAddToCartSnippetWrapper ||
+          verifiedConditionalStickyAddToCartElement ||
           verifiedAddToCartCustomElement ||
           verifiedAddToCartHandleClick ||
           verifiedProductFormHandleSubmit ||
@@ -11861,6 +11944,8 @@ async function verifyAnswerClaim(
           verifiedBodyColorBackgroundVariables ||
           verifiedQrModeConstants ||
           verifiedQrErrorCorrectionLevels ||
+          verifiedAddToCartSnippetWrapper ||
+          verifiedConditionalStickyAddToCartElement ||
           verifiedAddToCartCustomElement ||
           verifiedAddToCartHandleClick ||
           verifiedProductFormHandleSubmit ||
