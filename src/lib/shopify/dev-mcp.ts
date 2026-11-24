@@ -453,15 +453,67 @@ export async function generateContentWithShopifyMcpTools(
     1000,
     Math.min(60000, Number(process.env.SHOPIFY_DEV_MCP_TOOL_TIMEOUT_MS || DEFAULT_TOOL_TIMEOUT_MS))
   );
-  let contents = Array.isArray(request.contents) ? [...request.contents] : request.contents;
-  let response: any = await generateContent({
+
+  const originalConfig = { ...(request.config || {}) };
+  const structuredOutputRequested =
+    originalConfig.responseMimeType === "application/json"
+    || originalConfig.response_mime_type === "application/json"
+    || Boolean(
+      originalConfig.responseSchema
+      || originalConfig.responseJsonSchema
+      || originalConfig.response_schema
+    );
+
+  // Gemini rejects forced function calling (ANY) when application/json
+  // structured output is enabled on the same request. Run a dedicated
+  // tool-calling phase without JSON response constraints, then run a final
+  // structured-output phase after the MCP results have been added to context.
+  const toolCallConfig = { ...originalConfig };
+  delete toolCallConfig.responseMimeType;
+  delete toolCallConfig.response_mime_type;
+  delete toolCallConfig.responseSchema;
+  delete toolCallConfig.responseJsonSchema;
+  delete toolCallConfig.response_schema;
+  delete toolCallConfig.tools;
+  delete toolCallConfig.toolConfig;
+
+  let contents = Array.isArray(request.contents)
+    ? [...request.contents]
+    : [request.contents];
+
+  const buildToolCallingRequest = (mode: "ANY" | "AUTO") => ({
     ...request,
+    contents,
     config: {
-      ...(request.config || {}),
+      ...toolCallConfig,
       tools: [{ functionDeclarations: declarations }],
-      toolConfig: { functionCallingConfig: { mode: requiredToolCall ? "ANY" : "AUTO" } },
+      toolConfig: { functionCallingConfig: { mode } },
     },
   });
+
+  const generateFinalResponse = async (reason: string) => {
+    const finalConfig = { ...originalConfig };
+    delete finalConfig.tools;
+    delete finalConfig.toolConfig;
+
+    const finalResponse = await generateContent({
+      ...request,
+      contents,
+      config: finalConfig,
+    });
+
+    console.info("SHOPIFY DEV MCP FINAL GENERATION", {
+      reason,
+      structuredOutputRequested,
+      callsMade: status.callsMade,
+    });
+    console.info("SHOPIFY DEV MCP STATUS", status);
+    return { response: finalResponse, status };
+  };
+
+  let response: any = await generateContent(
+    buildToolCallingRequest(requiredToolCall ? "ANY" : "AUTO")
+  );
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const calls = getFunctionCalls(response);
@@ -469,12 +521,17 @@ export async function generateContentWithShopifyMcpTools(
       if (requiredToolCall && status.callsMade === 0) {
         status.reason = "The prompt explicitly requested Shopify Dev MCP, but Gemini did not invoke an MCP function.";
       }
+
+      if (structuredOutputRequested) {
+        return generateFinalResponse("structured_output_after_tool_phase");
+      }
+
       console.info("SHOPIFY DEV MCP STATUS", status);
       return { response, status };
     }
 
     const modelContent = response?.candidates?.[0]?.content;
-    if (modelContent && Array.isArray(contents)) contents.push(modelContent);
+    if (modelContent) contents.push(modelContent);
 
     const functionResponses: Array<Record<string, any>> = [];
     for (const call of calls) {
@@ -547,32 +604,14 @@ export async function generateContentWithShopifyMcpTools(
       }
     }
 
-    if (Array.isArray(contents)) {
-      contents.push({ role: "user", parts: functionResponses });
-    }
+    contents.push({ role: "user", parts: functionResponses });
 
-    response = await generateContent({
-      ...request,
-      contents,
-      config: {
-        ...(request.config || {}),
-        tools: [{ functionDeclarations: declarations }],
-        toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-      },
-    });
+    // Only the first request is forced to call a tool. After the MCP results
+    // are returned, AUTO lets Gemini decide whether another tool is needed.
+    response = await generateContent(buildToolCallingRequest("AUTO"));
   }
 
-  // If Gemini keeps requesting tools, ask once for a final user-facing response
-  // without exposing more tool calls in this turn.
-  const finalConfig = { ...(request.config || {}) };
-  delete finalConfig.tools;
-  delete finalConfig.toolConfig;
-  response = await generateContent({
-    ...request,
-    contents,
-    config: finalConfig,
-  });
-
-  console.info("SHOPIFY DEV MCP STATUS", status);
-  return { response, status };
+  // Stop further tool calls after the configured round limit. The final pass
+  // restores the original JSON response schema when the caller requested it.
+  return generateFinalResponse("tool_round_limit_reached");
 }
