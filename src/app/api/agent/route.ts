@@ -537,7 +537,16 @@ function resolveExplicitFileRequest(
     /\b(?:restrict|limit|confine)\b.{0,45}\b(?:analysis|inspection|source discovery|search|scope)\b.{0,45}\bto\s+(?:only\s+)?(?:these|the following|the listed|the specified|named)?\s*(?:theme\s+)?(?:source\s+)?files?\b/i.test(prompt) ||
     /\b(?:do not|don't|never)\s+(?:inspect|read|load|search|open|include)\b.{0,40}\bother\s+(?:theme\s+)?files?\b/i.test(prompt) ||
     /\b(?:exclude|ignore)\b.{0,35}\bother\s+(?:theme\s+)?files?\b/i.test(prompt);
-  const enabled = detected.size > 0 && explicitlyRestrictsFileScope;
+  // Named paths are discovery seeds when the prompt explicitly says they are
+  // non-exclusive. This takes precedence over weaker "only these files" wording
+  // elsewhere in a long checklist, while preserving genuinely file-only scope.
+  const namedPathsAreDiscoverySeeds =
+    /\b(?:source\s+)?paths?\b[\s\S]{0,80}\b(?:discovery\s+)?seeds?\b[\s\S]{0,60}\bnot\s+(?:the\s+)?exclusive\b/i.test(prompt) ||
+    /\b(?:discovery\s+)?seeds?\b[\s\S]{0,60}\bnot\s+(?:the\s+)?exclusive\b/i.test(prompt);
+  const enabled =
+    detected.size > 0 &&
+    explicitlyRestrictsFileScope &&
+    !namedPathsAreDiscoverySeeds;
 
   if (detected.size === 0) {
     return {
@@ -8061,6 +8070,8 @@ function exactMethodOperationEvidenceMatches(
     const variantGuard = /if\s*\(\s*this\.#variantChangeInProgress\s*\)\s*\{/;
     const queuePush = /this\.#addToCartQueue\.push\s*\([^;]*\);/;
     const processHandoff = /this\.#processAddToCart\s*\([^;]*\);/;
+    const postGuardHandoff =
+      /if\s*\(\s*this\.#variantChangeInProgress\s*\)\s*\{[\s\S]{0,500}?this\.#addToCartQueue\.push\s*\([^;]*\);[\s\S]{0,500}?return\s*;\s*\}\s*this\.#processAddToCart\s*\([^;]*\);/;
 
     requiredPatterns.push(signature);
     if (/preventdefault/.test(text)) requiredPatterns.push(preventDefault);
@@ -8075,6 +8086,11 @@ function exactMethodOperationEvidenceMatches(
     if (/processaddtocart|handoff/.test(text) ||
         /validation|validate|recommend/.test(text)) {
       requiredPatterns.push(processHandoff);
+    }
+    if (
+      /after\s+(?:the\s+)?(?:variant[-\s]?change\s+)?guard|post[-\s]?guard|following\s+(?:the\s+)?(?:variant[-\s]?change\s+)?guard/i.test(text)
+    ) {
+      requiredPatterns.push(postGuardHandoff);
     }
     if (/validation|validate|recommend/.test(text)) {
       requiredPatterns.push(
@@ -8195,7 +8211,10 @@ function supportsAddToCartHandleClickClaim(
 
   if (!actualMethod || !signaturePattern.test(actualMethod)) return false;
 
-  const claimsSignature = /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text);
+  const claimsSignature =
+    /\b(?:method\s+signature|signature|method\s+declaration)\b/i.test(text) ||
+    /\bdefines?\b.{0,40}\bhandleclick\b/i.test(text) ||
+    /\bhandleclick\b.{0,30}\bmethod\b/i.test(text);
   const claimsValidity = /validity|checkvalidity|form\s+(?:is\s+)?valid/i.test(text);
   const claimsAvailability = /quantityselector\?\.canaddtocart|availability\s+check/.test(text);
   const claimsQuantityInvocation = /quantityselector\.canaddtocart\s*\(/.test(text) || /actual\s+quantityselector/.test(text);
@@ -8261,7 +8280,7 @@ function supportsProductFormHandleSubmitClaim(
   if (claimsQueueCondition) requiredParts.push(variantGuardPattern, queuePushPattern);
 
   const claimsPostGuardHandoff =
-    /\b(?:post[-\s]?guard|after\s+the\s+guard|following\s+the\s+guard|subsequent)\b/i.test(text) && claimsProcess;
+    /\b(?:post[-\s]?guard|after\s+(?:the\s+)?(?:variant[-\s]?change\s+)?guard|following\s+(?:the\s+)?(?:variant[-\s]?change\s+)?guard|subsequent)\b/i.test(text) && claimsProcess;
   if (claimsPostGuardHandoff) {
     const postGuardPattern = /if\s*\(\s*this\.#variantChangeInProgress\s*\)\s*\{[\s\S]{0,500}?this\.#addToCartQueue\.push\s*\([^;]*\);[\s\S]{0,500}?return\s*;\s*\}\s*this\.#processAddToCart\s*\([^;]*\);/;
     if (!postGuardPattern.test(actualMethod)) return false;
@@ -8707,7 +8726,7 @@ function supportsComponentAttributeParsingClaim(
   actualSource: string
 ): boolean {
   const text = claim.toLowerCase();
-  if (file !== "assets/component.js" || !/attribute|on:/.test(text)) return false;
+  if (file !== "assets/component.js" || !/attribute|on:|split|selector/.test(text)) return false;
 
   const registerStart = actualSource.indexOf("function registerEventListeners");
   if (registerStart < 0) return false;
@@ -11923,6 +11942,13 @@ async function verifyAnswerClaim(
           supportsProductFormHandleSubmitClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
           );
+        const verifiedProductFormPostGuardHandoff =
+          file === "assets/product-form.js" &&
+          /productformcomponent/i.test(claim.claim) &&
+          /handlesubmit/i.test(claim.claim) &&
+          /#?processaddtocart/i.test(claim.claim) &&
+          /after\s+(?:the\s+)?variant[-\s]?change\s+guard/i.test(claim.claim) &&
+          verifiedProductFormHandleSubmit;
         const verifiedProductFormCartFetch =
           supportsProductFormCartFetchClaim(
             claim.claim, file, evidenceItems, sourceSegments, actualSource
@@ -12140,7 +12166,7 @@ async function verifyAnswerClaim(
           supportsStickyMenuVisibilityClaim(
             claim.claim, evidenceItems, sourceSegments, actualSource
           );
-        const hasUnsupportedControlFlow = !verifiedAddToCartLifecycleOrderAndScope && !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedStickyMenuVisibilityFlow && !verifiedStickyDisconnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
+        const hasUnsupportedControlFlow = !verifiedAddToCartLifecycleOrderAndScope && !verifiedProductFormPostGuardHandoff && !verifiedStickyConnectedCallbackLifecycleFlow && !verifiedStickyMenuVisibilityFlow && !verifiedStickyDisconnectedCallbackLifecycleFlow && !verifiedRafOtherwiseFlow &&
           !verifiedStickyUpdateScrollEarlyReturnFlow &&
           !verifiedStickyUpdateScrollCoreOperation &&
           !verifiedStickyUpdateScrollFlow &&
