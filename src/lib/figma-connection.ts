@@ -230,7 +230,7 @@ function summarizeNodeTree(root: FigmaNode): string {
 
 export async function verifyFigmaConnection(value: string): Promise<{ fileName: string; fileKey: string }> {
   const { fileKey } = parseFigmaDesignUrl(value);
-  const file = await figmaJson<{ name?: string; document?: FigmaNode }>("/files/" + fileKey + "?depth=1");
+  const file = await figmaJson<{ name?: string; document?: FigmaNode }>("/files/" + fileKey + "?depth=2");
   if (!file.document) {
     throw new FigmaConnectionError("Figma returned file metadata but no readable design document.", 502);
   }
