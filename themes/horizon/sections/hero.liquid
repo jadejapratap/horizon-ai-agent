@@ -603,7 +603,7 @@
     {%- endif -%}
     <div
       class="hero__media-grid"
-      style="--hero-media-count: {{ media_count }};--hero-media-count-mobile: {{ media_count_mobile }};--hero-media-column-1: {{ section.settings.image_1_width }}fr;--hero-media-column-2: {{ 100 | minus: section.settings.image_1_width }}fr;{%- if section.settings.image_1 != blank -%} --hero-media-aspect-ratio: {{ section.settings.image_1.aspect_ratio }};{% endif %}"
+      style="--hero-media-count: {{ media_count }};--hero-media-count-mobile: {{ media_count_mobile }};--hero-media-grid-template-columns: {% if section.settings.image_1_asset != blank and section.settings.image_2_asset != blank %}minmax(0, {{ section.settings.image_1_width }}fr) minmax(0, {{ 100 | minus: section.settings.image_1_width }}fr){% else %}repeat({{ media_count }}, 1fr){% endif %};{%- if section.settings.image_1 != blank -%} --hero-media-aspect-ratio: {{ section.settings.image_1.aspect_ratio }};{% endif %}"
       data-testid="hero-media-wrapper"
     >
       {% liquid
@@ -686,11 +686,7 @@
     inset: 0;
     display: grid;
     grid-column: 1 / -1;
-    {% if section.settings.image_1_asset != blank and section.settings.image_2_asset != blank %}
-      grid-template-columns: minmax(0, var(--hero-media-column-1)) minmax(0, var(--hero-media-column-2));
-    {% else %}
-      grid-template-columns: repeat(var(--hero-media-count, 1), 1fr);
-    {% endif %}
+    grid-template-columns: var(--hero-media-grid-template-columns, repeat(var(--hero-media-count, 1), 1fr));
   }
 
   .hero--auto .hero__media {
