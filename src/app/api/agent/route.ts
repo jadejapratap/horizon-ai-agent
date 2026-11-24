@@ -8528,7 +8528,8 @@ function supportsStickyAddToCartProxyClaim(
     /\bhandleaddtocartclick\b.{0,50}\bmethod\b/i.test(text);
   const claimsPuppet = /puppet|dataset/.test(text);
   const claimsClick =
-    /click.{0,50}(?:proxy|invok|operation|method)|(?:proxy|invok).{0,50}click|\.click\s*\(/i.test(text);
+    /\.click\s*\(/i.test(text) ||
+    /(?:target|button|puppet).{0,50}click|click.{0,50}(?:target|button|proxy|operation|invok)/i.test(text);
 
   if (claimsSignature) requiredParts.push(signaturePattern);
   if (claimsPuppet) {
