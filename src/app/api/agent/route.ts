@@ -13406,7 +13406,17 @@ export async function POST(request: NextRequest) {
             ].join("\n"),
           },
         },
-        generateContentWithRetry
+        generateContentWithRetry,
+        [
+          "USER TASK:",
+          prompt,
+          "ACTIVE SPECIALIST:",
+          shopifyAgentProfile.name,
+          shopifyAgentProfile.instructions,
+          "SHOPIFY TOOLKIT:",
+          `Version ${shopifySkillBundle.version}; topics: ${shopifySkillBundle.topics.join(", ")}; references: ${shopifySkillBundle.references.join(", ")}.`,
+          "Use the official documentation search tool once when relevant. Avoid duplicate learn_shopify_api calls with identical arguments. Do not invoke validation tools unless the task requests code/schema validation.",
+        ].join("\n")
       );
 
       const knowledgeAnswer =
@@ -15816,7 +15826,16 @@ that can be checked against actual source files.
 If no source evidence is available, return an empty claims array.
 `,
         },
-      }, generateContentWithRetry);
+      }, generateContentWithRetry, [
+        "USER TASK:",
+        prompt,
+        "ACTIVE SPECIALIST:",
+        shopifyAgentProfile.name,
+        shopifyAgentProfile.instructions,
+        "SHOPIFY TOOLKIT:",
+        `Version ${shopifySkillBundle.version}; topics: ${shopifySkillBundle.topics.join(", ")}; references: ${shopifySkillBundle.references.join(", ")}.`,
+        "This is a read-only Shopify Horizon source architecture verification. Search official Shopify documentation only when relevant. Do not repeat identical MCP calls. Do not validate or execute store operations; no source files should be changed.",
+      ].join("\n"));
 
     const response = finalGenerationResult.response;
     const shopifyMcpStatus = finalGenerationResult.status;
