@@ -136,7 +136,7 @@ export default function Home() {
 
   async function checkFigmaAgentConnection(url: string) {
     setFigmaAgentStatus("checking");
-    setFigmaAgentMessage("Checking Figma API access for Horizon AI Agent...");
+    setFigmaAgentMessage("Checking Figma token configuration and local design cache...");
     setFigmaAgentFileName("");
 
     try {
