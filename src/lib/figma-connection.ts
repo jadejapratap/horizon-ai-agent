@@ -506,8 +506,8 @@ async function downloadFigmaImageAssets(
     {};
 
   const normalizeImageRef = (value: string) => value.trim().replace(/^image:/i, "").toLowerCase();
-  const imageUrlByRef = new Map(
-    Object.entries(imageUrls).map(([key, url]) => [normalizeImageRef(key), url])
+  const imageUrlByRef = new Map<string, string>(
+    Object.entries(imageUrls).map(([key, url]) => [normalizeImageRef(key), url] as const)
   );
 
   const selectedUses = imageUses.slice(0, 12);
