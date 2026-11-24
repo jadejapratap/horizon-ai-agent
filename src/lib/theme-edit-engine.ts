@@ -199,7 +199,10 @@ function buildRelevantExcerpt(content: string, prompt: string, maxChars: number)
   return { content: chunks.join("\n\n"), complete: false };
 }
 
-async function discoverSourceContext(prompt: string): Promise<{ files: SourceFile[]; manifest: string[]; directories: string[] }> {
+async function discoverSourceContext(
+  prompt: string,
+  figmaContext?: FigmaDesignContext
+): Promise<{ files: SourceFile[]; manifest: string[]; directories: string[] }> {
   const root = await realpath(THEME_ROOT);
   const manifest: string[] = [];
   const directories = new Set<string>();
@@ -209,10 +212,17 @@ async function discoverSourceContext(prompt: string): Promise<{ files: SourceFil
   }
 
   const terms = getPromptTerms(prompt);
-  const requiredHomepageFiles = /\b(homepage|home page|landing page|landing desktop|storefront home)\b/i.test(prompt)
+  const isHeroOrBannerRequest = /\b(hero|banner)\b/i.test(prompt);
+  const figmaFrameLooksLikeHomepage = /\b(home|homepage|landing|storefront)\b/i.test(
+    figmaContext?.nodeName ?? ""
+  );
+  const isHomepageCompositionRequest =
+    /\b(homepage|home page|landing page|landing desktop|storefront home)\b/i.test(prompt) ||
+    (isHeroOrBannerRequest && figmaFrameLooksLikeHomepage);
+  const requiredHomepageFiles = isHomepageCompositionRequest
     ? new Set(["templates/index.json"])
     : new Set<string>();
-  if (/\b(hero|banner)\b/i.test(prompt)) {
+  if (isHeroOrBannerRequest) {
     requiredHomepageFiles.add("sections/hero.liquid");
   }
 
@@ -890,7 +900,7 @@ export async function executeThemeEditRequest(
   }
 
   return withThemeEditLock(async () => {
-    const sourceContext = await discoverSourceContext(prompt);
+    const sourceContext = await discoverSourceContext(prompt, figmaContext);
     console.info("HORIZON THEME EDIT SOURCE DISCOVERY", {
       manifestFiles: sourceContext.manifest.length,
       selectedFiles: sourceContext.files.map((file) => ({ path: file.path, score: file.score, complete: file.complete, sourceCharacters: file.excerpt.length })),
