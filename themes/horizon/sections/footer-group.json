@@ -182,7 +182,7 @@
       "settings": {
         "section_width": "page-width",
         "gap": 40,
-        "background_color": "{{ settings.color_palette.color1 }}",
+        "background_color": "#2e7d32",
         "padding-block-start": 36,
         "padding-block-end": 36
       }
@@ -224,7 +224,7 @@
       "settings": {
         "section_width": "page-width",
         "gap": 24,
-        "background_color": "{{ settings.color_palette.color1 }}",
+        "background_color": "#2e7d32",
         "divider_thickness": 1,
         "padding-block-start": 12,
         "padding-block-end": 16
