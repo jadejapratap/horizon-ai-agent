@@ -8025,44 +8025,27 @@ function supportsComponentDocumentDispatcherClaim(
   );
 }
 
-function getStickyAddToCartHandlerSource(source: string): string | null {
+function getStickyAddToCartHandlerSource(
+  source: string,
+  requireClassDeclaration = true
+): string | null {
   const classPattern =
     /class\s+StickyAddToCartComponent\s+extends\s+Component\s*\{/;
   const classMatch = classPattern.exec(source);
-  if (!classMatch) return null;
+  if (requireClassDeclaration && !classMatch) return null;
 
-  const classTail = source.slice(classMatch.index + classMatch[0].length);
-  const classEnd = /\n\}/.exec(classTail);
+  // Backend chunks may begin inside the class, so the sent excerpt can prove
+  // the exact arrow-handler without repeating the class declaration. The
+  // complete actual source is separately required to prove class ownership.
+  const classTail = classMatch
+    ? source.slice(classMatch.index + classMatch[0].length)
+    : source;
+  const classEnd = classMatch ? /\n\}/.exec(classTail) : null;
   const classBody = classEnd ? classTail.slice(0, classEnd.index) : classTail;
   const handlerPattern =
     /(^|\n)([ \t]{2})handleAddToCartClick\s*=\s*async\s*\(\s*\)\s*=>\s*\{[\s\S]*?\n\2\};/m;
   const handlerMatch = handlerPattern.exec(classBody);
   return handlerMatch ? handlerMatch[0].replace(/^\n/, "") : null;
-}
-
-function supportsStickyAddToCartTargetAssignmentClaim(
-  claim: string, file: string, evidenceItems: string[],
-  sourceSegments: string[], actualSource: string
-): boolean {
-  const text = claim.toLowerCase();
-  if (
-    file !== "assets/sticky-add-to-cart.js" ||
-    !/targetaddtocartbutton/.test(text) ||
-    !/queryselector|reference|selects|stores/.test(text)
-  ) return false;
-
-  const assignmentPattern =
-    /this\.#targetAddToCartButton\s*=\s*productForm\.querySelector\(\s*['"]\[ref="addToCartButton"\]['"]\s*\)/;
-  if (!assignmentPattern.test(actualSource)) return false;
-
-  return evidenceItems.some((evidence) =>
-    assignmentPattern.test(evidence) &&
-    evidenceMatchesSource(evidence, actualSource) &&
-    sourceSegments.some((segment) =>
-      evidenceMatchesSource(evidence, segment) &&
-      assignmentPattern.test(segment)
-    )
-  );
 }
 
 function supportsStickyAddToCartProxyClaim(
