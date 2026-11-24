@@ -15282,6 +15282,25 @@ If no additional chunks are needed:
           .filter((entry) => entry.includedCharacters > 0)
           .map((entry) => entry.file);
 
+    // The full dependency graph is retained by the backend for verification
+    // and retrieval. For Add to Cart reasoning, give Gemini only verified
+    // file-to-file edges whose source and target are both present in its exact
+    // source context; unrelated product-page styling/settings edges waste tokens.
+    const sourceFilesInGeminiContext = new Set(
+      sourceCoverageManifest
+        .filter((entry) => entry.includedCharacters > 0)
+        .map((entry) => normalizePath(entry.file))
+    );
+    const isAddToCartArchitectureTask =
+      detectCoverageDomains(prompt).includes("add-to-cart");
+    const finalDependencyContext = isAddToCartArchitectureTask
+      ? relevantDependencies.filter((dependency) =>
+          dependency.verified &&
+          sourceFilesInGeminiContext.has(normalizePath(dependency.from)) &&
+          sourceFilesInGeminiContext.has(normalizePath(dependency.to))
+        )
+      : relevantDependencies;
+
     const compactCoverageContext = [
       "SOURCE COVERAGE STATUS (calculated from the exact source ranges supplied):",
       JSON.stringify(sourceCoverageManifest),
@@ -15345,8 +15364,8 @@ If no additional chunks are needed:
       "ADDITIONAL FILES RETRIEVED ON DEMAND:",
       JSON.stringify(retrievalState.retrievedChunks.map((chunk) => chunk.file)),
       "",
-      "RELEVANT VERIFIED DEPENDENCY GRAPH:",
-      JSON.stringify(relevantDependencies.map((dependency) => ({
+      "RELEVANT VERIFIED DEPENDENCY GRAPH (edges are limited to source files supplied to Gemini):",
+      JSON.stringify(finalDependencyContext.map((dependency) => ({
         from: dependency.from,
         to: dependency.to,
         relationship: dependency.relationship,
@@ -15354,7 +15373,7 @@ If no additional chunks are needed:
       }))),
       "",
       "VERIFICATION SUMMARY:",
-      `${verifiedCount} of ${verifiedDependencies.length} dependencies verified.`,
+      `${finalDependencyContext.length} relevant file-to-file dependencies supplied; backend verified ${verifiedCount} of ${verifiedDependencies.length} total dependencies.`,
       "",
       explicitOnly
         ? "EXPLICIT-ONLY FILE SCOPE (MANDATORY): " + JSON.stringify([...(explicitFileAllowlist ?? [])])
@@ -15393,7 +15412,9 @@ If no additional chunks are needed:
       historyCharacters: countGeminiTextCharacters(validHistory),
       initialThemeSourceCharacters: themeContext.length,
       additionalSourceCharacters: additionalSourceContext.length,
-      dependencyGraphCharacters: JSON.stringify(relevantDependencies).length,
+      dependencyGraphCharacters: JSON.stringify(finalDependencyContext).length,
+      dependencyEdgesBeforeContextFilter: relevantDependencies.length,
+      dependencyEdgesAfterContextFilter: finalDependencyContext.length,
       sourceCoverageCharacters: JSON.stringify(sourceCoverageManifest).length,
       skillContextCharacters: shopifySkillBundle.context.length,
       profileInstructionCharacters: shopifyAgentProfile.instructions.length,
