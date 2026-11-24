@@ -95,8 +95,10 @@ const AGENT_PROFILES: Record<string, ShopifyAgentProfile> = {
 };
 
 export function resolveShopifyAgentProfile(prompt: string): ShopifyAgentProfile {
-  if (/\b(?:test|testing|validate|validation|qa|quality assurance|regression|audit|lint)\b/i.test(prompt)) return AGENT_PROFILES.qa;
+  // Prefer the implementation domain when a theme-development request also
+  // contains test/verification language; reserve QA for cross-domain QA tasks.
   if (/\b(?:liquid|theme|section|snippet|template|figma|srs|responsive page|theme editor|add to cart|cart drawer)\b/i.test(prompt)) return AGENT_PROFILES.theme;
+  if (/\b(?:test|testing|validate|validation|qa|quality assurance|regression|audit|lint)\b/i.test(prompt)) return AGENT_PROFILES.qa;
   if (/\b(?:refund|refunds|cancel|cancellation|fulfillment|tracking|draft order|orders?)\b/i.test(prompt)) return AGENT_PROFILES.orders;
   if (/\b(?:product|products|variant|variants|sku|barcode|collection|pricing|import products)\b/i.test(prompt)) return AGENT_PROFILES.products;
   if (/\b(?:customer|customers|company|companies|b2b|address book)\b/i.test(prompt)) return AGENT_PROFILES.customers;
