@@ -77,7 +77,12 @@ function isInsideRoot(root: string, candidate: string): boolean {
 }
 
 function normalizeThemePath(value: string): string {
-  return value.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\/+/, "");
+
+  // Gemini may return a repository-relative path even though THEME_ROOT
+  // already points at themes/horizon. Convert that alias to the theme-root
+  // relative path before resolving it, avoiding themes/horizon/themes/horizon.
+  return normalized.replace(/^themes\/horizon\//i, "");
 }
 
 function validateThemePath(value: string): string {
