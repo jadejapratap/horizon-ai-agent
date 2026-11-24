@@ -7991,34 +7991,10 @@ function getComponentMethodFromSuppliedRange(
   source: string,
   methodName: string
 ): string | null {
-  const escapedMethodName = methodName.replace(/[.*+?^$()|[\]\\]/g, "\\function exactMethodOperationEvidenceMatches(
-  evidenceItems: string[],
-  actualSource: string,
-  sourceSegments: string[],
-  className: string,
-  methodName: string,
-  operationPattern: RegExp
-): boolean {
-  const actualMethod = getComponentClassMethodSource(
-    actualSource, className, methodName
-  );
-  if (!actualMethod || !operationPattern.test(actualMethod)) return false;
-
-  return sourceSegments.some((segment) => {
-    const suppliedMethod = getComponentClassMethodSource(
-      segment, className, methodName
-    );
-    if (!suppliedMethod || !operationPattern.test(suppliedMethod)) return false;
-
-    return evidenceItems.some((evidence) =>
-      operationPattern.test(evidence) &&
-      evidenceMatchesSource(evidence, actualMethod) &&
-      evidenceMatchesSource(evidence, suppliedMethod)
-    );
-  });
-}");
+  // Only fixed internal method identifiers are passed here; '#' in a private
+  // method name is a literal regex character and needs no dynamic escaping.
   const methodPattern = new RegExp(
-    "(^|\\n)([ \\t]{2})" + escapedMethodName +
+    "(^|\\n)([ \\t]{2})" + methodName +
       "\\s*\\([^\\n]*\\)\\s*\\{[\\s\\S]*?\\n\\2\\}",
     "m"
   );
@@ -8055,9 +8031,7 @@ function exactMethodOperationEvidenceMatches(
       evidenceMatchesSource(evidence, suppliedMethod)
     );
   });
-}
-
-function recoverExactAddToCartMethodEvidence(
+}function recoverExactAddToCartMethodEvidence(
   claim: string,
   file: string,
   evidenceItems: string[],
