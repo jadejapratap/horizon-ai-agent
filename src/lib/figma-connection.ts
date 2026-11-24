@@ -177,7 +177,8 @@ async function readCachedFigmaDesignContext(
 ): Promise<FigmaDesignContext | null> {
   const key = getFigmaCacheKey(fileKey, nodeId);
   const inMemory = figmaContextMemoryCache.get(key);
-  if (inMemory) return inMemory;
+  if (inMemory && isFigmaDesignContext(inMemory)) return inMemory;
+  if (inMemory) figmaContextMemoryCache.delete(key);
 
   try {
     const raw = await readFile(getFigmaCachePath(fileKey, nodeId), "utf8");
@@ -450,6 +451,27 @@ function findFigmaNodeById(root: FigmaNode, targetNodeId: string): FigmaNode | n
     for (const child of node.children ?? []) stack.push(child);
   }
   return null;
+}
+
+function findUniqueNamedFigmaNode(root: FigmaNode, targetName: string): FigmaNode | null {
+  const target = targetName.trim().toLowerCase();
+  const stack: FigmaNode[] = [root];
+  let match: FigmaNode | null = null;
+  let matchCount = 0;
+  let visited = 0;
+
+  while (stack.length > 0 && visited < 12000) {
+    const node = stack.pop()!;
+    visited += 1;
+    if (String(node.name || "").trim().toLowerCase() === target) {
+      match = node;
+      matchCount += 1;
+      if (matchCount > 1) return null;
+    }
+    for (const child of node.children ?? []) stack.push(child);
+  }
+
+  return matchCount === 1 ? match : null;
 }
 
 function collectFigmaImageUses(
@@ -741,12 +763,12 @@ async function fetchFigmaDesignContext(
   // IMAGE fill may be several descendant layers below its frame (for example,
   // the left photo currently belongs to I129:24037, inside frame 108:13297).
   // Never infer the slot from the fill-owner node ID.
+  const leftHeroFrameById = findFigmaNodeById(heroAssetRoot, "108:13297");
+  const rightHeroFrameById = findFigmaNodeById(heroAssetRoot, "108:13272");
   const leftHeroFrame =
-    findFigmaNodeById(heroAssetRoot, "108:13297") ??
-    findNamedFigmaNode(heroAssetRoot, "frm/top/left");
+    leftHeroFrameById ?? findUniqueNamedFigmaNode(heroAssetRoot, "frm/top/left");
   const rightHeroFrame =
-    findFigmaNodeById(heroAssetRoot, "108:13272") ??
-    findNamedFigmaNode(heroAssetRoot, "Button/Top/right");
+    rightHeroFrameById ?? findUniqueNamedFigmaNode(heroAssetRoot, "Button/Top/right");
 
   const hasExplicitHeroSlotFrames = Boolean(leftHeroFrame || rightHeroFrame);
   const heroSlotImageUses = [
@@ -758,8 +780,8 @@ async function fetchFigmaDesignContext(
       : []),
   ];
 
-  // When the two named slots exist, keep only fills collected inside those
-  // frames. Do not fall back to unscoped descendants if one slot is missing;
+  // When either named slot resolves, keep only fills collected inside the
+  // resolved frames. Do not fall back to unscoped descendants if one slot is missing;
   // the edit engine must fail closed rather than guess which photo is which.
   const heroImageUses = hasExplicitHeroSlotFrames
     ? heroSlotImageUses
@@ -779,6 +801,7 @@ async function fetchFigmaDesignContext(
       ? {
           nodeId: leftHeroFrame.id || null,
           nodeName: leftHeroFrame.name || null,
+          resolvedBy: leftHeroFrameById ? "exact-node-id" : "unique-frame-name",
           width: Math.round(nodeWidth(leftHeroFrame)),
           height: Math.round(nodeHeight(leftHeroFrame)),
         }
@@ -787,6 +810,7 @@ async function fetchFigmaDesignContext(
       ? {
           nodeId: rightHeroFrame.id || null,
           nodeName: rightHeroFrame.name || null,
+          resolvedBy: rightHeroFrameById ? "exact-node-id" : "unique-frame-name",
           width: Math.round(nodeWidth(rightHeroFrame)),
           height: Math.round(nodeHeight(rightHeroFrame)),
         }
