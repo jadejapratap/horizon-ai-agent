@@ -628,6 +628,15 @@ async function downloadFigmaImageAssets(
     }
   };
 
+  // Record fills that exceed the defensive processing cap as explicit
+  // failures too; otherwise the final error would report a count without
+  // identifying the skipped Figma nodes.
+  for (const skippedUse of imageUses.slice(selectedUses.length)) {
+    recordFailure(skippedUse, "image-use-count-limit-exceeded", {
+      maxSelectedImageUses: selectedUses.length,
+    });
+  }
+
   for (let index = 0; index < selectedUses.length; index += 1) {
     const use = selectedUses[index];
     const imageUrl = resolveImageUrl(use.imageRef);
@@ -772,18 +781,20 @@ async function downloadFigmaImageAssets(
   });
 
   if (heroSlotDownloadFailures > 0) {
-    const failureSummary = importFailures.slice(0, 6).map((failure) =>
-      failure.nodeId +
-      " (" + failure.nodeName + ") in " +
-      failure.frameNodeId + " (" + failure.frameNodeName + ")" +
-      (failure.heroSlot ? " [" + failure.heroSlot + "]" : "") +
-      ": " + failure.reason +
-      (failure.details?.downloadedBytes !== undefined
-        ? " (" + failure.details.downloadedBytes + " bytes)"
-        : failure.details?.httpStatus !== undefined
-          ? " (HTTP " + failure.details.httpStatus + ")"
-          : "")
-    ).join("; ");
+    const failureSummary = importFailures.slice(0, 6).map((failure) => {
+      const downloadedBytes = failure.details?.downloadedBytes;
+      const httpStatus = failure.details?.httpStatus;
+      const sizeOrStatus = typeof downloadedBytes === "number"
+        ? " (" + downloadedBytes + " bytes)"
+        : typeof httpStatus === "number"
+          ? " (HTTP " + httpStatus + ")"
+          : "";
+      return failure.nodeId +
+        " (" + failure.nodeName + ") in " +
+        failure.frameNodeId + " (" + failure.frameNodeName + ")" +
+        (failure.heroSlot ? " [" + failure.heroSlot + "]" : "") +
+        ": " + failure.reason + sizeOrStatus;
+    }).join("; ");
     throw new FigmaConnectionError(
       "Horizon found " + heroSlotDownloadFailures +
         " original Figma hero image fill(s) that could not be fully imported. " +
