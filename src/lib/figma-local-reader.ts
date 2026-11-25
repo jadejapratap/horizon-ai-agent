@@ -123,7 +123,7 @@ function serializableValue(value: any, depth = 0, seen = new WeakSet<object>()):
 
 function nodeProperties(node: any): Record<string, any> {
   const output: Record<string, any> = {};
-  const relevantKey = /(?:size|transform|paint|fill|stroke|effect|opacity|visible|corner|text|font|line|letter|align|layout|axis|spacing|padding|clip|constraint|component|shape|radius|character|style|blend|rotation|position|bound|grid|overflow|mask|image|gradient|scale|width|height|weight|decoration|stack|sizing|distribution|justify|wrap|flex|shadow|blur)/i;
+  const relevantKey = /(?:size|transform|paint|fill|stroke|effect|opacity|visible|corner|text|font|line|letter|align|layout|axis|spacing|padding|clip|constraint|component|symbol|override|shape|radius|character|style|blend|rotation|position|bound|grid|overflow|mask|image|gradient|scale|width|height|weight|decoration|stack|sizing|distribution|justify|wrap|flex|shadow|blur)/i;
 
   for (const [key, value] of Object.entries(node)) {
     if (key === "guid" || key === "parentIndex" || key === "phase" || key === "type" || key === "name") continue;
@@ -509,7 +509,7 @@ function resolveLocalFigComponentReference(
     : Array.isArray(instanceNode?.symbolOverrides)
       ? instanceNode.symbolOverrides
       : [];
-  const componentKeyValue = symbolData.componentKey ?? instanceNode?.componentKey;
+  const componentKeyValue = symbolData.componentKey ?? symbolData.symbolKey ?? instanceNode?.componentKey ?? instanceNode?.symbolKey;
   const componentKey = typeof componentKeyValue === "string" && componentKeyValue.trim()
     ? componentKeyValue.trim()
     : null;
@@ -517,6 +517,8 @@ function resolveLocalFigComponentReference(
   const referenceCandidates: Array<{ field: string; id: string }> = [];
   const candidateFields: Array<[string, any]> = [
     ["symbolData.symbolID", symbolData.symbolID],
+    ["symbolData.componentId", symbolData.componentId],
+    ["symbolData.mainComponentId", symbolData.mainComponentId],
     ["componentId", instanceNode?.componentId],
     ["mainComponentId", instanceNode?.mainComponentId],
     ["mainComponent", instanceNode?.mainComponent],
@@ -674,15 +676,17 @@ function resolveLocalFigComponentReference(
     }
   }
 
-  const componentProperties = symbolData.componentProperties ?? instanceNode?.componentProperties ?? null;
-  const componentPropertySummary = componentProperties && typeof componentProperties === "object"
-    ? Object.fromEntries(Object.entries(componentProperties).slice(0, 50).map(([key, value]) => [
-        key,
+  const componentProperties = symbolData.componentProperties ?? instanceNode?.componentProperties ?? instanceNode?.componentPropertyValues ?? null;
+  let componentPropertySummary: Record<string, any> | null = null;
+  if (componentProperties && typeof componentProperties === "object") {
+    componentPropertySummary = {};
+    for (const [key, value] of Object.entries(componentProperties).slice(0, 50)) {
+      componentPropertySummary[key] =
         typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null
           ? value
-          : serializableValue(value),
-      ]))
-    : null;
+          : serializableValue(value);
+    }
+  }
 
   return {
     status,
