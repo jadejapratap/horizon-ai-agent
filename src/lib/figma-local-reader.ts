@@ -6,6 +6,7 @@ import { nodeId, parseFig } from "openfig-core";
 const FIGMA_DIRECTORY = path.resolve(process.cwd(), "figma");
 const PREFERRED_FILE = path.join(FIGMA_DIRECTORY, "design.fig");
 const CACHE_DIRECTORY = path.resolve(process.cwd(), ".horizon-cache", "figma-assets");
+const THEME_ASSET_DIRECTORY = path.resolve(process.cwd(), "themes", "horizon", "assets");
 const MAX_FILE_BYTES = 80 * 1024 * 1024;
 const MAX_TREE_CHARACTERS = 76000;
 const MAX_TREE_NODES = 7000;
@@ -27,6 +28,7 @@ export type LocalFigImageAsset = {
   mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
   bytes: number;
   sha256: string;
+  themeAssetPath?: string;
   data?: string;
 };
 
@@ -247,7 +249,11 @@ function buildDesignTree(doc: any, prompt: string): {
   return { pageNames, frames, tree };
 }
 
-async function extractImages(doc: any, includeData: boolean): Promise<LocalFigImageAsset[]> {
+async function extractImages(
+  doc: any,
+  includeData: boolean,
+  copyIntoThemeAssets: boolean
+): Promise<LocalFigImageAsset[]> {
   if (!(doc.images instanceof Map)) return [];
   await mkdir(CACHE_DIRECTORY, { recursive: true });
 
@@ -272,6 +278,18 @@ async function extractImages(doc: any, includeData: boolean): Promise<LocalFigIm
       sha256: digest,
     };
 
+    if (copyIntoThemeAssets && rawBytes.byteLength <= 20 * 1024 * 1024 && output.length < 120) {
+      const themeFileName = "figma-" + digest.slice(0, 20) + extension;
+      const themePath = path.join(THEME_ASSET_DIRECTORY, themeFileName);
+      await mkdir(THEME_ASSET_DIRECTORY, { recursive: true });
+      try {
+        await stat(themePath);
+      } catch {
+        await writeFile(themePath, rawBytes, { flag: "wx" });
+      }
+      asset.themeAssetPath = "assets/" + themeFileName;
+    }
+
     if (
       includeData &&
       output.length < MAX_INLINE_IMAGE_COUNT &&
@@ -289,7 +307,7 @@ async function extractImages(doc: any, includeData: boolean): Promise<LocalFigIm
 
 export async function readLocalFigDesignContext(
   prompt = "",
-  options: { includeImageData?: boolean } = {}
+  options: { includeImageData?: boolean; copyIntoThemeAssets?: boolean } = {}
 ): Promise<LocalFigDesignContext> {
   const filePath = await resolveFigFile();
   const metadata = await stat(filePath);
@@ -316,7 +334,11 @@ export async function readLocalFigDesignContext(
   }
 
   const { pageNames, frames, tree } = buildDesignTree(doc, prompt);
-  const images = await extractImages(doc, Boolean(options.includeImageData));
+  const images = await extractImages(
+    doc,
+    Boolean(options.includeImageData),
+    Boolean(options.copyIntoThemeAssets)
+  );
 
   return {
     fileName: path.basename(filePath),
@@ -347,6 +369,8 @@ export async function getLocalFigDesignStatus(): Promise<Omit<LocalFigDesignCont
     frameCount: context.frameCount,
     imageCount: context.imageCount,
     frames: context.frames.slice(0, 150),
-    images: context.images.map(({ name, mimeType, bytes, sha256 }) => ({ name, mimeType, bytes, sha256 })),
+    images: context.images.map(({ name, mimeType, bytes, sha256, themeAssetPath }) => ({
+      name, mimeType, bytes, sha256, ...(themeAssetPath ? { themeAssetPath } : {}),
+    })),
   };
 }
