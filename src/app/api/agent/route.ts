@@ -13968,11 +13968,13 @@ function isLocalFigInspectionRequest(prompt: string): boolean {
     /\b(?:analy[sz]e|inspect(?:ion)?|identify|list|report|show|return|read|extract|describe|find|which|what|summari[sz]e|review|discover|enumerate)\b/i.test(prompt);
   if (!inspectionIntent) return false;
 
-  // Ignore explicitly negative instructions such as "do not modify files";
-  // they define the read-only scope and must not be mistaken for edit intent.
+  // Remove complete negative-instruction clauses before looking for a positive
+  // theme mutation. Otherwise "Do not modify any code" leaves the word "code"
+  // behind and incorrectly sends read-only inspection into Shopify source search.
   const actionableText = prompt
-    .replace(/\b(?:do not|don't|never|without)\s+(?:modify|edit|change|update|touch|write|create|build|implement|inspect|analy[sz]e)\b/gi, "")
-    .replace(/\bno\s+(?:code\s+)?(?:changes?|edits?)\b/gi, "");
+    .replace(/\b(?:do not|don't|never)\b[^.!?\n]*[.!?]?/gi, " ")
+    .replace(/\bwithout\s+(?:modifying|editing|changing|updating|writing|creating|building|implementing)\b[^.!?\n]*[.!?]?/gi, " ")
+    .replace(/\bno\s+(?:code\s+)?(?:changes?|edits?)\b/gi, " ");
 
   const themeMutationIntent =
     /\b(?:implement|build|create|write|edit|modify|change|update|fix|redesign|recreate|replicate|apply|generate|add|remove|delete|replace|move|adjust|code)\b/i.test(actionableText);
