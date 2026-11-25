@@ -40,5 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Local Figma design context cache (screenshots + layer data)
+# Local .fig parser cache and extracted original embedded design assets
 /.horizon-cache/
+
