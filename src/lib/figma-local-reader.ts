@@ -43,6 +43,7 @@ export type LocalFigDesignContext = {
   imageCount: number;
   frames: Array<{ id: string; name: string; page: string; width: number | null; height: number | null }>;
   tree: string;
+  homepageTree: string | null;
   images: LocalFigImageAsset[];
 };
 
@@ -148,6 +149,7 @@ function buildDesignTree(doc: any, prompt: string): {
   pageNames: string[];
   frames: LocalFigDesignContext["frames"];
   tree: string;
+  homepageTree: string | null;
 } {
   const nodes = Array.isArray(doc.nodes) ? doc.nodes : [];
   const byId = new Map<string, any>();
@@ -181,23 +183,29 @@ function buildDesignTree(doc: any, prompt: string): {
     }
   }
 
-  const pathFor = (node: any): string => {
+  const childrenFor = (node: any): any[] => {
+    const id = getNodeId(node);
+    return id ? childrenMap.get(id) || [] : [];
+  };
+
+  const pathPartsFor = (node: any): string[] => {
     const parts: string[] = [];
     let current: any = node;
     let guard = 0;
-    while (current && guard < 32) {
+    while (current && guard < 40) {
       const label = String(current.name || current.type || "").trim();
       if (label) parts.unshift(label);
       const parentId = parentById.get(getNodeId(current) || "");
       current = parentId ? byId.get(parentId) : null;
       guard += 1;
     }
-    return parts.join(" / ");
+    return parts;
   };
+  const pathFor = (node: any): string => pathPartsFor(node).join(" / ");
 
   const frames: LocalFigDesignContext["frames"] = nodes
-    .filter((node: any) => /^(?:FRAME|COMPONENT|INSTANCE)$/i.test(String(node.type || "")))
-    .slice(0, 500)
+    .filter((node: any) => /^(?:FRAME|COMPONENT|INSTANCE|COMPONENT_SET|SYMBOL|SYMBOL_MASTER)$/i.test(String(node.type || "")))
+    .slice(0, 1200)
     .map((node: any) => ({
       id: getNodeId(node) || "unknown",
       name: String(node.name || node.type || "Unnamed frame"),
@@ -210,6 +218,97 @@ function buildDesignTree(doc: any, prompt: string): {
   const rankedRoots = [...roots].sort((a: any, b: any) =>
     scoreName(String(b.name || ""), prompt) - scoreName(String(a.name || ""), prompt)
   );
+
+  const homeCandidates = nodes
+    .filter((node: any) =>
+      String(node.name || "").trim().toLowerCase() === "home" &&
+      pathPartsFor(node).some((part) => part.trim().toLowerCase() === "landing page")
+    )
+    .sort((a: any, b: any) => {
+      const aPath = pathPartsFor(a);
+      const bPath = pathPartsFor(b);
+      const aDesignPage = aPath.some((part) => part.trim().toLowerCase() === "design");
+      const bDesignPage = bPath.some((part) => part.trim().toLowerCase() === "design");
+      return Number(bDesignPage) - Number(aDesignPage);
+    });
+  const homepageNode = homeCandidates[0] || null;
+
+  let homepageTree: string | null = null;
+  if (homepageNode) {
+    const homeBudget = { remaining: 3200, truncated: false };
+    const serializeHomepageNode = (node: any, depth: number): any => {
+      if (homeBudget.remaining <= 0) {
+        homeBudget.truncated = true;
+        return { id: getNodeId(node) || "unknown", type: String(node.type || "UNKNOWN"), truncated: true };
+      }
+      homeBudget.remaining -= 1;
+      const id = getNodeId(node);
+      const childNodes = childrenFor(node);
+      const entry: Record<string, any> = {
+        id: id || "unknown",
+        name: String(node.name || ""),
+        type: String(node.type || "UNKNOWN"),
+        size: node.size ? serializableValue(node.size) : null,
+        childCount: childNodes.length,
+      };
+      const properties = nodeProperties(node);
+      if (Object.keys(properties).length > 0) entry.properties = properties;
+      if (childNodes.length > 0) {
+        if (depth >= 30 || homeBudget.remaining <= 0) {
+          homeBudget.truncated = true;
+          entry.childrenTruncated = childNodes.length;
+        } else {
+          entry.children = childNodes.map((child) => serializeHomepageNode(child, depth + 1));
+        }
+      }
+      return entry;
+    };
+
+    const homepageInstances: any[] = [];
+    const visitedHomeIds = new Set<string>();
+    const collectHomepageInstances = (node: any, depth: number): void => {
+      if (depth > 30 || visitedHomeIds.size >= 3200) return;
+      const id = getNodeId(node) || "";
+      if (!id || visitedHomeIds.has(id)) return;
+      visitedHomeIds.add(id);
+      if (/^INSTANCE$/i.test(String(node.type || ""))) homepageInstances.push(node);
+      for (const child of childrenFor(node)) collectHomepageInstances(child, depth + 1);
+    };
+    collectHomepageInstances(homepageNode, 0);
+
+    const componentResolutions: LocalFigComponentResolution[] = [];
+    const resolvedMasterIds = new Set<string>();
+    for (const instance of homepageInstances) {
+      if (componentResolutions.length >= 24) break;
+      const resolution = resolveLocalFigComponentReference(doc, instance, byId, parentById, childrenFor);
+      const dedupeKey = resolution.referenceId || resolution.instanceNodeId;
+      if (resolvedMasterIds.has(dedupeKey)) continue;
+      resolvedMasterIds.add(dedupeKey);
+      componentResolutions.push(resolution);
+    }
+
+    const homepageSize = getLocalFigNodeSize(homepageNode);
+    homepageTree = JSON.stringify({
+      source: "original local figma/design.fig",
+      note: "Prioritized native subtree for the Home frame, plus exact referenced component masters resolved from INSTANCE symbol data. No screenshots or remote Figma API are used.",
+      homepage: {
+        id: getNodeId(homepageNode),
+        name: String(homepageNode.name || "Home"),
+        type: String(homepageNode.type || "UNKNOWN"),
+        width: homepageSize.width,
+        height: homepageSize.height,
+        parentPath: pathPartsFor(homepageNode).slice(0, -1),
+      },
+      treeTruncated: homeBudget.truncated,
+      remainingNodeBudget: homeBudget.remaining,
+      hierarchy: serializeHomepageNode(homepageNode, 0),
+      componentInstances: componentResolutions,
+    });
+
+    if (homepageTree.length > 180000) {
+      homepageTree = homepageTree.slice(0, 180000) + "…[homepage design context clipped at the dedicated context limit]";
+    }
+  }
 
   let includedNodes = 0;
   const serializeTree = (node: any, depth: number): any => {
@@ -238,6 +337,14 @@ function buildDesignTree(doc: any, prompt: string): {
   const pageTrees = rankedRoots.map((root: any) => serializeTree(root, 0));
   let tree = JSON.stringify({
     note: "This is the native .fig node hierarchy. It is structured source data, not a screenshot or rendered page image.",
+    prioritizedHomepage: homepageNode
+      ? {
+          id: getNodeId(homepageNode),
+          name: String(homepageNode.name || "Home"),
+          parentPath: pathPartsFor(homepageNode).slice(0, -1),
+          dedicatedContextIncluded: Boolean(homepageTree),
+        }
+      : null,
     pages: pageTrees,
     frameIndex: frames,
   });
@@ -246,7 +353,7 @@ function buildDesignTree(doc: any, prompt: string): {
     tree = tree.slice(0, MAX_TREE_CHARACTERS) + "…[design tree clipped at the context safety limit]";
   }
 
-  return { pageNames, frames, tree };
+  return { pageNames, frames, tree, homepageTree };
 }
 
 async function extractImages(
@@ -333,7 +440,7 @@ export async function readLocalFigDesignContext(
     throw new LocalFigDesignError("The .fig file parsed but contained no design nodes.", 422);
   }
 
-  const { pageNames, frames, tree } = buildDesignTree(doc, prompt);
+  const { pageNames, frames, tree, homepageTree } = buildDesignTree(doc, prompt);
   const images = await extractImages(
     doc,
     Boolean(options.includeImageData),
@@ -351,6 +458,7 @@ export async function readLocalFigDesignContext(
     imageCount: images.length,
     frames,
     tree,
+    homepageTree,
     images,
   };
 }
