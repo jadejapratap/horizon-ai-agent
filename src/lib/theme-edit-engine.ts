@@ -4,6 +4,8 @@ import path from "node:path";
 import { GoogleGenAI } from "@google/genai";
 import ts from "typescript";
 import { loadShopifySkillContext, resolveShopifyAgentProfile } from "@/lib/shopify/skill-loader";
+import { readLocalFigDesignContext } from "@/lib/figma-local-reader";
+import type { LocalFigDesignContext } from "@/lib/figma-local-reader";
 
 const THEME_ROOT = path.resolve(process.cwd(), "themes", "horizon");
 const MODEL = "gemini-3.5-flash-lite";
@@ -16,17 +18,6 @@ const MAX_SOURCE_FILE_CHARS = 18000;
 const ALLOWED_EXTENSIONS = new Set([".liquid", ".json", ".js", ".css"]);
 const STOP_WORDS = new Set(["the", "and", "for", "with", "want", "need", "please", "make", "show", "add", "create", "build", "implement", "change", "modify", "update", "remove", "delete", "replace", "style", "fix", "this", "that", "from", "into", "your", "our", "you", "can", "could", "would", "should", "have", "has", "are", "is", "to", "in", "on", "of", "it", "my", "me", "a", "an", "be", "by", "as", "at", "or", "if", "when", "only", "both", "all"]);
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-
-export type ScreenshotReference = {
-  name: string;
-  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
-  data: string;
-  bytes: number;
-};
-
-export type ScreenshotDesignContext = {
-  screenshots: ScreenshotReference[];
-};
 
 export type ThemeEditSummary = {
   applied: boolean;
@@ -214,7 +205,7 @@ function buildRelevantExcerpt(content: string, prompt: string, maxChars: number)
 
 async function discoverSourceContext(
   prompt: string,
-  screenshotContext?: ScreenshotDesignContext
+  designContext?: LocalFigDesignContext
 ): Promise<{ files: SourceFile[]; manifest: string[]; directories: string[] }> {
   const root = await realpath(THEME_ROOT);
   const manifest: string[] = [];
@@ -226,10 +217,10 @@ async function discoverSourceContext(
 
   const terms = getPromptTerms(prompt);
   const isHeroOrBannerRequest = /\b(hero|banner)\b/i.test(prompt);
-  const hasScreenshotReference = Boolean(screenshotContext?.screenshots.length);
+  const hasLocalDesign = Boolean(designContext?.nodeCount);
   const isHomepageCompositionRequest =
     /\b(homepage|home page|landing page|landing desktop|storefront home)\b/i.test(prompt) ||
-    (isHeroOrBannerRequest && hasScreenshotReference);
+    (isHeroOrBannerRequest && hasLocalDesign);
   const requiredHomepageFiles = isHomepageCompositionRequest
     ? new Set(["templates/index.json"])
     : new Set<string>();
@@ -578,7 +569,7 @@ async function generateEditPlan(
   files: SourceFile[],
   manifest: string[],
   directories: string[],
-  screenshotContext?: ScreenshotDesignContext
+  designContext?: LocalFigDesignContext
 ): Promise<EditPlan> {
   const skillContext = await loadShopifySkillContext(prompt);
   const specialist = resolveShopifyAgentProfile(prompt);
@@ -618,25 +609,35 @@ async function generateEditPlan(
     "SOURCE FILES RETRIEVED FOR THIS REQUEST:",
     JSON.stringify(fileContext),
     "",
-    "USER-PROVIDED SCREENSHOT REFERENCES:",
-    screenshotContext?.screenshots.length
-      ? screenshotContext.screenshots.map((screenshot, index) =>
-          [
-            "Screenshot " + (index + 1) + ": " + screenshot.name,
-            "MIME type: " + screenshot.mimeType,
-            "File size: " + screenshot.bytes + " bytes",
-            "Use this screenshot as the visual source of truth for layout, hierarchy, spacing, typography, colors, proportions, image placement, and responsive behavior actually visible in the screenshot.",
-          ].join("\n")
-        ).join("\n\n")
-      : "No user-provided screenshot reference was attached.",
+    "LOCAL FIGMA .FIG DESIGN FILE:",
+    designContext
+      ? [
+          "Original local file: " + designContext.filePath,
+          "Format version: " + (designContext.formatVersion ?? "unknown"),
+          "Total design nodes: " + designContext.nodeCount,
+          "Pages: " + designContext.pageNames.join(" | "),
+          "Frame/component/instance count: " + designContext.frameCount,
+          "Embedded original image assets: " + designContext.imageCount,
+          "The following hierarchy is parsed from the original .fig binary. It contains node IDs, names, node types, dimensions, text, layout properties, fills, strokes, effects, and other decoded properties where present.",
+          designContext.tree,
+        ].join("\n")
+      : "No local .fig design file was loaded for this request.",
+    "",
+    "ORIGINAL EMBEDDED FIGMA IMAGE ASSETS:",
+    designContext?.images.length
+      ? designContext.images.map((asset) =>
+          asset.name + " | " + asset.mimeType + " | " + asset.bytes + " bytes | SHA-256 " + asset.sha256
+        ).join("\n")
+      : "No embedded image assets were extracted from the local .fig file.",
   ].join("\n");
 
   const userParts: Array<Record<string, unknown>> = [{ text: requestText }];
-  for (const screenshot of screenshotContext?.screenshots ?? []) {
+  for (const asset of designContext?.images ?? []) {
+    if (!asset.data) continue;
     userParts.push({
       inlineData: {
-        mimeType: screenshot.mimeType,
-        data: screenshot.data,
+        mimeType: asset.mimeType,
+        data: asset.data,
       },
     });
   }
@@ -650,9 +651,10 @@ async function generateEditPlan(
       systemInstruction: [
         "You are Horizon AI, an autonomous Shopify Horizon theme code editor.",
         "Implement the user's requested storefront change in the actual supplied theme source. You are not in read-only analysis mode. Return a concrete edit plan, not an explanation-only answer.",
-        "When USER-PROVIDED SCREENSHOT REFERENCES are present, use the attached screenshots as the visual source of truth. Recreate the visible design with native Shopify Liquid, CSS, and JavaScript; do not use a screenshot as a page background or as a substitute for the page implementation.",
-        "A screenshot is a visual reference, not an original media asset. Do not crop the full screenshot and place it as a hero/background image. Do not claim to have extracted original photos or graphics from a screenshot. Reuse suitable existing theme assets; when an exact original photo/logo is missing from the theme, clearly identify the missing asset instead of inventing or silently substituting one.",
-        "When multiple screenshots are supplied, compare them as separate viewport references (for example desktop and mobile). Implement only responsive behavior supported by the supplied screenshots; do not assume unseen breakpoints or interactions.",
+        "When LOCAL FIGMA .FIG DESIGN FILE is present, treat its decoded node hierarchy and exact node properties as the design source of truth. Use page/frame names, node IDs, dimensions, transforms, auto-layout settings, typography, fills, strokes, effects, and text content to reconstruct the page with native Shopify Liquid, CSS, and JavaScript.",
+        "The .fig tree is structured source data, not a screenshot. Never request, create, substitute, or depend on screenshots for design understanding. Do not use a full-page raster image as a background or as a replacement for native page sections.",
+        "Use only original embedded image assets supplied in ORIGINAL EMBEDDED FIGMA IMAGE ASSETS when a matching design image is present. Identify assets by their original file names and visual content. Do not invent missing brand imagery or claim a binary asset was copied into the theme unless the theme source actually includes it.",
+        "Use frame IDs and hierarchy to distinguish the homepage from other artboards. If multiple pages or desktop/mobile frames exist, use the most relevant named page and preserve responsive behavior only when the .fig structure contains evidence for it.",
         "Understand behavior by tracing the supplied Liquid, CSS, JavaScript, JSON, render calls, symbols, and dependencies. Do not choose a file based only on its filename.",
         "For homepage and landing-page requests, treat templates/index.json as the Shopify page-composition entrypoint. Inspect its existing section instances and order, preserve stable section/block IDs where practical, and make only grounded changes to the supplied JSON and its inspected section implementations.",
         "The sections/hero.liquid schema caps section_height_custom at 100. Never place a value below 0 or above 100 in templates/index.json, even when the field is hidden by visible_if.",
@@ -776,7 +778,7 @@ export function isThemeEditRequest(prompt: string): boolean {
 export async function executeThemeEditRequest(
   prompt: string,
   history: any[] = [],
-  screenshotContext?: ScreenshotDesignContext
+  designContext?: LocalFigDesignContext
 ): Promise<ThemeEditSummary> {
   if (process.env.VERCEL === "1" || process.env.AWS_LAMBDA_FUNCTION_NAME) {
     throw new ThemeEditEngineError(
@@ -789,13 +791,13 @@ export async function executeThemeEditRequest(
   }
 
   return withThemeEditLock(async () => {
-    const sourceContext = await discoverSourceContext(prompt, screenshotContext);
+    const sourceContext = await discoverSourceContext(prompt, designContext);
     console.info("HORIZON THEME EDIT SOURCE DISCOVERY", {
       manifestFiles: sourceContext.manifest.length,
       selectedFiles: sourceContext.files.map((file) => ({ path: file.path, score: file.score, complete: file.complete, sourceCharacters: file.excerpt.length })),
     });
 
-    let plan = await generateEditPlan(prompt, history, sourceContext.files, sourceContext.manifest, sourceContext.directories, screenshotContext);
+    let plan = await generateEditPlan(prompt, history, sourceContext.files, sourceContext.manifest, sourceContext.directories, designContext);
     console.info("HORIZON THEME EDIT PLAN", {
       summary: plan.summary,
       files: plan.changes.map((change) => ({ path: change.path, create: change.create, operations: change.edits?.length ?? 0 })),
@@ -836,7 +838,7 @@ export async function executeThemeEditRequest(
         sourceContext.files,
         sourceContext.manifest,
         sourceContext.directories,
-        screenshotContext
+        designContext
       );
       console.info("HORIZON THEME EDIT REPAIRED PLAN", {
         summary: plan.summary,
@@ -848,11 +850,14 @@ export async function executeThemeEditRequest(
     await applyPreparedChanges(prepared);
     console.info("HORIZON THEME EDIT APPLIED", {
       files: prepared.map((change) => ({ path: change.path, operations: change.operations })),
-      referenceScreenshots: screenshotContext?.screenshots.map((screenshot) => ({
-        name: screenshot.name,
-        mimeType: screenshot.mimeType,
-        bytes: screenshot.bytes,
-      })) ?? [],
+      localFigDesign: designContext ? {
+        fileName: designContext.fileName,
+        filePath: designContext.filePath,
+        nodeCount: designContext.nodeCount,
+        pageCount: designContext.pageCount,
+        frameCount: designContext.frameCount,
+        imageCount: designContext.imageCount,
+      } : null,
     });
     return buildEditResponse(plan.summary, prepared);
   });
