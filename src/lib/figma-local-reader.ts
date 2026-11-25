@@ -374,3 +374,230 @@ export async function getLocalFigDesignStatus(): Promise<Omit<LocalFigDesignCont
     })),
   };
 }
+
+
+export type LocalFigInspectionNodeSummary = {
+  id: string;
+  name: string;
+  type: string;
+  width: number | null;
+  height: number | null;
+  childCount: number;
+};
+
+export type LocalFigInspectionContext = {
+  fileName: string;
+  filePath: string;
+  formatVersion: number | null;
+  nodeCount: number;
+  pageCount: number;
+  pageNames: string[];
+  pages: Array<{ id: string; name: string; childCount: number }>;
+  selectedPage: { id: string; name: string; childCount: number };
+  topLevelChildren: LocalFigInspectionNodeSummary[];
+  topLevelFrames: LocalFigInspectionNodeSummary[];
+  designPageTree: string;
+  treeTruncated: boolean;
+};
+
+function isLocalFigPageNode(node: any): boolean {
+  return /^(?:CANVAS|PAGE)$/i.test(String(node?.type || ""));
+}
+
+function isLocalFigFrameNode(node: any): boolean {
+  return /^(?:FRAME|COMPONENT|INSTANCE|COMPONENT_SET|SECTION)$/i.test(String(node?.type || ""));
+}
+
+function getLocalFigNodeSize(node: any): { width: number | null; height: number | null } {
+  const width = Number(node?.size?.x);
+  const height = Number(node?.size?.y);
+  return {
+    width: Number.isFinite(width) ? width : null,
+    height: Number.isFinite(height) ? height : null,
+  };
+}
+
+/**
+ * Read-only Figma inspection entry point.
+ *
+ * Unlike readLocalFigDesignContext(), this function does not extract/copy image
+ * assets into the Shopify theme. It returns the selected page's native node
+ * hierarchy so inspection prompts never need to enter the theme-edit pipeline.
+ */
+export async function readLocalFigInspectionContext(
+  prompt = ""
+): Promise<LocalFigInspectionContext> {
+  const filePath = await resolveFigFile();
+  const metadata = await stat(filePath);
+  if (!metadata.isFile()) {
+    throw new LocalFigDesignError("The selected Figma path is not a regular file.", 400);
+  }
+  if (metadata.size <= 0 || metadata.size > MAX_FILE_BYTES) {
+    throw new LocalFigDesignError("The .fig file must be between 1 byte and 80 MB.", 413);
+  }
+
+  const bytes = await readFile(filePath);
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    throw new LocalFigDesignError(
+      "The selected file is not a supported zipped .fig archive. Keep the original Figma .fig export unchanged.",
+      415
+    );
+  }
+
+  let doc: any;
+  try {
+    doc = parseFig(new Uint8Array(bytes));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown parser error";
+    throw new LocalFigDesignError(
+      "OpenFig could not parse " + path.basename(filePath) + ": " + detail,
+      422
+    );
+  }
+
+  if (!Array.isArray(doc.nodes) || doc.nodes.length === 0) {
+    throw new LocalFigDesignError("The .fig file parsed but contained no design nodes.", 422);
+  }
+
+  const nodes: any[] = doc.nodes;
+  const byId = new Map<string, any>();
+  for (const node of nodes) {
+    const id = getNodeId(node);
+    if (id) byId.set(id, node);
+  }
+
+  const childrenMap: Map<string, any[]> =
+    doc.childrenMap instanceof Map ? doc.childrenMap : new Map();
+  const parentById = new Map<string, string>();
+  for (const [parentId, children] of childrenMap.entries()) {
+    for (const child of children) {
+      const childId = getNodeId(child);
+      if (childId) parentById.set(childId, String(parentId));
+    }
+  }
+
+  const childrenFor = (node: any): any[] => {
+    const id = getNodeId(node);
+    if (!id) return [];
+    const indexed = childrenMap.get(id);
+    if (Array.isArray(indexed)) return indexed;
+    return nodes.filter((candidate) => parentById.get(getNodeId(candidate) || "") === id);
+  };
+
+  const pageNodes = nodes.filter(isLocalFigPageNode);
+  if (pageNodes.length === 0) {
+    throw new LocalFigDesignError("The .fig file contains nodes but no Figma page/canvas nodes.", 422);
+  }
+
+  const pages = pageNodes.map((page) => {
+    const id = getNodeId(page) || "unknown";
+    return {
+      id,
+      name: String(page.name || "Unnamed page"),
+      childCount: childrenFor(page).length,
+    };
+  });
+
+  const explicitPageMatch = prompt.match(/\b(?:page|under|within)\s+["']([^"']{1,100})["']/i);
+  const requestedPageName = explicitPageMatch?.[1]?.trim().toLowerCase();
+  const selectedPageNode =
+    (requestedPageName
+      ? pageNodes.find((page) => String(page.name || "").trim().toLowerCase() === requestedPageName)
+      : undefined) ||
+    pageNodes.find((page) => String(page.name || "").trim().toLowerCase() === "design") ||
+    pageNodes[0];
+
+  const selectedPageId = getNodeId(selectedPageNode) || "unknown";
+  const directChildren = childrenFor(selectedPageNode);
+
+  const summarizeNode = (node: any): LocalFigInspectionNodeSummary => {
+    const size = getLocalFigNodeSize(node);
+    return {
+      id: getNodeId(node) || "unknown",
+      name: String(node.name || node.type || "Unnamed node"),
+      type: String(node.type || "UNKNOWN"),
+      width: size.width,
+      height: size.height,
+      childCount: childrenFor(node).length,
+    };
+  };
+
+  const topLevelChildren = directChildren.map(summarizeNode);
+  const topLevelFrames = directChildren.filter(isLocalFigFrameNode).map(summarizeNode);
+
+  let remainingNodes = 6200;
+  const maxDepth = 22;
+  const serializeHierarchy = (node: any, depth: number): any => {
+    if (remainingNodes <= 0) {
+      return {
+        id: getNodeId(node) || "unknown",
+        name: String(node.name || node.type || "Unnamed node"),
+        type: String(node.type || "UNKNOWN"),
+        truncated: true,
+      };
+    }
+    remainingNodes -= 1;
+
+    const size = getLocalFigNodeSize(node);
+    const id = getNodeId(node);
+    const childNodes = childrenFor(node);
+    const serialized: Record<string, any> = {
+      id: id || "unknown",
+      name: String(node.name || ""),
+      type: String(node.type || "UNKNOWN"),
+      width: size.width,
+      height: size.height,
+      childCount: childNodes.length,
+    };
+
+    const properties = nodeProperties(node);
+    if (Object.keys(properties).length > 0) {
+      serialized.properties = properties;
+    }
+
+    if (childNodes.length > 0) {
+      if (depth >= maxDepth || remainingNodes <= 0) {
+        serialized.childrenTruncated = childNodes.length;
+      } else {
+        serialized.children = childNodes.map((child) => serializeHierarchy(child, depth + 1));
+      }
+    }
+    return serialized;
+  };
+
+  const hierarchy = {
+    source: "figma/design.fig",
+    note: "Native Figma node hierarchy parsed locally. This is structured .fig data, not a screenshot or rendered image.",
+    selectedPage: {
+      id: selectedPageId,
+      name: String(selectedPageNode.name || "Unnamed page"),
+      childCount: directChildren.length,
+    },
+    topLevelChildren: directChildren.map((node) => serializeHierarchy(node, 0)),
+  };
+
+  const completeTree = JSON.stringify(hierarchy, null, 2);
+  const treeTruncated = completeTree.length > 72000 || remainingNodes <= 0;
+  const designPageTree = treeTruncated
+    ? completeTree.slice(0, 72000) + "\n[Native node hierarchy truncated for model-context limits.]"
+    : completeTree;
+
+  return {
+    fileName: path.basename(filePath),
+    filePath: path.relative(process.cwd(), filePath).replace(/\\/g, "/"),
+    formatVersion: Number.isFinite(Number(doc.header?.version)) ? Number(doc.header.version) : null,
+    nodeCount: nodes.length,
+    pageCount: pages.length,
+    pageNames: pages.map((page) => page.name),
+    pages,
+    selectedPage: {
+      id: selectedPageId,
+      name: String(selectedPageNode.name || "Unnamed page"),
+      childCount: directChildren.length,
+    },
+    topLevelChildren,
+    topLevelFrames,
+    designPageTree,
+    treeTruncated,
+  };
+}
