@@ -14007,7 +14007,7 @@ export async function POST(request: NextRequest) {
         /(?:\bfigma\b|\bdesign\.fig\b|\.fig\s*file|local\s+design|design\s+reference|based\s+on\s+(?:the\s+)?(?:design|figma)|match\s+(?:the\s+)?(?:design|figma))/i.test(prompt);
 
       try {
-        localFigContext = await readLocalFigDesignContext(prompt, { includeImageData: true });
+        localFigContext = await readLocalFigDesignContext(prompt, { includeImageData: true, copyIntoThemeAssets: true });
         console.info("HORIZON LOCAL FIG DESIGN CONTEXT LOADED", {
           fileName: localFigContext.fileName,
           filePath: localFigContext.filePath,
