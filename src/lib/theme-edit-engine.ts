@@ -242,7 +242,8 @@ async function discoverSourceContext(
 
   const addSectionFilesFromConfig = (relativePath: string, source: string): void => {
     try {
-      const parsed = JSON.parse(source);
+      const jsonSource = source.replace(/^\uFEFF?\s*\/\*[\s\S]*?\*\/\s*/, "").trim();
+      const parsed = JSON.parse(jsonSource);
       const sections = parsed && typeof parsed === "object" ? (parsed as any).sections : null;
       if (!sections || typeof sections !== "object") return;
       for (const section of Object.values(sections) as any[]) {
