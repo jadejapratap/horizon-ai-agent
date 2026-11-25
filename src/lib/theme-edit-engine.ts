@@ -899,7 +899,13 @@ function buildEditResponse(
 export function isThemeEditRequest(prompt: string): boolean {
   const value = prompt.trim();
   if (!value) return false;
-  if (/^(?:how|why|what|where|when|which|explain|describe|analyze|analyse|review|inspect|find|show me|tell me how|can you explain|could you explain)\b/i.test(value)) return false;
+  const startsAsReadOnlyQuestion =
+    /^(?:how|why|what|where|when|which|explain|describe|analyze|analyse|review|inspect|find|show me|tell me how|can you explain|could you explain)\b/i.test(value);
+  const explicitFigmaHomepageBuild =
+    /\b(?:figma|design\.fig|\.fig\s*file)\b/i.test(value) &&
+    /\b(?:homepage|home\s*page|storefront home|landing page)\b/i.test(value) &&
+    /\b(?:banav|banavo|banavjo|banavi|banao|bana|build|create|implement|make|recreate|replicate)\b/i.test(value);
+  if (startsAsReadOnlyQuestion && !explicitFigmaHomepageBuild) return false;
 
   const action = "(?:add|create|build|implement|import|download|fetch|save|sync|change|modify|update|remove|delete|replace|rework|redesign|recreate|replicate|restyle|style|fix|make|display|hide|show|enable|disable|insert|adjust|move|increase|decrease)";
   const directRequest = new RegExp(
