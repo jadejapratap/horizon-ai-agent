@@ -4,7 +4,6 @@ import path from "node:path";
 import { GoogleGenAI } from "@google/genai";
 import ts from "typescript";
 import { loadShopifySkillContext, resolveShopifyAgentProfile } from "@/lib/shopify/skill-loader";
-import { readLocalFigDesignContext } from "@/lib/figma-local-reader";
 import type { LocalFigDesignContext } from "@/lib/figma-local-reader";
 
 const THEME_ROOT = path.resolve(process.cwd(), "themes", "horizon");
@@ -626,7 +625,8 @@ async function generateEditPlan(
     "ORIGINAL EMBEDDED FIGMA IMAGE ASSETS:",
     designContext?.images.length
       ? designContext.images.map((asset) =>
-          asset.name + " | " + asset.mimeType + " | " + asset.bytes + " bytes | SHA-256 " + asset.sha256
+          asset.name + " | " + asset.mimeType + " | " + asset.bytes + " bytes | SHA-256 " + asset.sha256 +
+            " | Shopify theme asset path: " + (asset.themeAssetPath || "not copied into the theme")
         ).join("\n")
       : "No embedded image assets were extracted from the local .fig file.",
   ].join("\n");
@@ -653,7 +653,7 @@ async function generateEditPlan(
         "Implement the user's requested storefront change in the actual supplied theme source. You are not in read-only analysis mode. Return a concrete edit plan, not an explanation-only answer.",
         "When LOCAL FIGMA .FIG DESIGN FILE is present, treat its decoded node hierarchy and exact node properties as the design source of truth. Use page/frame names, node IDs, dimensions, transforms, auto-layout settings, typography, fills, strokes, effects, and text content to reconstruct the page with native Shopify Liquid, CSS, and JavaScript.",
         "The .fig tree is structured source data, not a screenshot. Never request, create, substitute, or depend on screenshots for design understanding. Do not use a full-page raster image as a background or as a replacement for native page sections.",
-        "Use only original embedded image assets supplied in ORIGINAL EMBEDDED FIGMA IMAGE ASSETS when a matching design image is present. Identify assets by their original file names and visual content. Do not invent missing brand imagery or claim a binary asset was copied into the theme unless the theme source actually includes it.",
+        "Use only original embedded image assets supplied in ORIGINAL EMBEDDED FIGMA IMAGE ASSETS when a matching design image is present. Identify assets by their original file names and visual content. When a Shopify theme asset path is supplied, reference that exact file with Shopify's asset_url filter (for example: {{ 'figma-<hash>.png' | asset_url }}); do not rename or invent image paths. Do not claim an asset was added unless its exact path is listed.",
         "Use frame IDs and hierarchy to distinguish the homepage from other artboards. If multiple pages or desktop/mobile frames exist, use the most relevant named page and preserve responsive behavior only when the .fig structure contains evidence for it.",
         "Understand behavior by tracing the supplied Liquid, CSS, JavaScript, JSON, render calls, symbols, and dependencies. Do not choose a file based only on its filename.",
         "For homepage and landing-page requests, treat templates/index.json as the Shopify page-composition entrypoint. Inspect its existing section instances and order, preserve stable section/block IDs where practical, and make only grounded changes to the supplied JSON and its inspected section implementations.",
@@ -767,7 +767,7 @@ export function isThemeEditRequest(prompt: string): boolean {
     "i"
   ).test(value);
   const actionAfterFeature = new RegExp(
-    "\\b(?:product cards?|product grid|theme|storefront|homepage|home page|screenshot references?|reference images?|hero|header|footer|collection page|cart drawer|product page|navigation|menu|section|snippet|price|logo|button|banner)\\b[\\s\\S]{0,140}\\b" + action + "\\b",
+    "\\b(?:product cards?|product grid|theme|storefront|homepage|home page|local fig design|design file|reference images?|hero|header|footer|collection page|cart drawer|product page|navigation|menu|section|snippet|price|logo|button|banner)\\b[\\s\\S]{0,140}\\b" + action + "\\b",
     "i"
   ).test(value);
   const gujaratiAction = /(?:ઉમેરો|ઉમેર|બદલો|દૂર કરો|દેખાડો|છુપાવો|બનાવો)/.test(value);
