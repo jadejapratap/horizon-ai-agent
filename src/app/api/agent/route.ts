@@ -42,7 +42,7 @@ import {
   isThemeEditRequest,
   ThemeEditEngineError,
 } from "@/lib/theme-edit-engine";
-import { readLocalFigDesignContext, LocalFigDesignError } from "@/lib/figma-local-reader";
+import { readLocalFigDesignContext, readLocalFigInspectionContext, LocalFigDesignError } from "@/lib/figma-local-reader";
 import type { LocalFigDesignContext } from "@/lib/figma-local-reader";
 
 export const maxDuration = 180;
@@ -13956,6 +13956,193 @@ function buildSourceCoverageMarkdown(
 }
 
 // --------------------------------------------------
+// READ-ONLY LOCAL FIGMA INSPECTION ROUTING
+// --------------------------------------------------
+
+function isLocalFigInspectionRequest(prompt: string): boolean {
+  const hasFigReference =
+    /\bfigma\b|\bdesign\.fig\b|\.fig\s*file|local\s+figma\s+file/i.test(prompt);
+  if (!hasFigReference) return false;
+
+  const inspectionIntent =
+    /\b(?:analy[sz]e|inspect(?:ion)?|identify|list|report|show|return|read|extract|describe|find|which|what|summari[sz]e|review|discover|enumerate)\b/i.test(prompt);
+  if (!inspectionIntent) return false;
+
+  // Ignore explicitly negative instructions such as "do not modify files";
+  // they define the read-only scope and must not be mistaken for edit intent.
+  const actionableText = prompt
+    .replace(/\b(?:do not|don't|never|without)\s+(?:modify|edit|change|update|touch|write|create|build|implement|inspect|analy[sz]e)\b/gi, "")
+    .replace(/\bno\s+(?:code\s+)?(?:changes?|edits?)\b/gi, "");
+
+  const themeMutationIntent =
+    /\b(?:implement|build|create|write|edit|modify|change|update|fix|redesign|recreate|replicate|apply|generate|add|remove|delete|replace|move|adjust|code)\b/i.test(actionableText);
+
+  return !themeMutationIntent;
+}
+
+async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
+  try {
+    const inspection = await readLocalFigInspectionContext(prompt);
+    const frameInventory = inspection.topLevelFrames.length > 0
+      ? inspection.topLevelFrames
+      : inspection.topLevelChildren;
+
+    const frameInventoryText = frameInventory.length > 0
+      ? frameInventory.map((frame) =>
+          "- " + frame.name +
+          " | type=" + frame.type +
+          " | nodeId=" + frame.id +
+          " | dimensions=" + (frame.width === null ? "unknown" : frame.width) +
+          " x " + (frame.height === null ? "unknown" : frame.height) +
+          " | direct children=" + frame.childCount
+        ).join("\n")
+      : "No direct children were returned for the selected page.";
+
+    const modelPrompt = [
+      "READ-ONLY FIGMA DOCUMENT INSPECTION.",
+      "You are a Figma document analyst. Analyze only the native .fig node data included below.",
+      "Do not inspect or discuss Shopify theme source files.",
+      "Do not invoke Shopify skills, Shopify Dev MCP, theme discovery, Liquid, CSS, or JavaScript workflows.",
+      "Do not propose or apply code changes.",
+      "Treat node IDs, names, dimensions, and parent-child relationships in the parser output as authoritative.",
+      "Identify the most likely storefront homepage frame only when its name, text, hierarchy, and content provide evidence.",
+      "For every frame you identify, quote its exact node ID and dimensions from the supplied data.",
+      "If the Design page does not contain enough evidence to identify a storefront homepage, say so instead of guessing.",
+      "Return: (1) every direct top-level frame under the selected page, (2) each frame's major child-section hierarchy, (3) likely homepage candidate and evidence, (4) any uncertainty or truncation.",
+      "",
+      "USER REQUEST:",
+      prompt,
+      "",
+      "LOCAL PARSER METADATA:",
+      JSON.stringify({
+        fileName: inspection.fileName,
+        filePath: inspection.filePath,
+        formatVersion: inspection.formatVersion,
+        nodeCount: inspection.nodeCount,
+        pageCount: inspection.pageCount,
+        pages: inspection.pages,
+        selectedPage: inspection.selectedPage,
+        treeTruncated: inspection.treeTruncated,
+      }, null, 2),
+      "",
+      "EXACT TOP-LEVEL FRAME INVENTORY FROM THE PARSER:",
+      frameInventoryText,
+      "",
+      "NATIVE FIGMA NODE HIERARCHY (selected page only):",
+      inspection.designPageTree,
+    ].join("\n");
+
+    console.info("HORIZON READ-ONLY LOCAL FIGMA INSPECTION", {
+      fileName: inspection.fileName,
+      selectedPage: inspection.selectedPage.name,
+      selectedPageId: inspection.selectedPage.id,
+      pageCount: inspection.pageCount,
+      nodeCount: inspection.nodeCount,
+      directChildCount: inspection.topLevelChildren.length,
+      topLevelFrameCount: inspection.topLevelFrames.length,
+      treeTruncated: inspection.treeTruncated,
+      shopifySourceDiscovery: false,
+      themeMutation: false,
+    });
+
+    const response = await generateContentWithRetry({
+      model: MODEL,
+      contents: [{ role: "user", parts: [{ text: modelPrompt }] }],
+      config: {
+        systemInstruction: [
+          "You are Horizon's read-only Figma inspector.",
+          "Use only the local parser data supplied in this request.",
+          "Never claim you inspected Shopify files or modified code.",
+          "Do not invent node IDs, dimensions, page names, or missing design details.",
+          "Separate parser-confirmed facts from your interpretation.",
+        ].join("\n"),
+        temperature: 0.15,
+        maxOutputTokens: 5000,
+      },
+    });
+
+    const analysis = response?.text?.trim() || "Gemini did not return a design interpretation.";
+    const inventoryLines = inspection.topLevelFrames.length > 0
+      ? inspection.topLevelFrames.map((frame) =>
+          "- **" + frame.name + "** — node " + frame.id + " · " +
+          (frame.width === null ? "unknown" : frame.width) + " × " +
+          (frame.height === null ? "unknown" : frame.height) +
+          " · " + frame.childCount + " direct children"
+        )
+      : inspection.topLevelChildren.map((child) =>
+          "- **" + child.name + "** (" + child.type + ") — node " + child.id + " · " +
+          (child.width === null ? "unknown" : child.width) + " × " +
+          (child.height === null ? "unknown" : child.height) +
+          " · " + child.childCount + " direct children"
+        );
+
+    const message = [
+      "### Read-only local Figma inspection",
+      "",
+      "File: " + inspection.filePath,
+      "Pages: " + inspection.pageNames.join(", "),
+      "Parsed nodes: " + inspection.nodeCount,
+      "Selected page: " + inspection.selectedPage.name + " · node " + inspection.selectedPage.id,
+      "Direct page children: " + inspection.topLevelChildren.length,
+      "Direct top-level frames: " + inspection.topLevelFrames.length,
+      "",
+      "### Exact top-level frame inventory",
+      "",
+      ...(inventoryLines.length > 0 ? inventoryLines : ["No direct frame-like children were found."]),
+      "",
+      "### Figma structure analysis",
+      "",
+      analysis,
+      "",
+      ...(inspection.treeTruncated
+        ? ["Hierarchy note: the selected page hierarchy was truncated at the parser context limit. The top-level frame inventory above is complete."]
+        : []),
+      "",
+      "Scope: this request used the local .fig parser only. Shopify theme files and Shopify Toolkit were not loaded, and no code was changed.",
+    ].join("\n");
+
+    return NextResponse.json({
+      success: true,
+      mode: "figma-inspection",
+      specialist: "figma-design-inspector",
+      message,
+      figmaInspection: {
+        fileName: inspection.fileName,
+        filePath: inspection.filePath,
+        formatVersion: inspection.formatVersion,
+        nodeCount: inspection.nodeCount,
+        pageCount: inspection.pageCount,
+        pages: inspection.pages,
+        selectedPage: inspection.selectedPage,
+        topLevelChildren: inspection.topLevelChildren,
+        topLevelFrames: inspection.topLevelFrames,
+        treeTruncated: inspection.treeTruncated,
+      },
+      filesAnalyzed: [],
+      filesChanged: [],
+      themeEdit: { applied: false, files: [] },
+    });
+  } catch (error) {
+    const status = error instanceof LocalFigDesignError
+      ? error.status
+      : 502;
+    const message = error instanceof Error
+      ? error.message
+      : "The local Figma inspection failed.";
+    console.error("HORIZON LOCAL FIGMA INSPECTION FAILED:", error);
+    return NextResponse.json({
+      success: false,
+      mode: "figma-inspection",
+      error: message,
+      message,
+      filesAnalyzed: [],
+      filesChanged: [],
+      themeEdit: { applied: false, files: [] },
+    }, { status });
+  }
+}
+
+// --------------------------------------------------
 // MAIN POST API
 // --------------------------------------------------
 
@@ -13996,6 +14183,12 @@ export async function POST(request: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    // Read-only .fig requests must exit before Shopify source search, Specialist
+    // selection, Toolkit loading, or the theme-edit engine.
+    if (isLocalFigInspectionRequest(prompt)) {
+      return await handleLocalFigInspection(prompt);
     }
 
     // Explicit storefront changes use the local theme editor. When the repository
