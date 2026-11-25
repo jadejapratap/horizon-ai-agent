@@ -463,7 +463,7 @@ export async function readLocalFigDesignContext(
   };
 }
 
-export async function getLocalFigDesignStatus(): Promise<Omit<LocalFigDesignContext, "tree" | "images"> & {
+export async function getLocalFigDesignStatus(): Promise<Omit<LocalFigDesignContext, "tree" | "homepageTree" | "images"> & {
   images: Array<Omit<LocalFigImageAsset, "data">>;
 }> {
   const context = await readLocalFigDesignContext("", { includeImageData: false });
