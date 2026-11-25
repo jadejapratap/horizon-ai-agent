@@ -13974,10 +13974,13 @@ function isLocalFigInspectionRequest(prompt: string): boolean {
   const actionableText = prompt
     .replace(/\b(?:do not|don't|never)\b[^.!?\n]*[.!?]?/gi, " ")
     .replace(/\bwithout\s+(?:modifying|editing|changing|updating|writing|creating|building|implementing)\b[^.!?\n]*[.!?]?/gi, " ")
-    .replace(/\bno\s+(?:code\s+)?(?:changes?|edits?)\b/gi, " ");
+    .replace(/\bno\s+(?:code\s+)?(?:changes?|edits?|modifications?)\b/gi, " ")
+    .replace(/\bwithout\s+any\s+(?:code\s+)?(?:changes?|edits?|modifications?)\b/gi, " ");
 
+  // A noun such as "code" is not an edit action. Only a positive mutation
+  // verb should move the request into the Shopify theme-edit pipeline.
   const themeMutationIntent =
-    /\b(?:implement|build|create|write|edit|modify|change|update|fix|redesign|recreate|replicate|apply|generate|add|remove|delete|replace|move|adjust|code)\b/i.test(actionableText);
+    /\b(?:implement|build|create|write|edit|modify|change|update|fix|redesign|recreate|replicate|apply|generate|add|remove|delete|replace|move|adjust)\b/i.test(actionableText);
 
   return !themeMutationIntent;
 }
