@@ -14075,19 +14075,12 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
     });
 
     const analysis = response?.text?.trim() || "Gemini did not return a design interpretation.";
-    const inventoryLines = inspection.topLevelFrames.length > 0
-      ? inspection.topLevelFrames.map((frame) =>
-          "- **" + frame.name + "** — node " + frame.id + " · " +
-          (frame.width === null ? "unknown" : frame.width) + " × " +
-          (frame.height === null ? "unknown" : frame.height) +
-          " · " + frame.childCount + " direct children"
-        )
-      : inspection.topLevelChildren.map((child) =>
-          "- **" + child.name + "** (" + child.type + ") — node " + child.id + " · " +
-          (child.width === null ? "unknown" : child.width) + " × " +
-          (child.height === null ? "unknown" : child.height) +
-          " · " + child.childCount + " direct children"
-        );
+    const inventoryLines = frameInventory.map((node) =>
+      "- **" + node.name + "** (" + node.type + ") — node " + node.id + " · " +
+      (node.width === null ? "unknown" : node.width) + " × " +
+      (node.height === null ? "unknown" : node.height) +
+      " · " + node.childCount + " direct children"
+    );
 
     const message = [
       "### Read-only local Figma inspection",
@@ -14106,7 +14099,9 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       "Direct page children: " + inspection.topLevelChildren.length,
       "Direct top-level frames: " + inspection.topLevelFrames.length,
       "",
-      "### Exact top-level frame inventory",
+      inspection.focusedNode
+        ? "### Exact immediate-child inventory for the focused node"
+        : "### Exact top-level frame inventory",
       "",
       ...(inventoryLines.length > 0 ? inventoryLines : ["No direct frame-like children were found."]),
       "",
@@ -14115,7 +14110,9 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       analysis,
       "",
       ...(inspection.treeTruncated
-        ? ["Hierarchy note: the selected page hierarchy was truncated at the parser context limit. The top-level frame inventory above is complete."]
+        ? [inspection.focusedNode
+            ? "Hierarchy note: the focused subtree was truncated at the parser context limit. The exact immediate-child inventory above is complete."
+            : "Hierarchy note: the selected page hierarchy was truncated at the parser context limit. The top-level frame inventory above is complete."]
         : []),
       "",
       "Scope: this request used the local .fig parser only. Shopify theme files and Shopify Toolkit were not loaded, and no code was changed.",
