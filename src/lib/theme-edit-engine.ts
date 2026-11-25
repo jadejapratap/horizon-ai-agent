@@ -911,8 +911,12 @@ export function isThemeEditRequest(prompt: string): boolean {
     "i"
   ).test(value);
   const gujaratiAction = /(?:ઉમેરો|ઉમેર|બદલો|દૂર કરો|દેખાડો|છુપાવો|બનાવો)/.test(value);
+  const shortFigmaHomepageBuild =
+    /\b(?:figma|design\.fig|\.fig\s*file)\b/i.test(value) &&
+    /\b(?:homepage|home\s*page|storefront home|landing page)\b/i.test(value) &&
+    /\b(?:banav|banavo|banavjo|banavi|banao|bana|build|create|implement|make|recreate|replicate)\b/i.test(value);
 
-  return directRequest || actionAfterFeature || gujaratiAction;
+  return directRequest || actionAfterFeature || gujaratiAction || shortFigmaHomepageBuild;
 }
 
 export async function executeThemeEditRequest(
