@@ -123,7 +123,7 @@ function serializableValue(value: any, depth = 0, seen = new WeakSet<object>()):
 
 function nodeProperties(node: any): Record<string, any> {
   const output: Record<string, any> = {};
-  const relevantKey = /(?:size|transform|paint|fill|stroke|effect|opacity|visible|corner|text|font|line|letter|align|layout|axis|spacing|padding|clip|constraint|component|shape|radius|character|style|blend|rotation|position|bound|grid|overflow|mask|image|gradient|scale|width|height|weight|decoration)/i;
+  const relevantKey = /(?:size|transform|paint|fill|stroke|effect|opacity|visible|corner|text|font|line|letter|align|layout|axis|spacing|padding|clip|constraint|component|shape|radius|character|style|blend|rotation|position|bound|grid|overflow|mask|image|gradient|scale|width|height|weight|decoration|stack|sizing|distribution|justify|wrap|flex|shadow|blur)/i;
 
   for (const [key, value] of Object.entries(node)) {
     if (key === "guid" || key === "parentIndex" || key === "phase" || key === "type" || key === "name") continue;
