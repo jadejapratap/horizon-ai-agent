@@ -321,7 +321,7 @@ async function discoverSourceContext(
     }
   }
 
-  const requiredFileLimit = 36;
+  const requiredFileLimit = 50;
   if (requiredHomepageFiles.size > requiredFileLimit) {
     throw new ThemeEditEngineError(
       "The homepage depends on " + requiredHomepageFiles.size + " existing theme files, exceeding the current safe source-context limit of " +
@@ -376,7 +376,7 @@ async function discoverSourceContext(
 
   const selected: SourceFile[] = [];
   let usedChars = 0;
-  const maxSelectedFiles = 36;
+  const maxSelectedFiles = 50;
   for (const candidate of loaded) {
     if (selected.length >= maxSelectedFiles || usedChars >= MAX_SOURCE_CONTEXT_CHARS) break;
     const budget = Math.min(MAX_SOURCE_FILE_CHARS, MAX_SOURCE_CONTEXT_CHARS - usedChars);
