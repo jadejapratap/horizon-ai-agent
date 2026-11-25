@@ -13985,9 +13985,11 @@ function isLocalFigInspectionRequest(prompt: string): boolean {
 async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
   try {
     const inspection = await readLocalFigInspectionContext(prompt);
-    const frameInventory = inspection.topLevelFrames.length > 0
-      ? inspection.topLevelFrames
-      : inspection.topLevelChildren;
+    const frameInventory = inspection.focusedNode
+      ? inspection.focusedChildren
+      : inspection.topLevelFrames.length > 0
+        ? inspection.topLevelFrames
+        : inspection.topLevelChildren;
 
     const frameInventoryText = frameInventory.length > 0
       ? frameInventory.map((frame) =>
@@ -14011,7 +14013,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       "For every frame you identify, quote its exact node ID and dimensions from the supplied data.",
       "If the Design page does not contain enough evidence to identify a storefront homepage, say so instead of guessing.",
       "Return: (1) every direct top-level frame under the selected page, (2) the requested frame subtree when a focusedNode is supplied, (3) likely homepage candidate and evidence only when supported, (4) any uncertainty or truncation.",
-      "FOCUSED NODE RULE: when LOCAL PARSER METADATA includes focusedNode, the native hierarchy below is the inspection target for that exact node. Enumerate all descendant section/frame names, node IDs, dimensions, and child counts present in that subtree. Do not claim details about descendants outside the supplied subtree.",
+      "FOCUSED NODE RULE: when LOCAL PARSER METADATA includes focusedNode, first report every entry in focusedChildren exactly as supplied (name, type, node ID, width, height, child count). Then analyze the focused subtree below. If the subtree is truncated, do not omit or guess sibling names: the focusedChildren inventory is authoritative and complete for the immediate children.",
       "",
       "USER REQUEST:",
       prompt,
@@ -14026,10 +14028,13 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         pages: inspection.pages,
         selectedPage: inspection.selectedPage,
         focusedNode: inspection.focusedNode,
+        focusedChildren: inspection.focusedChildren,
         treeTruncated: inspection.treeTruncated,
       }, null, 2),
       "",
-      "EXACT TOP-LEVEL FRAME INVENTORY FROM THE PARSER:",
+      inspection.focusedNode
+        ? "EXACT IMMEDIATE CHILD INVENTORY OF THE FOCUSED FIGMA NODE:"
+        : "EXACT TOP-LEVEL FRAME INVENTORY FROM THE PARSER:",
       frameInventoryText,
       "",
       inspection.focusedNode
@@ -14095,6 +14100,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         ? [
             "Focused node: " + inspection.focusedNode.name + " · node " + inspection.focusedNode.id,
             "Parent path: " + inspection.focusedNode.parentPath.join(" / "),
+            "Focused node direct children: " + inspection.focusedChildren.length,
           ]
         : []),
       "Direct page children: " + inspection.topLevelChildren.length,
@@ -14129,6 +14135,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         pages: inspection.pages,
         selectedPage: inspection.selectedPage,
         focusedNode: inspection.focusedNode,
+        focusedChildren: inspection.focusedChildren,
         topLevelChildren: inspection.topLevelChildren,
         topLevelFrames: inspection.topLevelFrames,
         treeTruncated: inspection.treeTruncated,
