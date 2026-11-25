@@ -190,15 +190,13 @@ The following remain separate implementation phases and must not be assumed to w
 
 Do not put merchant access tokens into MCP process variables. Admin API access must be built separately using Shopify OAuth and the exact scopes required for each supported operation. Refunds, cancellations, deletions, sensitive settings, and publishing require explicit approval.
 
-## Dashboard Figma workspace
+## Local Figma .fig design reader
 
-The dashboard's right-hand workspace embeds Figma files using Figma Embed Kit 2.0. Paste a Figma share URL and select **Load Figma**. The browser preview supports Design, Prototype, FigJam, Slides, and Deck links. Design links are also checked against the Figma REST API so the dashboard distinguishes a visible iframe preview from a design that the Agent can actually read.
+Place the original Figma desktop export at `figma/design.fig`. Horizon reads the binary file on the local Node.js server through `openfig-core`; it does not call Figma's REST API, use an access token, or use screenshot-based design context. During the filename transition, if `design.fig` is not present and exactly one `.fig` file exists in `figma/`, that single file is read automatically. If multiple files exist, rename the intended source to `design.fig` so selection remains deterministic.
 
-For Agent design-to-code, set `FIGMA_ACCESS_TOKEN` in the local `.env.local` file. Create a Figma personal access token under **Figma account Settings → Security → Personal access tokens** and grant the read-only `file_content:read` scope. The token is used only on the server and is never sent to the browser or included in Gemini prompts. Keep the token private and restart the Next.js server after adding it. The API connection check reports a missing token separately and gives actionable messages for invalid tokens, insufficient scope, or inaccessible files.
+The parser extracts the native document version, pages, frames, node IDs, hierarchy, text, dimensions, transforms, layout settings, fills, strokes, effects, typography metadata, and original embedded image assets. The dashboard's Local Figma .fig panel reports the parser result and page/frame index. Extracted binary image assets are cached under `.horizon-cache/figma-assets/`; the cache is ignored by Git. The agent receives the structured node tree plus original embedded images (subject to a bounded inline-image budget), not a rendered screenshot.
 
-When a design edit is requested, Horizon sends the active Figma Design URL to the server. The server reads the file's layer hierarchy and exports the selected homepage frame screenshot through the Figma REST API; both are provided to the theme-edit planner as design reference. If the URL has no `node-id`, the Agent selects the most likely homepage-sized frame by its name and dimensions. For the most reliable target, select the actual homepage frame in Figma and copy its link before loading it in Horizon.
-
-This uses the Figma REST API's [personal access token authentication](https://developers.figma.com/docs/rest-api/personal-access-tokens/) and [file/image endpoints](https://developers.figma.com/docs/rest-api/file-endpoints/). The authenticated account must be able to view the file, and the token must include `file_content:read`. The embed viewer can still work when the Agent API connection is not configured, but in that case the Agent will not claim to have read the design or silently guess at the visual target.
+The reader is based on the third-party, MIT-licensed `openfig-core` parser. Figma's `.fig` format is proprietary and may change, so the parser reports errors rather than silently treating an unreadable file as valid design input. Keep an untouched copy of the original export.
 
 ## Dashboard Shopify theme preview
 

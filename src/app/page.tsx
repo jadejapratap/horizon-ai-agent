@@ -13,7 +13,6 @@ import {
   Sparkles,
   User,
   RefreshCw,
-  ExternalLink,
 } from "lucide-react";
 
 type ShopifyToolkitStatus = {
@@ -39,181 +38,65 @@ type ThemeEditMessage = {
   previewNote?: string;
 };
 
+type LocalFigDesignInfo = {
+  fileName: string;
+  filePath: string;
+  formatVersion: number | null;
+  nodeCount: number;
+  pageCount: number;
+  pageNames: string[];
+  frameCount: number;
+  imageCount: number;
+  frames: Array<{ id: string; name: string; page: string; width: number | null; height: number | null }>;
+  images: Array<{ name: string; mimeType: string; bytes: number; sha256: string }>;
+};
+
+type LocalFigDesignStatus = {
+  available: boolean;
+  design?: LocalFigDesignInfo;
+  error?: string;
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
   shopifyToolkit?: ShopifyToolkitStatus;
   themeEdit?: ThemeEditMessage;
-  figmaDesign?: { fileName: string; nodeName: string; nodeId: string } | null;
+  localFigDesign?: { fileName: string; pageNames: string[]; nodeCount: number; frameCount: number; imageCount: number } | null;
 };
-
-type FigmaAgentStatus = "idle" | "checking" | "configured" | "connected" | "error";
 
 const STORAGE_KEY = "horizon-ai-chat-history";
-const FIGMA_STORAGE_KEY = "horizon-ai-figma-url";
-
-type FigmaFileType = "design" | "proto" | "board" | "slides" | "deck";
-
-type FigmaEmbedTarget = {
-  originalUrl: string;
-  embedUrl: string;
-  fileType: FigmaFileType;
-  fileKey: string;
-};
-
-function createFigmaEmbedTarget(value: string, mode: "design" | "dev"): FigmaEmbedTarget {
-  let parsed: URL;
-  try {
-    parsed = new URL(value.trim());
-  } catch {
-    throw new Error("Paste a valid Figma design, prototype, FigJam, or Slides URL.");
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-  const isFigmaHost = hostname === "figma.com" || hostname.endsWith(".figma.com");
-  if (
-    parsed.protocol !== "https:" ||
-    !isFigmaHost ||
-    parsed.username ||
-    parsed.password ||
-    parsed.port
-  ) {
-    throw new Error("Use a secure https://www.figma.com share URL.");
-  }
-
-  const match = parsed.pathname.match(/^\/(design|file|proto|board|slides|deck)\/([a-z0-9]{22,128})(?:\/.*)?$/i);
-  if (!match) {
-    throw new Error("Supported links: Figma Design, Prototype, FigJam board, Slides, or Deck share URLs.");
-  }
-
-  const requestedType = match[1].toLowerCase();
-  const fileType = (requestedType === "file" ? "design" : requestedType) as FigmaFileType;
-  const fileKey = match[2];
-  const remainder = parsed.pathname.split("/").slice(3).filter(Boolean).join("/");
-  const embedUrl = new URL(
-    "https://embed.figma.com/" + fileType + "/" + fileKey + (remainder ? "/" + remainder : "")
-  );
-
-  parsed.searchParams.forEach((parameterValue, key) => {
-    if (key !== "embed_host" && key !== "embed_origin" && key !== "url" && key !== "m" && key !== "mode") {
-      embedUrl.searchParams.set(key, parameterValue);
-    }
-  });
-
-  if (fileType === "design" && mode === "dev") {
-    embedUrl.searchParams.set("mode", "dev");
-  }
-
-  embedUrl.searchParams.set("embed-host", "horizon-ai");
-  embedUrl.searchParams.set("theme", "dark");
-  embedUrl.searchParams.set("footer", "false");
-
-  const originalUrl = parsed.origin + parsed.pathname + parsed.search;
-  return {
-    originalUrl,
-    embedUrl: embedUrl.toString(),
-    fileType,
-    fileKey,
-  };
-}
 
 export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const [figmaInput, setFigmaInput] = useState("");
-  const [figmaOriginalUrl, setFigmaOriginalUrl] = useState("");
-  const [figmaEmbedUrl, setFigmaEmbedUrl] = useState("");
-  const [figmaFileType, setFigmaFileType] = useState<FigmaFileType | "">("");
-  const [figmaFileKey, setFigmaFileKey] = useState("");
-  const [figmaMode, setFigmaMode] = useState<"design" | "dev">("design");
-  const [figmaRevision, setFigmaRevision] = useState(0);
-  const [figmaError, setFigmaError] = useState("");
-  const [figmaAgentStatus, setFigmaAgentStatus] = useState<FigmaAgentStatus>("idle");
-  const [figmaAgentMessage, setFigmaAgentMessage] = useState("");
-  const [figmaAgentFileName, setFigmaAgentFileName] = useState("");
+  const [localFigStatus, setLocalFigStatus] = useState<LocalFigDesignStatus | null>(null);
+  const [localFigLoading, setLocalFigLoading] = useState(false);
 
-  async function checkFigmaAgentConnection(url: string) {
-    setFigmaAgentStatus("checking");
-    setFigmaAgentMessage("Checking Figma token configuration and local design cache...");
-    setFigmaAgentFileName("");
-
+  async function refreshLocalFigStatus() {
+    setLocalFigLoading(true);
     try {
-      const response = await fetch("/api/figma/connection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
-      });
+      const response = await fetch("/api/figma/local", { cache: "no-store" });
       const data = await response.json();
-
       if (!response.ok || !data.success) {
-        throw new Error(data.error || "Figma Agent connection failed.");
+        setLocalFigStatus({ available: false, error: data.error || "The local .fig file could not be read." });
+        return;
       }
-
-      setFigmaAgentStatus(data.cached ? "connected" : "configured");
-      setFigmaAgentMessage(
-        data.cached
-          ? "A saved Figma design context is cached locally; no Figma API request was needed."
-          : "Token is configured. File access will be checked once when the Agent first reads this design."
-      );
-      setFigmaAgentFileName(data.fileName || "");
+      setLocalFigStatus({ available: true, design: data.design });
     } catch (error) {
-      setFigmaAgentStatus("error");
-      setFigmaAgentMessage(error instanceof Error ? error.message : "Figma Agent connection failed.");
-    }
-  }
-
-  function loadFigmaDesign(mode: "design" | "dev" = figmaMode) {
-    const value = figmaInput.trim();
-    if (!value) {
-      setFigmaError("Paste your Figma share URL first.");
-      return;
-    }
-
-    try {
-      const target = createFigmaEmbedTarget(value, mode);
-      setFigmaOriginalUrl(target.originalUrl);
-      setFigmaEmbedUrl(target.embedUrl);
-      setFigmaFileType(target.fileType);
-      setFigmaFileKey(target.fileKey);
-      setFigmaMode(mode);
-      setFigmaError("");
-      setFigmaRevision((revision) => revision + 1);
-      localStorage.setItem(FIGMA_STORAGE_KEY, target.originalUrl);
-      if (target.fileType === "design") {
-        void checkFigmaAgentConnection(target.originalUrl);
-      } else {
-        setFigmaAgentStatus("error");
-        setFigmaAgentMessage("Horizon AI Agent reads Figma Design files only. The embed preview can still show this file type.");
-      }
-    } catch (error) {
-      setFigmaError(error instanceof Error ? error.message : "Unable to load this Figma link.");
+      setLocalFigStatus({
+        available: false,
+        error: error instanceof Error ? error.message : "Could not check the local .fig file.",
+      });
+    } finally {
+      setLocalFigLoading(false);
     }
   }
 
   useEffect(() => {
-    try {
-      const savedFigmaUrl = localStorage.getItem(FIGMA_STORAGE_KEY);
-      if (savedFigmaUrl) {
-        const savedMode = /[?&](?:m|mode)=dev(?:&|$)/.test(savedFigmaUrl) ? "dev" : "design";
-        const target = createFigmaEmbedTarget(savedFigmaUrl, savedMode);
-        setFigmaInput(savedFigmaUrl);
-        setFigmaOriginalUrl(target.originalUrl);
-        setFigmaEmbedUrl(target.embedUrl);
-        setFigmaFileType(target.fileType);
-        setFigmaFileKey(target.fileKey);
-        setFigmaMode(savedMode);
-        if (target.fileType === "design") {
-          void checkFigmaAgentConnection(target.originalUrl);
-        } else {
-          setFigmaAgentStatus("error");
-          setFigmaAgentMessage("Horizon AI Agent reads Figma Design files only.");
-        }
-      }
-    } catch (error) {
-      console.warn("Could not restore the saved Figma design:", error);
-    }
+    void refreshLocalFigStatus();
   }, []);
 
   // Load chat history
@@ -272,7 +155,6 @@ export default function Home() {
         body: JSON.stringify({
           prompt: userMessage.content,
           history: messages,
-          figmaUrl: figmaFileType === "design" ? figmaOriginalUrl : "",
         }),
       });
 
@@ -287,10 +169,8 @@ export default function Home() {
         );
       }
 
-      if (data.figmaDesign) {
-        setFigmaAgentStatus("connected");
-        setFigmaAgentMessage("Figma design was read successfully and cached on this computer.");
-        setFigmaAgentFileName(data.figmaDesign.fileName || "");
+      if (data.localFigDesign) {
+        void refreshLocalFigStatus();
       }
 
       setMessages([
@@ -300,7 +180,7 @@ export default function Home() {
           content: data.message || "No response received.",
           shopifyToolkit: data.shopifyToolkit,
           themeEdit: data.themeEdit,
-          figmaDesign: data.figmaDesign ?? null,
+          localFigDesign: data.localFigDesign ?? null,
         },
       ]);
 
@@ -370,7 +250,7 @@ export default function Home() {
             className="flex w-full items-center gap-3 text-left hover:text-white"
           >
             <Code2 />
-            Figma Designs
+            Local .fig Design
           </button>
 
           <div className="flex gap-3">
@@ -495,9 +375,9 @@ export default function Home() {
                     {message.content}
                   </p>
 
-                  {message.figmaDesign && (
+                  {message.localFigDesign && (
                     <div className="mt-3 rounded-lg border border-violet-400/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-200">
-                      Figma reference used: {message.figmaDesign.fileName} · {message.figmaDesign.nodeName} · node {message.figmaDesign.nodeId}
+                      Local .fig source used: {message.localFigDesign.fileName} · {message.localFigDesign.pageNames.join(", ")} · {message.localFigDesign.nodeCount} nodes · {message.localFigDesign.imageCount} embedded image assets
                     </div>
                   )}
 
@@ -604,140 +484,113 @@ export default function Home() {
 
           </div>
 
-          {/* FIGMA WORKSPACE */}
+          {/* LOCAL FIGMA .FIG READER */}
 
           <div id="figma-workspace" className="flex min-h-[620px] min-w-0 flex-col rounded-2xl border border-white/10 bg-[#141525] p-5">
-
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <Code2 size={19} className="text-violet-300" />
-                  <h3 className="font-semibold">Figma Designs</h3>
+                  <h3 className="font-semibold">Local Figma .fig</h3>
                 </div>
-                <p className="mt-1 truncate text-xs text-gray-400">
-                  {figmaEmbedUrl
-                    ? "Preview loaded · " + (figmaFileType === "proto" ? "Prototype" : figmaFileType === "board" ? "FigJam" : figmaFileType === "slides" || figmaFileType === "deck" ? "Slides" : "Design") + " · " + figmaFileKey
-                    : "No Figma design connected"}
+                <p className="mt-1 text-xs text-gray-400">
+                  Reads figma/design.fig directly from this repository. No Figma API or screenshot pipeline.
                 </p>
-                {figmaEmbedUrl && (
-                  <p className={"mt-1 break-words text-[11px] " + (figmaAgentStatus === "connected" ? "text-emerald-300" : figmaAgentStatus === "checking" ? "text-violet-300" : "text-amber-200")}>
-                    {figmaAgentStatus === "connected"
-                      ? "Agent API connected · cached " + (figmaAgentFileName || figmaAgentMessage)
-                      : figmaAgentStatus === "configured"
-                        ? "Agent token configured · " + (figmaAgentFileName || figmaAgentMessage)
-                        : figmaAgentStatus === "checking"
-                          ? figmaAgentMessage
-                          : figmaAgentStatus === "error"
-                            ? "Preview only · " + figmaAgentMessage
-                            : "Agent API connection not checked"}
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshLocalFigStatus()}
+                disabled={localFigLoading}
+                aria-label="Refresh local .fig status"
+                className="rounded-lg p-2 text-gray-300 transition-colors hover:bg-white/10 disabled:opacity-40"
+              >
+                <RefreshCw size={17} className={localFigLoading ? "animate-spin" : ""} />
+              </button>
+            </div>
+
+            {localFigStatus?.available && localFigStatus.design ? (
+              <div className="flex-1 rounded-xl border border-emerald-400/20 bg-[#0c0d18] p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-emerald-300">{localFigStatus.design.fileName}</p>
+                    <p className="mt-1 text-xs text-gray-400">{localFigStatus.design.filePath}</p>
+                  </div>
+                  <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-300">
+                    Original .fig parsed
+                  </span>
+                </div>
+
+                <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {[
+                    ["Pages", localFigStatus.design.pageCount],
+                    ["Nodes", localFigStatus.design.nodeCount],
+                    ["Frames", localFigStatus.design.frameCount],
+                    ["Image assets", localFigStatus.design.imageCount],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                      <p className="text-xl font-semibold text-white">{value}</p>
+                      <p className="mt-1 text-[11px] text-gray-400">{label}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-5">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Pages</p>
+                  <div className="flex flex-wrap gap-2">
+                    {localFigStatus.design.pageNames.map((name) => (
+                      <span key={name} className="rounded-full border border-violet-400/20 bg-violet-500/10 px-3 py-1.5 text-xs text-violet-200">
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-5 max-h-56 overflow-y-auto rounded-lg border border-white/10">
+                  <div className="border-b border-white/10 px-3 py-2 text-xs font-semibold text-gray-300">Frames and components</div>
+                  {localFigStatus.design.frames.length > 0 ? localFigStatus.design.frames.slice(0, 80).map((frame) => (
+                    <div key={frame.id} className="flex items-center justify-between gap-3 border-b border-white/5 px-3 py-2 last:border-0">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs text-white">{frame.name}</p>
+                        <p className="truncate text-[10px] text-gray-500">{frame.page} · {frame.id}</p>
+                      </div>
+                      <p className="shrink-0 text-[10px] text-gray-400">
+                        {frame.width ?? "?"} × {frame.height ?? "?"}
+                      </p>
+                    </div>
+                  )) : (
+                    <p className="px-3 py-4 text-xs text-gray-500">No frames were indexed in this file.</p>
+                  )}
+                </div>
+
+                <p className="mt-4 text-xs leading-5 text-gray-500">
+                  Horizon reads the native node tree, text, layout settings, fills, typography, vector metadata and original embedded image assets. It does not use a rendered screenshot as design input.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#0c0d18] p-7 text-center">
+                <Code2 size={46} className="mb-4 text-violet-400" />
+                <h3 className="font-semibold">Local design.fig not ready</h3>
+                <p className="mt-2 max-w-md text-sm leading-6 text-gray-400">
+                  Put your original Figma export in the repository at <code className="text-violet-300">figma/design.fig</code>, then refresh this panel.
+                </p>
+                {localFigStatus?.error && (
+                  <p role="alert" className="mt-4 max-w-lg rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs leading-5 text-amber-200">
+                    {localFigStatus.error}
                   </p>
                 )}
-              </div>
-
-              <div className="flex items-center gap-2 text-gray-300">
-                {figmaFileType === "design" && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => loadFigmaDesign("design")}
-                      aria-pressed={figmaMode === "design"}
-                      className={"rounded-lg px-3 py-2 text-xs transition-colors " + (figmaMode === "design" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10")}
-                    >
-                      Design
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => loadFigmaDesign("dev")}
-                      aria-pressed={figmaMode === "dev"}
-                      className={"rounded-lg px-3 py-2 text-xs transition-colors " + (figmaMode === "dev" ? "bg-violet-600/25 text-violet-300" : "hover:bg-white/10")}
-                    >
-                      Dev Mode
-                    </button>
-                  </>
+                {!localFigStatus && (
+                  <p className="mt-4 text-xs text-gray-500">{localFigLoading ? "Checking local .fig file…" : "Checking local file status…"}</p>
                 )}
                 <button
                   type="button"
-                  onClick={() => loadFigmaDesign()}
-                  disabled={!figmaOriginalUrl}
-                  aria-label="Refresh Figma embed"
-                  className="rounded-lg p-2 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30"
+                  onClick={() => void refreshLocalFigStatus()}
+                  disabled={localFigLoading}
+                  className="mt-5 rounded-lg bg-violet-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-40"
                 >
-                  <RefreshCw size={17} />
+                  Check .fig file
                 </button>
-                {figmaOriginalUrl && (
-                  <a
-                    href={figmaOriginalUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label="Open design in Figma"
-                    className="rounded-lg p-2 transition-colors hover:bg-white/10"
-                  >
-                    <ExternalLink size={17} />
-                  </a>
-                )}
-              </div>
-            </div>
-
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                loadFigmaDesign("design");
-              }}
-              className="mb-3 flex gap-2"
-            >
-              <input
-                type="url"
-                value={figmaInput}
-                onChange={(event) => setFigmaInput(event.target.value)}
-                placeholder="Paste Figma Design, Prototype, FigJam or Slides link"
-                aria-label="Figma share URL"
-                className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#0c0d18] px-3 py-2 text-xs text-white outline-none transition-colors focus:border-violet-500/60"
-              />
-              <button
-                type="submit"
-                className="shrink-0 rounded-lg bg-violet-600 px-3 py-2 text-xs font-medium transition-colors hover:bg-violet-500"
-              >
-                Load Figma
-              </button>
-            </form>
-
-            {figmaError && (
-              <p role="alert" className="mb-3 rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-2 text-xs text-red-200">
-                {figmaError}
-              </p>
-            )}
-
-            {figmaEmbedUrl ? (
-              <div className="min-h-[460px] flex-1 overflow-hidden rounded-xl border border-white/15 bg-[#0c0d18]">
-                <iframe
-                  key={figmaEmbedUrl + ":" + figmaRevision}
-                  src={figmaEmbedUrl}
-                  title={"Figma " + (figmaFileType || "design") + " workspace"}
-                  className="h-full min-h-[460px] w-full border-0 bg-[#0c0d18]"
-                  loading="lazy"
-                  referrerPolicy="strict-origin-when-cross-origin"
-                  allowFullScreen
-                />
-              </div>
-            ) : (
-              <div className="flex min-h-[460px] flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-[#0c0d18] p-7 text-center">
-                <Code2 size={46} className="mb-4 text-violet-400" />
-                <h3 className="font-semibold">Connect your Figma workspace</h3>
-                <p className="mt-2 max-w-md text-sm leading-6 text-gray-400">
-                  Paste a Figma share link to open a live design, interactive prototype, FigJam board, or Slides file here.
-                </p>
-                <div className="mt-5 flex flex-wrap justify-center gap-2 text-xs">
-                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">Figma Design</span>
-                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">Prototype</span>
-                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">FigJam</span>
-                  <span className="rounded-full border border-white/10 px-3 py-1.5 text-gray-300">Slides</span>
-                </div>
-                <p className="mt-5 max-w-md text-xs leading-5 text-gray-500">
-                  The file must be shared with your Figma account or have link access. Private organization files require you to be signed in with permission.
-                </p>
               </div>
             )}
-
           </div>
 
         </div>
