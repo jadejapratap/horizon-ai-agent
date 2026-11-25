@@ -12,8 +12,8 @@ const MAX_PROMPT_CHARS = 5000;
 const MAX_FILES_IN_PLAN = 12;
 const MAX_OPERATIONS_PER_FILE = 10;
 const MAX_FILE_CHARS = 140000;
-const MAX_SOURCE_CONTEXT_CHARS = 150000;
-const MAX_SOURCE_FILE_CHARS = 16000;
+const MAX_SOURCE_CONTEXT_CHARS = 240000;
+const MAX_SOURCE_FILE_CHARS = 14000;
 const ALLOWED_EXTENSIONS = new Set([".liquid", ".json", ".js", ".css"]);
 const STOP_WORDS = new Set(["the", "and", "jo", "joi", "ne", "banav", "banao", "for", "with", "want", "need", "please", "make", "show", "add", "create", "build", "implement", "change", "modify", "update", "remove", "delete", "replace", "style", "fix", "this", "that", "from", "into", "your", "our", "you", "can", "could", "would", "should", "have", "has", "are", "is", "to", "in", "on", "of", "it", "my", "me", "a", "an", "be", "by", "as", "at", "or", "if", "when", "only", "both", "all"]);
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
@@ -321,7 +321,7 @@ async function discoverSourceContext(
     }
   }
 
-  const requiredFileLimit = 18;
+  const requiredFileLimit = 36;
   if (requiredHomepageFiles.size > requiredFileLimit) {
     throw new ThemeEditEngineError(
       "The homepage depends on " + requiredHomepageFiles.size + " existing theme files, exceeding the current safe source-context limit of " +
@@ -376,7 +376,7 @@ async function discoverSourceContext(
 
   const selected: SourceFile[] = [];
   let usedChars = 0;
-  const maxSelectedFiles = 18;
+  const maxSelectedFiles = 36;
   for (const candidate of loaded) {
     if (selected.length >= maxSelectedFiles || usedChars >= MAX_SOURCE_CONTEXT_CHARS) break;
     const budget = Math.min(MAX_SOURCE_FILE_CHARS, MAX_SOURCE_CONTEXT_CHARS - usedChars);
