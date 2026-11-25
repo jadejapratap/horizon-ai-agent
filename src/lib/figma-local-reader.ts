@@ -385,6 +385,47 @@ export type LocalFigInspectionNodeSummary = {
   childCount: number;
 };
 
+export type LocalFigComponentTextSummary = {
+  id: string;
+  name: string;
+  overrideKey: string | null;
+  baseCharacters: string;
+  effectiveCharacters: string;
+  overrideApplied: boolean;
+  matchedOverridePath: string[] | null;
+  fontFamily: string | null;
+  fontStyle: string | null;
+  fontSize: number | null;
+  lineHeight: number | null;
+  fillPaints: any[];
+};
+
+export type LocalFigComponentResolution = {
+  status: "resolved" | "missing-master" | "external-library" | "no-reference";
+  instanceNodeId: string;
+  instanceName: string;
+  referenceField: string | null;
+  referenceId: string | null;
+  referenceCandidates: Array<{ field: string; id: string }>;
+  componentKey: string | null;
+  master: {
+    id: string;
+    name: string;
+    type: string;
+    width: number | null;
+    height: number | null;
+    parentPath: string[];
+    childCount: number;
+  } | null;
+  masterTextNodes: LocalFigComponentTextSummary[];
+  textOverrides: Array<{ path: string[]; characters: string | null }>;
+  componentProperties: Record<string, any> | null;
+  masterHierarchy: any | null;
+  masterHierarchyNodeCount: number;
+  masterHierarchyTruncated: boolean;
+  diagnostic: string;
+};
+
 export type LocalFigInspectionContext = {
   fileName: string;
   filePath: string;
@@ -416,6 +457,249 @@ function getLocalFigNodeSize(node: any): { width: number | null; height: number 
   return {
     width: Number.isFinite(width) ? width : null,
     height: Number.isFinite(height) ? height : null,
+  };
+}
+
+function getLocalFigGuidId(value: any): string | null {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return /^\d+:\d+$/.test(normalized) ? normalized : null;
+  }
+  if (!value || typeof value !== "object") return null;
+
+  const sessionID = Number(value.sessionID ?? value.sessionId);
+  const localID = Number(value.localID ?? value.localId);
+  if (Number.isFinite(sessionID) && Number.isFinite(localID)) {
+    return String(sessionID) + ":" + String(localID);
+  }
+
+  if (value.guid && value.guid !== value) return getLocalFigGuidId(value.guid);
+  if (value.id && value.id !== value) return getLocalFigGuidId(value.id);
+  return null;
+}
+
+function componentOverridePathMatches(nodePathKeys: string[], overridePath: string[]): boolean {
+  if (nodePathKeys.length === 0 || overridePath.length === 0) return false;
+  if (nodePathKeys[nodePathKeys.length - 1] !== overridePath[overridePath.length - 1]) return false;
+
+  let pathIndex = nodePathKeys.length - 2;
+  for (let overrideIndex = overridePath.length - 2; overrideIndex >= 0; overrideIndex -= 1) {
+    while (pathIndex >= 0 && nodePathKeys[pathIndex] !== overridePath[overrideIndex]) {
+      pathIndex -= 1;
+    }
+    if (pathIndex < 0) return false;
+    pathIndex -= 1;
+  }
+  return true;
+}
+
+function resolveLocalFigComponentReference(
+  doc: any,
+  instanceNode: any,
+  byId: Map<string, any>,
+  parentById: Map<string, string>,
+  childrenFor: (node: any) => any[]
+): LocalFigComponentResolution {
+  const instanceId = getNodeId(instanceNode) || "unknown";
+  const symbolData = instanceNode?.symbolData && typeof instanceNode.symbolData === "object"
+    ? instanceNode.symbolData
+    : {};
+  const rawOverrides = Array.isArray(symbolData.symbolOverrides)
+    ? symbolData.symbolOverrides
+    : Array.isArray(instanceNode?.symbolOverrides)
+      ? instanceNode.symbolOverrides
+      : [];
+  const componentKeyValue = symbolData.componentKey ?? instanceNode?.componentKey;
+  const componentKey = typeof componentKeyValue === "string" && componentKeyValue.trim()
+    ? componentKeyValue.trim()
+    : null;
+
+  const referenceCandidates: Array<{ field: string; id: string }> = [];
+  const candidateFields: Array<[string, any]> = [
+    ["symbolData.symbolID", symbolData.symbolID],
+    ["componentId", instanceNode?.componentId],
+    ["mainComponentId", instanceNode?.mainComponentId],
+    ["mainComponent", instanceNode?.mainComponent],
+    ["symbolID", instanceNode?.symbolID],
+  ];
+  for (const [field, value] of candidateFields) {
+    const id = getLocalFigGuidId(value);
+    if (id && !referenceCandidates.some((candidate) => candidate.id === id && candidate.field === field)) {
+      referenceCandidates.push({ field, id });
+    }
+  }
+
+  const matchedReference = referenceCandidates.find((candidate) => byId.has(candidate.id)) || referenceCandidates[0] || null;
+  const referenceId = matchedReference?.id ?? null;
+  const referenceField = matchedReference?.field ?? null;
+  const masterNode = referenceId
+    ? (doc?.nodeMap instanceof Map ? doc.nodeMap.get(referenceId) : undefined) || byId.get(referenceId) || null
+    : null;
+
+  const summarizeOverride = (override: any) => {
+    const path = Array.isArray(override?.guidPath?.guids)
+      ? override.guidPath.guids.map(getLocalFigGuidId).filter((id: string | null): id is string => Boolean(id))
+      : [];
+    const characters = typeof override?.textData?.characters === "string"
+      ? override.textData.characters
+      : null;
+    return { path, characters };
+  };
+  const overrideSummaries = rawOverrides
+    .map(summarizeOverride)
+    .filter((override: { path: string[]; characters: string | null }) => override.path.length > 0 || override.characters !== null);
+
+  let status: LocalFigComponentResolution["status"] = "no-reference";
+  let diagnostic = "The INSTANCE node contains no recognized local component reference or external component key.";
+  if (masterNode) {
+    status = "resolved";
+    diagnostic = "A native component reference resolved to an exact node ID in the parsed local .fig document.";
+  } else if (referenceId) {
+    status = "missing-master";
+    diagnostic = "The INSTANCE contains a local component reference, but no parsed node with that exact ID was found.";
+  } else if (componentKey) {
+    status = "external-library";
+    diagnostic = "The INSTANCE exposes a component key but no local master-node ID. The referenced library component is outside this .fig document.";
+  }
+
+  const parentPathFor = (nodeId: string): string[] => {
+    const ancestors: string[] = [];
+    let currentId = parentById.get(nodeId) || "";
+    let guard = 0;
+    while (currentId && guard < 100) {
+      const ancestor = byId.get(currentId);
+      if (!ancestor) break;
+      ancestors.unshift(String(ancestor.name || ancestor.type || "Unnamed node"));
+      currentId = parentById.get(currentId) || "";
+      guard += 1;
+    }
+    return ancestors;
+  };
+
+  const masterTextNodes: LocalFigComponentTextSummary[] = [];
+  let hierarchyNodeCount = 0;
+  let hierarchyTruncated = false;
+  const maxHierarchyNodes = 500;
+  const maxHierarchyDepth = 24;
+
+  const serializeMasterNode = (node: any, parentOverrideKeys: string[], depth: number): any => {
+    if (hierarchyNodeCount >= maxHierarchyNodes) {
+      hierarchyTruncated = true;
+      return { id: getNodeId(node) || "unknown", type: String(node.type || "UNKNOWN"), truncated: true };
+    }
+    hierarchyNodeCount += 1;
+
+    const id = getNodeId(node) || "unknown";
+    const type = String(node.type || "UNKNOWN");
+    const ownOverrideKey = getLocalFigGuidId(node.overrideKey);
+    const overridePathKeys = ownOverrideKey
+      ? [...parentOverrideKeys, ownOverrideKey]
+      : parentOverrideKeys;
+    const entry: Record<string, any> = {
+      id,
+      name: String(node.name || ""),
+      type,
+      width: getLocalFigNodeSize(node).width,
+      height: getLocalFigNodeSize(node).height,
+    };
+    if (ownOverrideKey) entry.overrideKey = ownOverrideKey;
+
+    if (/^TEXT$/i.test(type)) {
+      const baseCharacters = typeof node.textData?.characters === "string"
+        ? node.textData.characters
+        : typeof node.derivedTextData?.characters === "string"
+          ? node.derivedTextData.characters
+          : "";
+      const matchedOverrides = overrideSummaries.filter((override: { path: string[]; characters: string | null }) =>
+        override.characters !== null && componentOverridePathMatches(overridePathKeys, override.path)
+      );
+      const appliedOverride = matchedOverrides.length > 0 ? matchedOverrides[matchedOverrides.length - 1] : null;
+      const fontName = node.fontName && typeof node.fontName === "object" ? node.fontName : {};
+      const textSummary: LocalFigComponentTextSummary = {
+        id,
+        name: String(node.name || "Text"),
+        overrideKey: ownOverrideKey,
+        baseCharacters,
+        effectiveCharacters: appliedOverride?.characters ?? baseCharacters,
+        overrideApplied: Boolean(appliedOverride),
+        matchedOverridePath: appliedOverride?.path ?? null,
+        fontFamily: typeof fontName.family === "string" ? fontName.family : null,
+        fontStyle: typeof fontName.style === "string" ? fontName.style : null,
+        fontSize: Number.isFinite(Number(node.fontSize)) ? Number(node.fontSize) : null,
+        lineHeight: Number.isFinite(Number(node.lineHeight)) ? Number(node.lineHeight) : null,
+        fillPaints: Array.isArray(node.fillPaints) ? serializableValue(node.fillPaints) : [],
+      };
+      masterTextNodes.push(textSummary);
+      entry.text = {
+        baseCharacters: textSummary.baseCharacters,
+        effectiveCharacters: textSummary.effectiveCharacters,
+        overrideApplied: textSummary.overrideApplied,
+        fontFamily: textSummary.fontFamily,
+        fontStyle: textSummary.fontStyle,
+        fontSize: textSummary.fontSize,
+        lineHeight: textSummary.lineHeight,
+      };
+    }
+
+    const childNodes = childrenFor(node);
+    entry.childCount = childNodes.length;
+    if (childNodes.length > 0) {
+      if (depth >= maxHierarchyDepth || hierarchyNodeCount >= maxHierarchyNodes) {
+        hierarchyTruncated = true;
+        entry.childrenTruncated = childNodes.length;
+      } else {
+        entry.children = childNodes.map((child) => serializeMasterNode(child, overridePathKeys, depth + 1));
+      }
+    }
+    return entry;
+  };
+
+  let masterSummary: LocalFigComponentResolution["master"] = null;
+  let masterHierarchy: any = null;
+  if (masterNode) {
+    const masterId = getNodeId(masterNode) || referenceId || "unknown";
+    const masterSize = getLocalFigNodeSize(masterNode);
+    masterSummary = {
+      id: masterId,
+      name: String(masterNode.name || masterNode.type || "Unnamed component"),
+      type: String(masterNode.type || "UNKNOWN"),
+      width: masterSize.width,
+      height: masterSize.height,
+      parentPath: parentPathFor(masterId),
+      childCount: childrenFor(masterNode).length,
+    };
+    masterHierarchy = serializeMasterNode(masterNode, [], 0);
+    if (!/^(?:COMPONENT|COMPONENT_SET|SYMBOL|SYMBOL_MASTER)$/i.test(masterSummary.type)) {
+      diagnostic += " The referenced node exists, but its type is " + masterSummary.type + " rather than a recognized component-master type.";
+    }
+  }
+
+  const componentProperties = symbolData.componentProperties ?? instanceNode?.componentProperties ?? null;
+  const componentPropertySummary = componentProperties && typeof componentProperties === "object"
+    ? Object.fromEntries(Object.entries(componentProperties).slice(0, 50).map(([key, value]) => [
+        key,
+        typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null
+          ? value
+          : serializableValue(value),
+      ]))
+    : null;
+
+  return {
+    status,
+    instanceNodeId: instanceId,
+    instanceName: String(instanceNode.name || "Instance"),
+    referenceField,
+    referenceId,
+    referenceCandidates,
+    componentKey,
+    master: masterSummary,
+    masterTextNodes,
+    textOverrides: overrideSummaries,
+    componentProperties: componentPropertySummary,
+    masterHierarchy,
+    masterHierarchyNodeCount: hierarchyNodeCount,
+    masterHierarchyTruncated: hierarchyTruncated,
+    diagnostic,
   };
 }
 
@@ -576,6 +860,10 @@ export async function readLocalFigInspectionContext(
       }
     : null;
 
+  const focusedComponentResolution = requestedNode && /^INSTANCE$/i.test(String(requestedNode.type || ""))
+    ? resolveLocalFigComponentReference(doc, requestedNode, byId, parentById, childrenFor)
+    : null;
+
   // Keep the focused node's immediate child inventory separate from its
   // potentially large serialized subtree. These exact names/IDs/dimensions
   // remain available even when the deeper hierarchy hits the model context cap.
@@ -666,6 +954,7 @@ export async function readLocalFigInspectionContext(
     },
     focusedNode,
     focusedChildren,
+    focusedComponentResolution,
     topLevelChildren,
     topLevelFrames,
     designPageTree,
