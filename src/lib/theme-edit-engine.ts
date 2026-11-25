@@ -240,6 +240,9 @@ async function discoverSourceContext(
     }
   };
 
+  const homepageSectionFiles = new Set<string>();
+  const homepageDependencyFiles = new Map<string, number>();
+
   const addSectionFilesFromConfig = (relativePath: string, source: string): void => {
     try {
       const jsonSource = source.replace(/^\uFEFF?\s*\/\*[\s\S]*?\*\/\s*/, "").trim();
@@ -250,7 +253,10 @@ async function discoverSourceContext(
         const type = typeof section?.type === "string" ? section.type.trim() : "";
         if (!type || !/^[a-z0-9_-]+$/i.test(type)) continue;
         const sectionPath = "sections/" + type + ".liquid";
-        if (manifest.includes(sectionPath)) requiredHomepageFiles.add(sectionPath);
+        if (manifest.includes(sectionPath)) {
+          requiredHomepageFiles.add(sectionPath);
+          homepageSectionFiles.add(sectionPath);
+        }
       }
     } catch (error) {
       throw new ThemeEditEngineError(
@@ -268,8 +274,8 @@ async function discoverSourceContext(
     }
     addSectionFilesFromConfig("templates/index.json", indexSource);
 
-    // The homepage inherits its global shell from theme.liquid and optional
-    // section groups. Include those exact existing definitions as context.
+    // Retain the existing global shell definitions as context, but do not
+    // recursively treat every header/footer dependency as a homepage edit target.
     if (manifest.includes("layout/theme.liquid")) {
       requiredHomepageFiles.add("layout/theme.liquid");
       const layoutSource = await readManifestFile("layout/theme.liquid");
@@ -277,21 +283,17 @@ async function discoverSourceContext(
         const groupMatches = layoutSource.matchAll(/\{%-?\s*sections\s+["']([a-z0-9_-]+)["']\s*-?%\}/gi);
         for (const match of groupMatches) {
           const groupPath = "sections/" + match[1] + ".json";
-          const groupSource = await readManifestFile(groupPath);
-          if (groupSource) {
-            requiredHomepageFiles.add(groupPath);
-            addSectionFilesFromConfig(groupPath, groupSource);
-          }
+          if (manifest.includes(groupPath)) requiredHomepageFiles.add(groupPath);
         }
       }
     }
 
-    // Follow the Liquid render/include and asset_url dependencies used by
-    // homepage sections. This keeps the planner from editing a file based on
-    // a filename guess while still giving it the real call graph.
+    // Follow real dependencies from the homepage's own active section code.
+    // Snippets are recursively inspected for two levels; CSS/JS assets are
+    // included as leaf dependencies. Global layout/group references stay context-only.
+    let dependencyFrontier = [...homepageSectionFiles];
     const scanned = new Set<string>();
-    let dependencyFrontier = [...requiredHomepageFiles];
-    for (let depth = 0; depth < 4 && dependencyFrontier.length > 0; depth += 1) {
+    for (let depth = 0; depth < 3 && dependencyFrontier.length > 0; depth += 1) {
       const nextFrontier: string[] = [];
       for (const relativePath of dependencyFrontier) {
         if (scanned.has(relativePath)) continue;
@@ -311,8 +313,11 @@ async function discoverSourceContext(
         }
 
         for (const dependencyPath of references) {
-          if (manifest.includes(dependencyPath) && !requiredHomepageFiles.has(dependencyPath)) {
-            requiredHomepageFiles.add(dependencyPath);
+          if (!manifest.includes(dependencyPath)) continue;
+          if (!homepageDependencyFiles.has(dependencyPath)) {
+            homepageDependencyFiles.set(dependencyPath, depth + 1);
+          }
+          if (dependencyPath.startsWith("snippets/") && depth < 2 && !scanned.has(dependencyPath)) {
             nextFrontier.push(dependencyPath);
           }
         }
@@ -324,8 +329,8 @@ async function discoverSourceContext(
   const requiredFileLimit = 50;
   if (requiredHomepageFiles.size > requiredFileLimit) {
     throw new ThemeEditEngineError(
-      "The homepage depends on " + requiredHomepageFiles.size + " existing theme files, exceeding the current safe source-context limit of " +
-      requiredFileLimit + ". No files were changed. Increase the homepage dependency context limit before retrying.",
+      "The homepage core requires " + requiredHomepageFiles.size + " existing theme files, exceeding the safe source-context limit of " +
+      requiredFileLimit + ". Nested snippet dependencies are optional context and are not counted as required core files. No files were changed.",
       413
     );
   }
@@ -337,8 +342,11 @@ async function discoverSourceContext(
       if (!metadata.isFile() || metadata.size > 250000) return null;
       const source = await readFile(fullPath, "utf8");
       const isRequiredSourceFile = requiredHomepageFiles.has(relativePath);
+      const dependencyDepth = homepageDependencyFiles.get(relativePath);
+      const dependencyBonus = dependencyDepth === undefined ? 0 : Math.max(250, 700 - dependencyDepth * 150);
       const score = scoreThemeFile(prompt.toLowerCase(), relativePath, source, terms) +
         (isRequiredSourceFile ? 1800 : 0) +
+        dependencyBonus +
         (relativePath === "templates/index.json" ? 1200 : 0);
       if (score <= 0 && !isRequiredSourceFile) return null;
       return {
@@ -371,6 +379,9 @@ async function discoverSourceContext(
     const aRequired = requiredHomepageFiles.has(a.path);
     const bRequired = requiredHomepageFiles.has(b.path);
     if (aRequired !== bRequired) return aRequired ? -1 : 1;
+    const aDependency = homepageDependencyFiles.has(a.path);
+    const bDependency = homepageDependencyFiles.has(b.path);
+    if (aDependency !== bDependency) return aDependency ? -1 : 1;
     return b.score - a.score || a.path.localeCompare(b.path);
   });
 
