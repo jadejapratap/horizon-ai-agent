@@ -13980,7 +13980,7 @@ function isLocalFigInspectionRequest(prompt: string): boolean {
   // A noun such as "code" is not an edit action. Only a positive mutation
   // verb should move the request into the Shopify theme-edit pipeline.
   const themeMutationIntent =
-    /\b(?:implement|build|create|write|edit|modify|change|update|fix|redesign|recreate|replicate|apply|generate|add|remove|delete|replace|move|adjust)\b/i.test(actionableText);
+    /\b(?:implement|build|create|write|edit|modify|change|update|fix|redesign|recreate|replicate|apply|generate|add|remove|delete|replace|move|adjust|banav|banavo|banavjo|banavi|banao|bana)\b/i.test(actionableText);
 
   return !themeMutationIntent;
 }
