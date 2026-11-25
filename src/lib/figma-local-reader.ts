@@ -395,6 +395,7 @@ export type LocalFigInspectionContext = {
   pages: Array<{ id: string; name: string; childCount: number }>;
   selectedPage: { id: string; name: string; childCount: number };
   focusedNode: (LocalFigInspectionNodeSummary & { parentPath: string[] }) | null;
+  focusedChildren: LocalFigInspectionNodeSummary[];
   topLevelChildren: LocalFigInspectionNodeSummary[];
   topLevelFrames: LocalFigInspectionNodeSummary[];
   designPageTree: string;
@@ -575,6 +576,13 @@ export async function readLocalFigInspectionContext(
       }
     : null;
 
+  // Keep the focused node's immediate child inventory separate from its
+  // potentially large serialized subtree. These exact names/IDs/dimensions
+  // remain available even when the deeper hierarchy hits the model context cap.
+  const focusedChildren: LocalFigInspectionNodeSummary[] = requestedNode
+    ? childrenFor(requestedNode).map(summarizeNode)
+    : [];
+
   const inspectionRoot = requestedNode || selectedPageNode;
   const inspectionRootChildren = requestedNode ? [requestedNode] : directChildren;
 
@@ -629,6 +637,7 @@ export async function readLocalFigInspectionContext(
     ...(focusedNode
       ? {
           focusedNode,
+          focusedChildren,
           focusedSubtree: serializeHierarchy(inspectionRoot, 0),
         }
       : {
@@ -656,6 +665,7 @@ export async function readLocalFigInspectionContext(
       childCount: directChildren.length,
     },
     focusedNode,
+    focusedChildren,
     topLevelChildren,
     topLevelFrames,
     designPageTree,
