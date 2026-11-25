@@ -14278,6 +14278,8 @@ export async function POST(request: NextRequest) {
           frameCount: localFigContext.frameCount,
           imageCount: localFigContext.imageCount,
           treeCharacters: localFigContext.tree.length,
+          homepageTreeIncluded: Boolean(localFigContext.homepageTree),
+          homepageTreeCharacters: localFigContext.homepageTree?.length ?? 0,
         });
       } catch (error) {
         const status = error instanceof LocalFigDesignError ? error.status : 500;
@@ -14334,6 +14336,8 @@ export async function POST(request: NextRequest) {
                 nodeCount: localFigContext.nodeCount,
                 frameCount: localFigContext.frameCount,
                 imageCount: localFigContext.imageCount,
+                homepageTreeIncluded: Boolean(localFigContext.homepageTree),
+                homepageFrame: localFigContext.homepageTree ? "resolved Home frame subtree" : null,
               }
             : null,
           figmaDesign: localFigContext
