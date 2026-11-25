@@ -42,11 +42,8 @@ import {
   isThemeEditRequest,
   ThemeEditEngineError,
 } from "@/lib/theme-edit-engine";
-import {
-  FigmaConnectionError,
-  loadFigmaDesignContext,
-} from "@/lib/figma-connection";
-import type { FigmaDesignContext } from "@/lib/figma-connection";
+import { readLocalFigDesignContext, LocalFigDesignError } from "@/lib/figma-local-reader";
+import type { LocalFigDesignContext } from "@/lib/figma-local-reader";
 
 export const maxDuration = 180;
 
@@ -13985,7 +13982,7 @@ export async function POST(request: NextRequest) {
     const history = Array.isArray(body.history)
       ? body.history
       : [];
-    const figmaUrl = typeof body.figmaUrl === "string" ? body.figmaUrl.trim() : "";
+
 
     if (
       !prompt ||
@@ -14001,55 +13998,61 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Explicit storefront change requests use the writable local theme editor.
-    // Homepage / Figma design implementation requests also load the authenticated
-    // Figma frame so Gemini receives both the layer hierarchy and actual screenshot.
+    // Explicit storefront changes use the local theme editor. When the repository
+    // contains a .fig file, the original binary is parsed locally and its node tree
+    // and embedded media are passed to Gemini as structured design context.
     if (isThemeEditRequest(prompt)) {
-      let figmaContext: FigmaDesignContext | null = null;
-      const shouldUseFigma =
-        Boolean(figmaUrl) &&
-        /\b(figma|design|reference|homepage|home page|redesign|recreate|replicate|match|based on)\b/i.test(prompt);
+      let localFigContext: LocalFigDesignContext | null = null;
+      const requiresLocalFig =
+        /(?:\bfigma\b|\bdesign\.fig\b|\.fig\s*file|local\s+design|design\s+reference|based\s+on\s+(?:the\s+)?(?:design|figma)|match\s+(?:the\s+)?(?:design|figma))/i.test(prompt);
 
-      if (shouldUseFigma) {
-        try {
-          figmaContext = await loadFigmaDesignContext(figmaUrl);
-          console.info("HORIZON FIGMA DESIGN CONTEXT LOADED", {
-            fileName: figmaContext.fileName,
-            nodeName: figmaContext.nodeName,
-            nodeId: figmaContext.nodeId,
-            summaryCharacters: figmaContext.summary.length,
-            screenshotBytes: Math.floor(figmaContext.imageData.length * 0.75),
-          });
-        } catch (error) {
-          const status = error instanceof FigmaConnectionError ? error.status : 502;
-          const message = error instanceof Error ? error.message : "Figma design could not be loaded.";
-          console.error("HORIZON FIGMA DESIGN CONTEXT FAILED:", message);
+      try {
+        localFigContext = await readLocalFigDesignContext(prompt, { includeImageData: true });
+        console.info("HORIZON LOCAL FIG DESIGN CONTEXT LOADED", {
+          fileName: localFigContext.fileName,
+          filePath: localFigContext.filePath,
+          formatVersion: localFigContext.formatVersion,
+          nodeCount: localFigContext.nodeCount,
+          pageCount: localFigContext.pageCount,
+          frameCount: localFigContext.frameCount,
+          imageCount: localFigContext.imageCount,
+          treeCharacters: localFigContext.tree.length,
+        });
+      } catch (error) {
+        const status = error instanceof LocalFigDesignError ? error.status : 500;
+        const message = error instanceof Error ? error.message : "The local .fig design could not be loaded.";
+        if (requiresLocalFig || (error instanceof LocalFigDesignError && error.status !== 404)) {
+          console.error("HORIZON LOCAL FIG DESIGN CONTEXT FAILED:", message);
           return NextResponse.json({
             success: false,
             error: message,
             message,
-            figmaConnection: { connected: false },
+            localFigDesign: { available: false },
             themeEdit: { applied: false, files: [] },
-          }, { status });
+          }, { status: status || 500 });
         }
+        console.info("HORIZON LOCAL FIG DESIGN CONTEXT NOT USED", message);
       }
 
       try {
-        const themeEdit = await executeThemeEditRequest(prompt, history, figmaContext ?? undefined);
+        const themeEdit = await executeThemeEditRequest(prompt, history, localFigContext ?? undefined);
         const changedFiles = themeEdit.files.map((file) =>
           "- " + file.path + " — " + file.operations + " operation(s): " + file.reasons.join("; ")
-        );
-        const addedAssets = themeEdit.assets.map((asset) =>
-          "- " + asset.path + " — " + asset.nodeName + " (" + Math.round(asset.bytes / 1024) + " KB" + (asset.created ? ", added" : ", reused") + ")"
         );
         const message = [
           "### Shopify theme changes applied",
           "",
           themeEdit.summary,
           "",
+          ...(localFigContext
+            ? [
+                "**Local .fig design source:**",
+                "- " + localFigContext.fileName + " · " + localFigContext.pageCount + " page(s) · " + localFigContext.nodeCount + " nodes · " + localFigContext.imageCount + " original embedded image asset(s)",
+                "",
+              ]
+            : []),
           "**Files modified:**",
           ...changedFiles,
-          ...(addedAssets.length > 0 ? ["", "**Figma image assets added:**", ...addedAssets] : []),
           "",
           themeEdit.previewNote,
         ].join("\n");
@@ -14058,11 +14061,21 @@ export async function POST(request: NextRequest) {
           success: true,
           message,
           themeEdit,
-          figmaDesign: figmaContext
+          localFigDesign: localFigContext
             ? {
-                fileName: figmaContext.fileName,
-                nodeName: figmaContext.nodeName,
-                nodeId: figmaContext.nodeId,
+                fileName: localFigContext.fileName,
+                filePath: localFigContext.filePath,
+                pageNames: localFigContext.pageNames,
+                nodeCount: localFigContext.nodeCount,
+                frameCount: localFigContext.frameCount,
+                imageCount: localFigContext.imageCount,
+              }
+            : null,
+          figmaDesign: localFigContext
+            ? {
+                fileName: localFigContext.fileName,
+                nodeName: localFigContext.pageNames[0] || "Local design",
+                nodeId: localFigContext.frames[0]?.id || "local",
               }
             : null,
           filesAnalyzed: themeEdit.files.map((file) => file.path),
