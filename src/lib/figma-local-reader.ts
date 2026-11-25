@@ -529,7 +529,7 @@ export async function readLocalFigInspectionContext(
   // A focused node request lets the agent inspect one frame subtree at a time.
   // This avoids truncating an entire multi-section Figma page before the target
   // homepage/frame has been understood.
-  const requestedNodeMatch = prompt.match(/\\b(?:node(?:\\s*id)?|frame(?:\\s*id)?|nodeId)\\s*[:#]?\\s*["']?(\\d+:\\d+)/i);
+  const requestedNodeMatch = prompt.match(/\b(?:node(?:\s*id)?|frame(?:\s*id)?|nodeId)\s*[:#]?\s*["']?(\d+:\d+)/i);
   const requestedNodeId = requestedNodeMatch?.[1] || null;
   const requestedNode = requestedNodeId ? byId.get(requestedNodeId) : null;
 
