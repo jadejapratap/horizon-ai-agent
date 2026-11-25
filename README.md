@@ -186,7 +186,7 @@ The following remain separate implementation phases and must not be assumed to w
 - Admin GraphQL operation clients for product, order, fulfillment/refund, customer/B2B company, inventory, shipping, store settings, navigation, and theme publish operations.
 - Explicit approval workflows, dry-run execution, audit storage, and role/permission checks for destructive or sensitive merchant operations.
 - Automated Shopify CLI upload/preview/publish and OAuth-connected store preview. The dashboard can embed a real preview URL started separately with Shopify CLI.
-- Full Figma OAuth sign-in, SRS ingestion, spreadsheet import, and production QA agents. Token-based read-only Figma REST access for local design-to-code is implemented.
+- Full Figma OAuth sign-in, remote file browsing, comments, write operations, and team administration are not part of the offline local .fig design reader.
 
 Do not put merchant access tokens into MCP process variables. Admin API access must be built separately using Shopify OAuth and the exact scopes required for each supported operation. Refunds, cancellations, deletions, sensitive settings, and publishing require explicit approval.
 
