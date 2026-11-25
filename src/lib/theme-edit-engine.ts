@@ -9,13 +9,13 @@ import type { LocalFigDesignContext } from "@/lib/figma-local-reader";
 const THEME_ROOT = path.resolve(process.cwd(), "themes", "horizon");
 const MODEL = "gemini-3.5-flash-lite";
 const MAX_PROMPT_CHARS = 5000;
-const MAX_FILES_IN_PLAN = 8;
+const MAX_FILES_IN_PLAN = 12;
 const MAX_OPERATIONS_PER_FILE = 10;
 const MAX_FILE_CHARS = 140000;
-const MAX_SOURCE_CONTEXT_CHARS = 105000;
-const MAX_SOURCE_FILE_CHARS = 18000;
+const MAX_SOURCE_CONTEXT_CHARS = 150000;
+const MAX_SOURCE_FILE_CHARS = 16000;
 const ALLOWED_EXTENSIONS = new Set([".liquid", ".json", ".js", ".css"]);
-const STOP_WORDS = new Set(["the", "and", "for", "with", "want", "need", "please", "make", "show", "add", "create", "build", "implement", "change", "modify", "update", "remove", "delete", "replace", "style", "fix", "this", "that", "from", "into", "your", "our", "you", "can", "could", "would", "should", "have", "has", "are", "is", "to", "in", "on", "of", "it", "my", "me", "a", "an", "be", "by", "as", "at", "or", "if", "when", "only", "both", "all"]);
+const STOP_WORDS = new Set(["the", "and", "jo", "joi", "ne", "banav", "banao", "for", "with", "want", "need", "please", "make", "show", "add", "create", "build", "implement", "change", "modify", "update", "remove", "delete", "replace", "style", "fix", "this", "that", "from", "into", "your", "our", "you", "can", "could", "would", "should", "have", "has", "are", "is", "to", "in", "on", "of", "it", "my", "me", "a", "an", "be", "by", "as", "at", "or", "if", "when", "only", "both", "all"]);
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export type ThemeEditSummary = {
@@ -218,13 +218,115 @@ async function discoverSourceContext(
   const isHeroOrBannerRequest = /\b(hero|banner)\b/i.test(prompt);
   const hasLocalDesign = Boolean(designContext?.nodeCount);
   const isHomepageCompositionRequest =
-    /\b(homepage|home page|landing page|landing desktop|storefront home)\b/i.test(prompt) ||
-    (isHeroOrBannerRequest && hasLocalDesign);
+    /\b(homepage|home\s*page|landing page|landing desktop|storefront home)\b/i.test(prompt) ||
+    (hasLocalDesign && /\b(?:banav|banao|build|create|implement|make|recreate|replicate)\b/i.test(prompt));
   const requiredHomepageFiles = isHomepageCompositionRequest
-    ? new Set(["templates/index.json"])
+    ? new Set<string>(["templates/index.json"])
     : new Set<string>();
-  if (isHeroOrBannerRequest) {
+
+  if (isHeroOrBannerRequest && manifest.includes("sections/hero.liquid")) {
     requiredHomepageFiles.add("sections/hero.liquid");
+  }
+
+  const readManifestFile = async (relativePath: string): Promise<string | null> => {
+    if (!manifest.includes(relativePath)) return null;
+    try {
+      const fullPath = path.resolve(root, relativePath);
+      const metadata = await stat(fullPath);
+      if (!metadata.isFile() || metadata.size > 250000) return null;
+      return await readFile(fullPath, "utf8");
+    } catch {
+      return null;
+    }
+  };
+
+  const addSectionFilesFromConfig = (relativePath: string, source: string): void => {
+    try {
+      const parsed = JSON.parse(source);
+      const sections = parsed && typeof parsed === "object" ? (parsed as any).sections : null;
+      if (!sections || typeof sections !== "object") return;
+      for (const section of Object.values(sections) as any[]) {
+        const type = typeof section?.type === "string" ? section.type.trim() : "";
+        if (!type || !/^[a-z0-9_-]+$/i.test(type)) continue;
+        const sectionPath = "sections/" + type + ".liquid";
+        if (manifest.includes(sectionPath)) requiredHomepageFiles.add(sectionPath);
+      }
+    } catch (error) {
+      throw new ThemeEditEngineError(
+        "The homepage composition JSON could not be parsed safely: " + relativePath + ". " +
+        (error instanceof Error ? error.message : "Invalid JSON") + ". No theme files were changed.",
+        422
+      );
+    }
+  };
+
+  if (isHomepageCompositionRequest) {
+    const indexSource = await readManifestFile("templates/index.json");
+    if (!indexSource) {
+      throw new ThemeEditEngineError("The Shopify homepage composition file templates/index.json could not be read. No files were changed.", 404);
+    }
+    addSectionFilesFromConfig("templates/index.json", indexSource);
+
+    // The homepage inherits its global shell from theme.liquid and optional
+    // section groups. Include those exact existing definitions as context.
+    if (manifest.includes("layout/theme.liquid")) {
+      requiredHomepageFiles.add("layout/theme.liquid");
+      const layoutSource = await readManifestFile("layout/theme.liquid");
+      if (layoutSource) {
+        const groupMatches = layoutSource.matchAll(/\{%-?\s*sections\s+["']([a-z0-9_-]+)["']\s*-?%\}/gi);
+        for (const match of groupMatches) {
+          const groupPath = "sections/" + match[1] + ".json";
+          const groupSource = await readManifestFile(groupPath);
+          if (groupSource) {
+            requiredHomepageFiles.add(groupPath);
+            addSectionFilesFromConfig(groupPath, groupSource);
+          }
+        }
+      }
+    }
+
+    // Follow the Liquid render/include and asset_url dependencies used by
+    // homepage sections. This keeps the planner from editing a file based on
+    // a filename guess while still giving it the real call graph.
+    const scanned = new Set<string>();
+    let dependencyFrontier = [...requiredHomepageFiles];
+    for (let depth = 0; depth < 4 && dependencyFrontier.length > 0; depth += 1) {
+      const nextFrontier: string[] = [];
+      for (const relativePath of dependencyFrontier) {
+        if (scanned.has(relativePath)) continue;
+        scanned.add(relativePath);
+        const source = await readManifestFile(relativePath);
+        if (!source) continue;
+
+        const references = new Set<string>();
+        for (const match of source.matchAll(/\{%-?\s*(?:render|include)\s+["']([a-z0-9_/-]+)["']/gi)) {
+          const snippetName = match[1].replace(/^snippets\//i, "").replace(/\.liquid$/i, "");
+          if (/^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*$/i.test(snippetName)) {
+            references.add("snippets/" + snippetName + ".liquid");
+          }
+        }
+        for (const match of source.matchAll(/["']([a-z0-9_.-]+\.(?:css|js))["']\s*\|\s*asset_url/gi)) {
+          references.add("assets/" + match[1]);
+        }
+
+        for (const dependencyPath of references) {
+          if (manifest.includes(dependencyPath) && !requiredHomepageFiles.has(dependencyPath)) {
+            requiredHomepageFiles.add(dependencyPath);
+            nextFrontier.push(dependencyPath);
+          }
+        }
+      }
+      dependencyFrontier = nextFrontier;
+    }
+  }
+
+  const requiredFileLimit = 18;
+  if (requiredHomepageFiles.size > requiredFileLimit) {
+    throw new ThemeEditEngineError(
+      "The homepage depends on " + requiredHomepageFiles.size + " existing theme files, exceeding the current safe source-context limit of " +
+      requiredFileLimit + ". No files were changed. Increase the homepage dependency context limit before retrying.",
+      413
+    );
   }
 
   const results = await Promise.all(manifest.map(async (relativePath) => {
@@ -232,16 +334,17 @@ async function discoverSourceContext(
     try {
       const metadata = await stat(fullPath);
       if (!metadata.isFile() || metadata.size > 250000) return null;
-      const content = await readFile(fullPath, "utf8");
+      const source = await readFile(fullPath, "utf8");
       const isRequiredSourceFile = requiredHomepageFiles.has(relativePath);
-      const score = scoreThemeFile(prompt.toLowerCase(), relativePath, content, terms) +
-        (isRequiredSourceFile ? 1000 : 0);
+      const score = scoreThemeFile(prompt.toLowerCase(), relativePath, source, terms) +
+        (isRequiredSourceFile ? 1800 : 0) +
+        (relativePath === "templates/index.json" ? 1200 : 0);
       if (score <= 0 && !isRequiredSourceFile) return null;
       return {
         path: relativePath,
         fullPath,
-        content,
-        sha256: createHash("sha256").update(content).digest("hex"),
+        content: source,
+        sha256: createHash("sha256").update(source).digest("hex"),
         score,
       };
     } catch {
@@ -257,18 +360,24 @@ async function discoverSourceContext(
   for (const requiredPath of requiredHomepageFiles) {
     if (!loaded.some((file) => file.path === requiredPath)) {
       throw new ThemeEditEngineError(
-        "The required Shopify homepage composition file was not found or could not be read: " + requiredPath + ". No files were changed.",
+        "A required homepage source or dependency could not be read: " + requiredPath + ". No files were changed.",
         404
       );
     }
   }
 
-  loaded.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  loaded.sort((a, b) => {
+    const aRequired = requiredHomepageFiles.has(a.path);
+    const bRequired = requiredHomepageFiles.has(b.path);
+    if (aRequired !== bRequired) return aRequired ? -1 : 1;
+    return b.score - a.score || a.path.localeCompare(b.path);
+  });
 
   const selected: SourceFile[] = [];
   let usedChars = 0;
+  const maxSelectedFiles = 18;
   for (const candidate of loaded) {
-    if (selected.length >= 12 || usedChars >= MAX_SOURCE_CONTEXT_CHARS) break;
+    if (selected.length >= maxSelectedFiles || usedChars >= MAX_SOURCE_CONTEXT_CHARS) break;
     const budget = Math.min(MAX_SOURCE_FILE_CHARS, MAX_SOURCE_CONTEXT_CHARS - usedChars);
     if (budget < 1200) break;
     const excerpt = buildRelevantExcerpt(candidate.content, prompt, budget);
@@ -277,6 +386,18 @@ async function discoverSourceContext(
     selected.push(candidate);
     usedChars += excerpt.content.length;
   }
+
+  const omittedRequiredFiles = [...requiredHomepageFiles].filter(
+    (requiredPath) => !selected.some((file) => file.path === requiredPath)
+  );
+  if (omittedRequiredFiles.length > 0) {
+    throw new ThemeEditEngineError(
+      "The homepage source context could not include all required section/dependency files within the safe context budget: " +
+      omittedRequiredFiles.join(", ") + ". No files were changed.",
+      413
+    );
+  }
+
   if (selected.length === 0) {
     throw new ThemeEditEngineError("I could not identify relevant editable theme source files. No files were changed.", 422);
   }
@@ -615,9 +736,21 @@ async function generateEditPlan(
           "Format version: " + (designContext.formatVersion ?? "unknown"),
           "Total design nodes: " + designContext.nodeCount,
           "Pages: " + designContext.pageNames.join(" | "),
-          "Frame/component/instance count: " + designContext.frameCount,
+          "Frame/component/instance/symbol count: " + designContext.frameCount,
           "Embedded original image assets: " + designContext.imageCount,
-          "The following hierarchy is parsed from the original .fig binary. It contains node IDs, names, node types, dimensions, text, layout properties, fills, strokes, effects, and other decoded properties where present.",
+          ...(designContext.homepageTree
+            ? [
+                "PRIORITIZED COMPLETE HOMEPAGE DESIGN CONTEXT:",
+                "This is the native Home frame subtree selected by the parser from the Landing Page hierarchy, with exact linked component masters and instance text overrides resolved from native component IDs. Treat this as the primary design specification for building the homepage.",
+                designContext.homepageTree,
+                "",
+              ]
+            : [
+                "No exact Home frame could be identified by the parser. Use the selected page hierarchy to establish the likely homepage, and do not guess between unrelated frames.",
+                "",
+              ]),
+          "SUPPORTING ALL-PAGES FIGMA HIERARCHY:",
+          "The following hierarchy is parsed from the original .fig binary. It provides additional page, shared-style, and component-library context. The prioritized homepage subtree above is authoritative when the global tree is clipped.",
           designContext.tree,
         ].join("\n")
       : "No local .fig design file was loaded for this request.",
@@ -651,7 +784,14 @@ async function generateEditPlan(
       systemInstruction: [
         "You are Horizon AI, an autonomous Shopify Horizon theme code editor.",
         "Implement the user's requested storefront change in the actual supplied theme source. You are not in read-only analysis mode. Return a concrete edit plan, not an explanation-only answer.",
-        "When LOCAL FIGMA .FIG DESIGN FILE is present, treat its decoded node hierarchy and exact node properties as the design source of truth. Use page/frame names, node IDs, dimensions, transforms, auto-layout settings, typography, fills, strokes, effects, and text content to reconstruct the page with native Shopify Liquid, CSS, and JavaScript.",
+        "When LOCAL FIGMA .FIG DESIGN FILE is present, treat its decoded node hierarchy and exact node properties as the design source of truth. Use page/frame names, node IDs, dimensions, transforms, auto-layout settings, typography, fills, strokes, effects, text content, native component masters, and instance overrides to reconstruct the page with native Shopify Liquid, CSS, and JavaScript.",
+        "AUTONOMOUS HOMEPAGE BUILD: A short request that combines the local Figma/design file with a homepage build (including mixed English and transliterated Gujarati such as 'Figma jo and homepage banav') is a complete request to build the full storefront homepage, not merely inspect or summarize the design. Do not ask the user to enumerate sections, styles, assets, labels, or files.",
+        "Before proposing edits, inspect the prioritized Home-frame design tree and all its resolved component masters, then inspect templates/index.json, every active homepage section file named by its section type, the theme layout and referenced header/footer section groups, plus the Liquid snippets and CSS/JS assets actually referenced by those sections. The server supplies this traced source context; use it to understand the real implementation dependencies.",
+        "Implement the full Home page composition in the order and hierarchy shown by Figma. Reuse or adapt existing theme sections when they are responsible for the required behavior; create new sections/snippets/assets only when no correct existing implementation can be reused. Preserve unrelated merchant functionality and stable section IDs/settings where possible.",
+        "Use exact resolved component labels and text overrides from the native Figma data. Never fall back to placeholder master labels when an instance override supplies the visible text.",
+        "Make the page responsive using the supplied design constraints and the existing theme breakpoints. When Figma contains no mobile-specific frame, derive a practical mobile layout without changing the desktop design intent.",
+        "Do not stop after editing only the hero or a single section when the user requested the homepage. Build and verify the whole page composition, including its section order, repeated cards/logos, linked assets, and global layout integration.",
+        "Return changes for all required coordinated homepage files in one plan, up to the supplied safety limit. If the full page cannot fit the supplied verified source context, return changes=[] and explain which specific context is missing rather than silently producing a partial homepage.",
         "The .fig tree is structured source data, not a screenshot. Never request, create, substitute, or depend on screenshots for design understanding. Do not use a full-page raster image as a background or as a replacement for native page sections.",
         "Use only original embedded image assets supplied in ORIGINAL EMBEDDED FIGMA IMAGE ASSETS when a matching design image is present. Identify assets by their original file names and visual content. When a Shopify theme asset path is supplied, reference that exact file with Shopify's asset_url filter (for example: {{ 'figma-<hash>.png' | asset_url }}); do not rename or invent image paths. Do not claim an asset was added unless its exact path is listed.",
         "Use frame IDs and hierarchy to distinguish the homepage from other artboards. If multiple pages or desktop/mobile frames exist, use the most relevant named page and preserve responsive behavior only when the .fig structure contains evidence for it.",
