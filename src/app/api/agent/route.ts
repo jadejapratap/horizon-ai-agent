@@ -14024,13 +14024,16 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         pageCount: inspection.pageCount,
         pages: inspection.pages,
         selectedPage: inspection.selectedPage,
+        focusedNode: inspection.focusedNode,
         treeTruncated: inspection.treeTruncated,
       }, null, 2),
       "",
       "EXACT TOP-LEVEL FRAME INVENTORY FROM THE PARSER:",
       frameInventoryText,
       "",
-      "NATIVE FIGMA NODE HIERARCHY (selected page only):",
+      inspection.focusedNode
+        ? "NATIVE FIGMA NODE HIERARCHY (focused node subtree only):"
+        : "NATIVE FIGMA NODE HIERARCHY (selected page only):",
       inspection.designPageTree,
     ].join("\n");
 
@@ -14042,6 +14045,8 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       nodeCount: inspection.nodeCount,
       directChildCount: inspection.topLevelChildren.length,
       topLevelFrameCount: inspection.topLevelFrames.length,
+      focusedNodeId: inspection.focusedNode?.id ?? null,
+      focusedNodeName: inspection.focusedNode?.name ?? null,
       treeTruncated: inspection.treeTruncated,
       shopifySourceDiscovery: false,
       themeMutation: false,
@@ -14085,6 +14090,12 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       "Pages: " + inspection.pageNames.join(", "),
       "Parsed nodes: " + inspection.nodeCount,
       "Selected page: " + inspection.selectedPage.name + " · node " + inspection.selectedPage.id,
+      ...(inspection.focusedNode
+        ? [
+            "Focused node: " + inspection.focusedNode.name + " · node " + inspection.focusedNode.id,
+            "Parent path: " + inspection.focusedNode.parentPath.join(" / "),
+          ]
+        : []),
       "Direct page children: " + inspection.topLevelChildren.length,
       "Direct top-level frames: " + inspection.topLevelFrames.length,
       "",
@@ -14116,6 +14127,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         pageCount: inspection.pageCount,
         pages: inspection.pages,
         selectedPage: inspection.selectedPage,
+        focusedNode: inspection.focusedNode,
         topLevelChildren: inspection.topLevelChildren,
         topLevelFrames: inspection.topLevelFrames,
         treeTruncated: inspection.treeTruncated,
