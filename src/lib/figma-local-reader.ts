@@ -437,6 +437,7 @@ export type LocalFigInspectionContext = {
   selectedPage: { id: string; name: string; childCount: number };
   focusedNode: (LocalFigInspectionNodeSummary & { parentPath: string[] }) | null;
   focusedChildren: LocalFigInspectionNodeSummary[];
+  focusedComponentResolution: LocalFigComponentResolution | null;
   topLevelChildren: LocalFigInspectionNodeSummary[];
   topLevelFrames: LocalFigInspectionNodeSummary[];
   designPageTree: string;
