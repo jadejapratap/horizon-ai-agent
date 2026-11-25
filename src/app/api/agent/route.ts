@@ -14021,7 +14021,7 @@ export async function POST(request: NextRequest) {
       } catch (error) {
         const status = error instanceof LocalFigDesignError ? error.status : 500;
         const message = error instanceof Error ? error.message : "The local .fig design could not be loaded.";
-        if (requiresLocalFig || (error instanceof LocalFigDesignError && error.status !== 404)) {
+        if (requiresLocalFig) {
           console.error("HORIZON LOCAL FIG DESIGN CONTEXT FAILED:", message);
           return NextResponse.json({
             success: false,
@@ -14039,6 +14039,9 @@ export async function POST(request: NextRequest) {
         const changedFiles = themeEdit.files.map((file) =>
           "- " + file.path + " — " + file.operations + " operation(s): " + file.reasons.join("; ")
         );
+        const copiedDesignAssets = (localFigContext?.images ?? [])
+          .filter((asset) => asset.themeAssetPath)
+          .map((asset) => "- " + asset.name + " → " + asset.themeAssetPath);
         const message = [
           "### Shopify theme changes applied",
           "",
@@ -14048,6 +14051,7 @@ export async function POST(request: NextRequest) {
             ? [
                 "**Local .fig design source:**",
                 "- " + localFigContext.fileName + " · " + localFigContext.pageCount + " page(s) · " + localFigContext.nodeCount + " nodes · " + localFigContext.imageCount + " original embedded image asset(s)",
+                ...(copiedDesignAssets.length > 0 ? ["", "**Original assets copied into themes/horizon/assets:**", ...copiedDesignAssets] : []),
                 "",
               ]
             : []),
