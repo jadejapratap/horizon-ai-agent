@@ -394,6 +394,7 @@ export type LocalFigInspectionContext = {
   pageNames: string[];
   pages: Array<{ id: string; name: string; childCount: number }>;
   selectedPage: { id: string; name: string; childCount: number };
+  focusedNode: (LocalFigInspectionNodeSummary & { parentPath: string[] }) | null;
   topLevelChildren: LocalFigInspectionNodeSummary[];
   topLevelFrames: LocalFigInspectionNodeSummary[];
   designPageTree: string;
@@ -525,6 +526,58 @@ export async function readLocalFigInspectionContext(
   const topLevelChildren = directChildren.map(summarizeNode);
   const topLevelFrames = directChildren.filter(isLocalFigFrameNode).map(summarizeNode);
 
+  // A focused node request lets the agent inspect one frame subtree at a time.
+  // This avoids truncating an entire multi-section Figma page before the target
+  // homepage/frame has been understood.
+  const requestedNodeMatch = prompt.match(/\\b(?:node(?:\\s*id)?|frame(?:\\s*id)?|nodeId)\\s*[:#]?\\s*["']?(\\d+:\\d+)/i);
+  const requestedNodeId = requestedNodeMatch?.[1] || null;
+  const requestedNode = requestedNodeId ? byId.get(requestedNodeId) : null;
+
+  if (requestedNodeId && !requestedNode) {
+    throw new LocalFigDesignError("Figma node " + requestedNodeId + " was not found in " + path.basename(filePath) + ".", 404);
+  }
+
+  const isWithinSelectedPage = (node: any): boolean => {
+    let currentId = getNodeId(node);
+    let guard = 0;
+    while (currentId && guard < 100) {
+      if (currentId === selectedPageId) return true;
+      currentId = parentById.get(currentId) || "";
+      guard += 1;
+    }
+    return false;
+  };
+
+  if (requestedNode && !isWithinSelectedPage(requestedNode)) {
+    throw new LocalFigDesignError(
+      "Figma node " + requestedNodeId + " is not inside the selected page '" + String(selectedPageNode.name || "Unnamed page") + "'.",
+      400
+    );
+  }
+
+  const focusedNode = requestedNode
+    ? {
+        ...summarizeNode(requestedNode),
+        parentPath: (() => {
+          const ancestors: string[] = [];
+          let currentId = parentById.get(requestedNodeId || "") || "";
+          let guard = 0;
+          while (currentId && guard < 100) {
+            const ancestor = byId.get(currentId);
+            if (!ancestor) break;
+            ancestors.unshift(String(ancestor.name || ancestor.type || "Unnamed node"));
+            if (currentId === selectedPageId) break;
+            currentId = parentById.get(currentId) || "";
+            guard += 1;
+          }
+          return ancestors;
+        })(),
+      }
+    : null;
+
+  const inspectionRoot = requestedNode || selectedPageNode;
+  const inspectionRootChildren = requestedNode ? [requestedNode] : directChildren;
+
   let remainingNodes = 6200;
   const maxDepth = 22;
   const serializeHierarchy = (node: any, depth: number): any => {
@@ -573,7 +626,14 @@ export async function readLocalFigInspectionContext(
       name: String(selectedPageNode.name || "Unnamed page"),
       childCount: directChildren.length,
     },
-    topLevelChildren: directChildren.map((node) => serializeHierarchy(node, 0)),
+    ...(focusedNode
+      ? {
+          focusedNode,
+          focusedSubtree: serializeHierarchy(inspectionRoot, 0),
+        }
+      : {
+          topLevelChildren: inspectionRootChildren.map((node) => serializeHierarchy(node, 0)),
+        }),
   };
 
   const completeTree = JSON.stringify(hierarchy, null, 2);
@@ -595,6 +655,7 @@ export async function readLocalFigInspectionContext(
       name: String(selectedPageNode.name || "Unnamed page"),
       childCount: directChildren.length,
     },
+    focusedNode,
     topLevelChildren,
     topLevelFrames,
     designPageTree,
