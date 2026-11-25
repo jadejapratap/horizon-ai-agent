@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getLocalFigDesignStatus, LocalFigDesignError } from "@/lib/figma-local-reader";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
