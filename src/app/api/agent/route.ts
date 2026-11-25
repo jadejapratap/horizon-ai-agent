@@ -14005,6 +14005,44 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         ).join("\n")
       : "No direct children were returned for the selected page.";
 
+    const componentResolution = inspection.focusedComponentResolution;
+    const componentResolutionLines = componentResolution
+      ? [
+          "### Native component-reference resolution",
+          "",
+          "Status: " + componentResolution.status,
+          "Instance: " + componentResolution.instanceName + " · node " + componentResolution.instanceNodeId,
+          "Reference field: " + (componentResolution.referenceField || "not present in recognized fields"),
+          "Reference node ID: " + (componentResolution.referenceId || "not available"),
+          ...(componentResolution.componentKey ? ["External component key: " + componentResolution.componentKey] : []),
+          ...(componentResolution.master
+            ? [
+                "Resolved master: " + componentResolution.master.name + " · node " + componentResolution.master.id,
+                "Master type: " + componentResolution.master.type,
+                "Master size: " + (componentResolution.master.width ?? "unknown") + " × " + (componentResolution.master.height ?? "unknown"),
+                "Master parent path: " + componentResolution.master.parentPath.join(" / "),
+                "Master direct children: " + componentResolution.master.childCount,
+              ]
+            : ["Resolved master: none"]),
+          "Master text layers:",
+          ...(componentResolution.masterTextNodes.length > 0
+            ? componentResolution.masterTextNodes.map((textNode) =>
+                "- " + textNode.name + " · node " + textNode.id +
+                " · original=" + JSON.stringify(textNode.baseCharacters) +
+                " · effective=" + JSON.stringify(textNode.effectiveCharacters) +
+                " · instance override applied=" + textNode.overrideApplied +
+                " · font=" + (textNode.fontFamily || "unknown") +
+                " " + (textNode.fontStyle || "") +
+                " " + (textNode.fontSize ?? "unknown") + "px"
+              )
+            : ["- No text layers were resolved in the local master subtree."]),
+          "Text override records: " + componentResolution.textOverrides.length,
+          "Master hierarchy nodes: " + componentResolution.masterHierarchyNodeCount,
+          "Master hierarchy truncated: " + componentResolution.masterHierarchyTruncated,
+          "Diagnostic: " + componentResolution.diagnostic,
+        ]
+      : [];
+
     const modelPrompt = [
       "READ-ONLY FIGMA DOCUMENT INSPECTION.",
       "You are a Figma document analyst. Analyze only the native .fig node data included below.",
@@ -14017,6 +14055,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       "If the Design page does not contain enough evidence to identify a storefront homepage, say so instead of guessing.",
       "Return: (1) every direct top-level frame under the selected page, (2) the requested frame subtree when a focusedNode is supplied, (3) likely homepage candidate and evidence only when supported, (4) any uncertainty or truncation.",
       "FOCUSED NODE RULE: when LOCAL PARSER METADATA includes focusedNode, first report every entry in focusedChildren exactly as supplied (name, type, node ID, width, height, child count). Then analyze the focused subtree below. If the subtree is truncated, do not omit or guess sibling names: the focusedChildren inventory is authoritative and complete for the immediate children.",
+      "COMPONENT INSTANCE RULE: when focusedComponentResolution is present, report its exact resolution status. If resolved, identify the exact master node ID and list every supplied master text layer with original and effective text. Say whether a matching instance text override was applied. Never infer a component link from a similar name or visual appearance. If unresolved, explain the supplied diagnostic and do not invent a button label.",
       "",
       "USER REQUEST:",
       prompt,
@@ -14032,6 +14071,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         selectedPage: inspection.selectedPage,
         focusedNode: inspection.focusedNode,
         focusedChildren: inspection.focusedChildren,
+        focusedComponentResolution: componentResolution,
         treeTruncated: inspection.treeTruncated,
       }, null, 2),
       "",
@@ -14056,6 +14096,8 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       topLevelFrameCount: inspection.topLevelFrames.length,
       focusedNodeId: inspection.focusedNode?.id ?? null,
       focusedNodeName: inspection.focusedNode?.name ?? null,
+      focusedComponentStatus: componentResolution?.status ?? null,
+      focusedComponentMasterId: componentResolution?.master?.id ?? null,
       treeTruncated: inspection.treeTruncated,
       shopifySourceDiscovery: false,
       themeMutation: false,
@@ -14070,6 +14112,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
           "Use only the local parser data supplied in this request.",
           "Never claim you inspected Shopify files or modified code.",
           "Do not invent node IDs, dimensions, page names, or missing design details.",
+          "When native component resolution data is supplied, treat its reference IDs, master node, text layers and applied overrides as authoritative. Never guess missing component labels.",
           "Separate parser-confirmed facts from your interpretation.",
         ].join("\n"),
         temperature: 0.15,
@@ -14108,6 +14151,8 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
       "",
       ...(inventoryLines.length > 0 ? inventoryLines : ["No direct frame-like children were found."]),
       "",
+      ...(componentResolutionLines.length > 0 ? componentResolutionLines : []),
+      ...(componentResolutionLines.length > 0 ? [""] : []),
       "### Figma structure analysis",
       "",
       analysis,
@@ -14136,6 +14181,7 @@ async function handleLocalFigInspection(prompt: string): Promise<NextResponse> {
         selectedPage: inspection.selectedPage,
         focusedNode: inspection.focusedNode,
         focusedChildren: inspection.focusedChildren,
+        focusedComponentResolution: componentResolution,
         topLevelChildren: inspection.topLevelChildren,
         topLevelFrames: inspection.topLevelFrames,
         treeTruncated: inspection.treeTruncated,
