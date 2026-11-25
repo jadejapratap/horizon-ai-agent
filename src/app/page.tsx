@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Bot,
   FolderOpen,
@@ -75,7 +75,7 @@ export default function Home() {
   const [localFigStatus, setLocalFigStatus] = useState<LocalFigDesignStatus | null>(null);
   const [localFigLoading, setLocalFigLoading] = useState(false);
 
-  async function refreshLocalFigStatus() {
+  const refreshLocalFigStatus = useCallback(async () => {
     setLocalFigLoading(true);
     try {
       const response = await fetch("/api/figma/local", { cache: "no-store" });
@@ -93,11 +93,11 @@ export default function Home() {
     } finally {
       setLocalFigLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void refreshLocalFigStatus();
-  }, []);
+  }, [refreshLocalFigStatus]);
 
   // Load chat history
   useEffect(() => {
