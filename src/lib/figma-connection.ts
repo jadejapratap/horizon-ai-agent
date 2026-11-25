@@ -546,17 +546,18 @@ async function downloadFigmaImageAssets(
 ): Promise<FigmaDesignAsset[]> {
   if (imageUses.length === 0) return [];
 
-  // This is Figma's Tier 2 image-fills endpoint. It returns temporary source
-  // URLs for the imageRef values found on the selected frame's image fills.
+  const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+  const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
+
   const fillResponse = await figmaJson<{
     images?: Record<string, string>;
     meta?: { images?: Record<string, string> };
     data?: { images?: Record<string, string> };
     result?: { images?: Record<string, string>; meta?: { images?: Record<string, string> } };
+    err?: string;
+    status?: number;
   }>("/files/" + fileKey + "/images");
 
-  // The official REST response uses a top-level images map. Also accept
-  // metadata-wrapped responses returned by some transport adapters.
   const imageUrls =
     fillResponse.images ??
     fillResponse.meta?.images ??
@@ -565,13 +566,32 @@ async function downloadFigmaImageAssets(
     fillResponse.result?.meta?.images ??
     {};
 
-  const normalizeImageRef = (value: string) => value.trim().replace(/^image:/i, "").toLowerCase();
-  const imageUrlByRef = new Map<string, string>(
-    Object.entries(imageUrls).map(([key, url]) => [normalizeImageRef(key), url] as const)
-  );
+  // Figma documents imageRef as the key in the /files/:key/images response.
+  // Preserve exact key casing: imageRef is an opaque identifier, not a
+  // case-insensitive filename. Also accept an optional image: prefix without
+  // weakening exact matching or merging distinct references.
+  const imageUrlByRef = new Map<string, string>();
+  for (const [imageRef, imageUrl] of Object.entries(imageUrls)) {
+    imageUrlByRef.set(imageRef, imageUrl);
+    if (imageRef.startsWith("image:")) {
+      imageUrlByRef.set(imageRef.slice("image:".length), imageUrl);
+    }
+  }
+  const resolveImageUrl = (imageRef: string) =>
+    imageUrlByRef.get(imageRef) ?? imageUrlByRef.get("image:" + imageRef);
 
   const selectedUses = imageUses.slice(0, 12);
   const assets: FigmaDesignAsset[] = [];
+  const importFailures: Array<{
+    nodeId: string;
+    nodeName: string;
+    frameNodeId: string;
+    frameNodeName: string;
+    heroSlot: "left" | "right" | null;
+    imageRef: string;
+    reason: string;
+    details?: Record<string, string | number | null>;
+  }> = [];
   let totalBytes = 0;
   let matchedRefs = 0;
   let downloadFailures = 0;
@@ -580,11 +600,45 @@ async function downloadFigmaImageAssets(
     .slice(selectedUses.length)
     .filter((use) => Boolean(use.heroSlot)).length;
 
+  const recordFailure = (
+    use: FigmaImageUse,
+    reason: string,
+    details?: Record<string, string | number | null>
+  ) => {
+    const failure = {
+      nodeId: use.nodeId,
+      nodeName: use.nodeName,
+      frameNodeId: use.frameNodeId,
+      frameNodeName: use.frameNodeName,
+      heroSlot: use.heroSlot ?? null,
+      imageRef: use.imageRef,
+      reason,
+      ...(details ? { details } : {}),
+    };
+    importFailures.push(failure);
+    console.warn("HORIZON FIGMA IMAGE IMPORT REJECTED", failure);
+  };
+
+  const safeUrlPath = (value: string): string => {
+    try {
+      const url = new URL(value);
+      return url.origin + url.pathname;
+    } catch {
+      return "invalid-url";
+    }
+  };
+
   for (let index = 0; index < selectedUses.length; index += 1) {
     const use = selectedUses[index];
-    const imageUrl = imageUrlByRef.get(normalizeImageRef(use.imageRef));
-    if (!imageUrl) {
+    const imageUrl = resolveImageUrl(use.imageRef);
+
+    if (typeof imageUrl !== "string" || !imageUrl.trim()) {
       if (use.heroSlot) heroSlotDownloadFailures += 1;
+      recordFailure(use, "image-ref-not-returned-by-figma-images-endpoint", {
+        returnedImageRefCount: Object.keys(imageUrls).length,
+        responseError: fillResponse.err || null,
+        responseStatus: typeof fillResponse.status === "number" ? fillResponse.status : null,
+      });
       continue;
     }
     matchedRefs += 1;
@@ -597,13 +651,9 @@ async function downloadFigmaImageAssets(
       if (!response.ok) {
         downloadFailures += 1;
         if (use.heroSlot) heroSlotDownloadFailures += 1;
-        console.warn("HORIZON FIGMA IMAGE DOWNLOAD FAILED", {
-          nodeId: use.nodeId,
-          nodeName: use.nodeName,
-          frameNodeId: use.frameNodeId,
-          frameNodeName: use.frameNodeName,
-          heroSlot: use.heroSlot || null,
-          status: response.status,
+        recordFailure(use, "temporary-image-url-download-http-error", {
+          httpStatus: response.status,
+          url: safeUrlPath(imageUrl),
         });
         continue;
       }
@@ -613,34 +663,51 @@ async function downloadFigmaImageAssets(
       if (!extension) {
         unsupportedTypes += 1;
         if (use.heroSlot) heroSlotDownloadFailures += 1;
-        console.warn("HORIZON FIGMA IMAGE TYPE UNSUPPORTED", {
-          nodeId: use.nodeId,
-          nodeName: use.nodeName,
-          frameNodeId: use.frameNodeId,
-          frameNodeName: use.frameNodeName,
-          heroSlot: use.heroSlot || null,
+        recordFailure(use, "unsupported-image-content-type-or-extension", {
           mimeType,
-          urlPath: (() => {
-            try { return new URL(imageUrl).pathname; } catch { return "invalid-url"; }
-          })(),
+          url: safeUrlPath(imageUrl),
         });
         continue;
       }
 
       const imageBuffer = Buffer.from(await response.arrayBuffer());
-      if (imageBuffer.length === 0 || imageBuffer.length > 8 * 1024 * 1024) {
+      if (imageBuffer.length === 0) {
         downloadFailures += 1;
         if (use.heroSlot) heroSlotDownloadFailures += 1;
+        recordFailure(use, "empty-image-response", {
+          mimeType,
+          downloadedBytes: 0,
+          maxImageBytes: MAX_IMAGE_BYTES,
+        });
         continue;
       }
-      if (totalBytes + imageBuffer.length > 20 * 1024 * 1024) {
-        heroSlotDownloadFailures += selectedUses
-          .slice(index)
-          .filter((remainingUse) => Boolean(remainingUse.heroSlot)).length;
+      if (imageBuffer.length > MAX_IMAGE_BYTES) {
+        downloadFailures += 1;
+        if (use.heroSlot) heroSlotDownloadFailures += 1;
+        recordFailure(use, "per-image-size-limit-exceeded", {
+          mimeType,
+          downloadedBytes: imageBuffer.length,
+          maxImageBytes: MAX_IMAGE_BYTES,
+        });
+        continue;
+      }
+      if (totalBytes + imageBuffer.length > MAX_TOTAL_IMAGE_BYTES) {
+        downloadFailures += 1;
+        const remainingUses = selectedUses.slice(index);
+        const remainingHeroUses = remainingUses.filter((remainingUse) => Boolean(remainingUse.heroSlot));
+        heroSlotDownloadFailures += remainingHeroUses.length;
+        for (const remainingUse of remainingUses) {
+          recordFailure(remainingUse, "total-image-size-budget-exceeded", {
+            downloadedBytesForThisImage: imageBuffer.length,
+            currentTotalBytes: totalBytes,
+            maxTotalImageBytes: MAX_TOTAL_IMAGE_BYTES,
+            remainingBudgetBytes: Math.max(0, MAX_TOTAL_IMAGE_BYTES - totalBytes),
+          });
+        }
         break;
       }
-      totalBytes += imageBuffer.length;
 
+      totalBytes += imageBuffer.length;
       const nodeToken = use.nodeId.replace(/[^0-9]/g, "-").replace(/-+/g, "-");
       const refToken = createHash("sha256").update(use.imageRef).digest("hex").slice(0, 10);
       assets.push({
@@ -656,47 +723,80 @@ async function downloadFigmaImageAssets(
         height: use.height,
         imageData: imageBuffer.toString("base64"),
       });
-    } catch (error) {
-      downloadFailures += 1;
-      if (use.heroSlot) heroSlotDownloadFailures += 1;
-      console.warn("HORIZON FIGMA IMAGE DOWNLOAD ERROR", {
+      console.info("HORIZON FIGMA IMAGE DOWNLOADED", {
         nodeId: use.nodeId,
         nodeName: use.nodeName,
         frameNodeId: use.frameNodeId,
         frameNodeName: use.frameNodeName,
         heroSlot: use.heroSlot || null,
+        fileName: assets[assets.length - 1].fileName,
+        mimeType,
+        bytes: imageBuffer.length,
+        width: use.width,
+        height: use.height,
+      });
+    } catch (error) {
+      downloadFailures += 1;
+      if (use.heroSlot) heroSlotDownloadFailures += 1;
+      recordFailure(use, "image-download-threw", {
         error: error instanceof Error ? error.message : String(error),
+        url: safeUrlPath(imageUrl),
       });
     }
   }
 
   console.info("HORIZON FIGMA IMAGE FILL LOOKUP", {
     responseKeys: Object.keys(fillResponse),
+    responseError: fillResponse.err || null,
+    responseStatus: typeof fillResponse.status === "number" ? fillResponse.status : null,
     returnedImageRefs: Object.keys(imageUrls).length,
-    imageUsesFound: imageUses.length,
+    requestedImageUses: imageUses.length,
     selectedImageUses: selectedUses.length,
     matchedRefs,
     downloadedAssets: assets.length,
+    downloadedBytes: totalBytes,
     downloadFailures,
     unsupportedTypes,
     heroSlotDownloadFailures,
+    perImageLookup: selectedUses.map((use) => ({
+      nodeId: use.nodeId,
+      nodeName: use.nodeName,
+      frameNodeId: use.frameNodeId,
+      frameNodeName: use.frameNodeName,
+      heroSlot: use.heroSlot || null,
+      imageRef: use.imageRef,
+      imageRefReturned: typeof resolveImageUrl(use.imageRef) === "string",
+    })),
+    failureDetails: importFailures.slice(0, 12),
+    additionalFailureCount: Math.max(0, importFailures.length - 12),
   });
 
-  // A partial download could make a slot with multiple image fills look
-  // uniquely mapped. Reject incomplete hero-slot coverage instead of letting
-  // the theme editor select whichever image happened to download first.
   if (heroSlotDownloadFailures > 0) {
+    const failureSummary = importFailures.slice(0, 6).map((failure) =>
+      failure.nodeId +
+      " (" + failure.nodeName + ") in " +
+      failure.frameNodeId + " (" + failure.frameNodeName + ")" +
+      (failure.heroSlot ? " [" + failure.heroSlot + "]" : "") +
+      ": " + failure.reason +
+      (failure.details?.downloadedBytes !== undefined
+        ? " (" + failure.details.downloadedBytes + " bytes)"
+        : failure.details?.httpStatus !== undefined
+          ? " (HTTP " + failure.details.httpStatus + ")"
+          : "")
+    ).join("; ");
     throw new FigmaConnectionError(
       "Horizon found " + heroSlotDownloadFailures +
-        " original Figma hero image fill(s) in the named left/right frames that could not be fully imported. " +
-        "It will not guess a slot from a partial image list. No theme files were changed. " +
-        "Check the HORIZON FIGMA IMAGE FILL LOOKUP and HORIZON FIGMA IMAGE DOWNLOAD logs.",
+        " original Figma hero image fill(s) that could not be fully imported. " +
+        "No theme files were changed. " +
+        (failureSummary ? "Import diagnostics: " + failureSummary + ". " : "") +
+        "See HORIZON FIGMA IMAGE FILL LOOKUP and HORIZON FIGMA IMAGE IMPORT REJECTED logs for exact imageRef, frame, and failure reason.",
       502
     );
   }
 
   return assets;
 }
+
 function getFigmaFileNameFromUrl(value: string): string {
   try {
     const lastSegment = new URL(value).pathname.split("/").filter(Boolean).at(-1) || "";
